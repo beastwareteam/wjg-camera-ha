@@ -13,7 +13,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │  WJG XM-3820 Kamera (WiFi)                                  │
 │  Hotspot: GW_AP_XXXX oder im Heim-WLAN                      │
-│  Ports: 80 (HTTP) · 554 (RTSP) · 34567 (XM SDK) · 8899    │
+│  Ports: 23 · 554 (RTSP) · 8899 (ONVIF) · 9530 · 9777 · 16668 │
 └────────────────┬────────────────────────────────────────────┘
                  │  WiFi / LAN
                  ▼
@@ -23,6 +23,10 @@
 │  │ RTSP     │  │ HTTP Snap   │  │ XM SDK (Port 34567)  │  │
 │  │ Stream   │  │ shot        │  │ Aufnahme / PTZ       │  │
 │  └──────────┘  └─────────────┘  └──────────────────────┘  │
+│  ┌──────────┐  ┌─────────────┐                              │
+│  │ ONVIF    │  │ ONVIF Audio │                              │
+│  │ Events   │  │ Mikrofon    │                              │
+│  └──────────┘  └─────────────┘                              │
 └────────────────┬────────────────────────────────────────────┘
                  │
                  ▼
@@ -204,7 +208,17 @@ Zusätzliche Entitäten:
 
 - PTZ-Buttons als `button`-Entities (`button.*_ptz_up`, `button.*_ptz_left`, usw.)
 - Bewegungsmelder als `binary_sensor`
+- Manipulation und Signalverlust als `binary_sensor`
 - Dateiliste / SD-Karte als `sensor` mit Datei-Metadaten in den Attributen
+- Imaging (Helligkeit, Kontrast, Sättigung, Schärfe, WDR) als `number`/`switch`/`select`
+- Stream-Profil-Umschaltung (Main/Sub) als `select`
+- Mikrofon ein/aus als `switch`
+
+### ONVIF Eventing (Pull-Point)
+
+- Unterstützt Echtzeit-Events über ONVIF Pull-Point (WSPullPointSupport)
+- Motion-, Tamper- und Signalverlust-Zustände werden eventbasiert aktualisiert
+- Reconnect mit Backoff bei Event-Endpoint-Fehlern ist integriert
 
 ### Fallback- und Recovery-Verhalten
 
@@ -249,7 +263,7 @@ pip install -r requirements-dev.txt
 Erwarteter Stand:
 
 ```text
-67 passed
+110 passed
 ```
 
 ### VS Code
