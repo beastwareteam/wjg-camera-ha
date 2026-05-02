@@ -40,6 +40,7 @@ PORTS_TO_SCAN = {
 }
 
 RTSP_PATHS = [
+    "/streamtype=0",
     "/user=admin&password=&channel=1&stream=0.sdp?real_stream",
     "/user=admin&password=&channel=1&stream=1.sdp?real_stream",
     "/live/ch00_0",
