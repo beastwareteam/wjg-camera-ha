@@ -276,7 +276,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._recording: bool = False
         self._motion: bool = False
         self._last_motion_time: float = 0
-        self._resolved_rtsp_path: str | None = None
+        self._resolved_rtsp_url: str | None = None
         self._onvif = None
         if self.protocol == "onvif":
             try:
@@ -353,11 +353,29 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             .replace("{password}", password)
         )
 
-    def _build_rtsp_url(self, path: str) -> str:
-        """Vollständige RTSP-URL für einen Pfad erzeugen."""
+    def _credential_authorities(self) -> list[str]:
+        """Mögliche Auth-Varianten für RTSP-URLs erzeugen."""
         username = quote(self.username or "admin", safe="")
         password = quote(self.password or "", safe="")
-        credentials = f"{username}:{password}@"
+
+        variants: list[str] = []
+        if username and password:
+            variants.append(f"{username}:{password}@")
+        elif username:
+            variants.extend((f"{username}:@", f"{username}@", ""))
+        else:
+            variants.append("")
+
+        # Reihenfolge erhalten, Duplikate entfernen
+        deduped: list[str] = []
+        for authority in variants:
+            if authority not in deduped:
+                deduped.append(authority)
+        return deduped
+
+    def _build_rtsp_url(self, path: str, authority: str | None = None) -> str:
+        """Vollständige RTSP-URL für einen Pfad erzeugen."""
+        credentials = authority if authority is not None else self._credential_authorities()[0]
         return f"rtsp://{credentials}{self.host}:{self.rtsp_port}{path}"
 
     def _candidate_rtsp_paths(self) -> list[str]:
@@ -373,10 +391,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 paths.append(rendered)
         return paths
 
-    def _rtsp_path_has_video(self, path: str, timeout: float = 4.0) -> bool:
-        """Per RTSP DESCRIBE prüfen, ob der Pfad einen Video-Track liefert."""
+    def _candidate_rtsp_urls(self) -> list[str]:
+        """RTSP-Kandidaten inkl. Auth-Varianten generieren."""
+        urls: list[str] = []
+        for path in self._candidate_rtsp_paths():
+            for authority in self._credential_authorities():
+                url = self._build_rtsp_url(path, authority)
+                if url not in urls:
+                    urls.append(url)
+        return urls
+
+    def _rtsp_url_has_video(self, rtsp_url: str, timeout: float = 4.0) -> bool:
+        """Per RTSP DESCRIBE prüfen, ob die URL einen Video-Track liefert."""
         describe = (
-            f"DESCRIBE {self._build_rtsp_url(path)} RTSP/1.0\r\n"
+            f"DESCRIBE {rtsp_url} RTSP/1.0\r\n"
             "CSeq: 1\r\n"
             "Accept: application/sdp\r\n\r\n"
         )
@@ -388,7 +416,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             response = sock.recv(4096).decode("utf-8", errors="ignore")
             return "m=video" in response.lower()
         except Exception as e:
-            _LOGGER.debug("RTSP DESCRIBE fehlgeschlagen für %s: %s", path, e)
+            _LOGGER.debug("RTSP DESCRIBE fehlgeschlagen für %s: %s", rtsp_url, e)
             return False
         finally:
             try:
@@ -404,29 +432,27 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol == PROTOCOL_ONVIF:
             onvif_url = await self.async_onvif_stream_url()
             if onvif_url:
-                self._resolved_rtsp_path = None
-                self.rtsp_path = onvif_url
+                self._resolved_rtsp_url = onvif_url
             return
 
-        for path in self._candidate_rtsp_paths():
+        for rtsp_url in self._candidate_rtsp_urls():
             has_video = await self.hass.async_add_executor_job(
-                self._rtsp_path_has_video,
-                path,
+                self._rtsp_url_has_video,
+                rtsp_url,
             )
             if has_video:
-                self._resolved_rtsp_path = path
-                if path != self._render_rtsp_path():
-                    _LOGGER.info("RTSP-Fallback mit Video erkannt: %s", path)
+                self._resolved_rtsp_url = rtsp_url
+                if rtsp_url != self._build_rtsp_url(self._render_rtsp_path()):
+                    _LOGGER.info("RTSP-Fallback mit Video erkannt: %s", rtsp_url)
                 return
 
-        self._resolved_rtsp_path = self._render_rtsp_path()
+        self._resolved_rtsp_url = self._build_rtsp_url(self._render_rtsp_path())
 
     @property
     def rtsp_url(self) -> str:
-        path = self._resolved_rtsp_path or self._render_rtsp_path()
-        if path.startswith("rtsp://"):
-            return path
-        return self._build_rtsp_url(path)
+        if self._resolved_rtsp_url:
+            return self._resolved_rtsp_url
+        return self._build_rtsp_url(self._render_rtsp_path())
 
     @property
     def snapshot_url(self) -> str:

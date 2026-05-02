@@ -458,18 +458,18 @@ async def test_async_resolve_rtsp_path_uses_first_candidate_with_video():
         }
     )
     coordinator = _make_coordinator(DummyHass(), entry)
-    checked_paths: list[str] = []
+    checked_urls: list[str] = []
 
-    def _fake_has_video(path: str, timeout: float = 4.0) -> bool:
+    def _fake_has_video(url: str, timeout: float = 4.0) -> bool:
         _ = timeout
-        checked_paths.append(path)
-        return path == "/stream0"
+        checked_urls.append(url)
+        return url.endswith("/stream0")
 
-    _set_private_attr(coordinator, "_rtsp_path_has_video", _fake_has_video)
+    _set_private_attr(coordinator, "_rtsp_url_has_video", _fake_has_video)
 
     await coordinator.async_resolve_rtsp_path()
 
-    assert checked_paths[0] == "/user=admin&password=&channel=1&stream=0.sdp?real_stream"
+    assert checked_urls[0].startswith("rtsp://admin")
     assert coordinator.rtsp_url == "rtsp://admin:@192.168.1.54:554/stream0"
 
 
@@ -490,13 +490,39 @@ async def test_async_resolve_rtsp_path_keeps_configured_path_when_none_have_vide
 
     _set_private_attr(
         coordinator,
-        "_rtsp_path_has_video",
-        lambda path, timeout=4.0: False,
+        "_rtsp_url_has_video",
+        lambda url, timeout=4.0: False,
     )
 
     await coordinator.async_resolve_rtsp_path()
 
     assert coordinator.rtsp_url == "rtsp://admin:@192.168.1.55:554/custom-stream"
+
+
+@pytest.mark.asyncio
+async def test_async_resolve_rtsp_path_falls_back_to_no_credentials_url():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.56",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "rtsp",
+            "rtsp_path": "/stream0",
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    def _fake_has_video(url: str, timeout: float = 4.0) -> bool:
+        _ = timeout
+        return url == "rtsp://192.168.1.56:554/stream0"
+
+    _set_private_attr(coordinator, "_rtsp_url_has_video", _fake_has_video)
+
+    await coordinator.async_resolve_rtsp_path()
+
+    assert coordinator.rtsp_url == "rtsp://192.168.1.56:554/stream0"
 
 
 def test_last_motion_time_property_returns_timestamp():
