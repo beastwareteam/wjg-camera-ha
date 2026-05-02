@@ -39,10 +39,18 @@ DEFAULT_HTTP_RETRIES = 1
 DEFAULT_RTSP_PATH = "/user=admin&password=&channel=1&stream=0.sdp?real_stream"
 DEFAULT_SNAPSHOT_PATH = "/webcapture.jpg?command=snap&channel=1"
 DEFAULT_XM_PORT = 34567
+COMMON_RTSP_PATHS = (
+    "/user=admin&password=&channel=1&stream=0.sdp?real_stream",
+    "/user=admin&password=&channel=1&stream=1.sdp?real_stream",
+    "/live/ch00_0",
+    "/h264",
+    "/stream0",
+)
 DOMAIN = "wjg_camera"
 PROTOCOL_HTTP = "http_only"
 PROTOCOL_RTSP = "rtsp"
 PROTOCOL_XM = "xm_sdk"
+PROTOCOL_ONVIF = "onvif"
 
 _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL = timedelta(seconds=10)
@@ -268,6 +276,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._recording: bool = False
         self._motion: bool = False
         self._last_motion_time: float = 0
+        self._resolved_rtsp_path: str | None = None
         self._onvif = None
         if self.protocol == "onvif":
             try:
@@ -340,19 +349,84 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         password = quote(self.password or "", safe="")
         return (
             self.rtsp_path
-            .replace("user=admin", f"user={username}")
-            .replace("password=", f"password={password}", 1)
+            .replace("{username}", username)
+            .replace("{password}", password)
         )
 
-    @property
-    def rtsp_url(self) -> str:
+    def _build_rtsp_url(self, path: str) -> str:
+        """Vollständige RTSP-URL für einen Pfad erzeugen."""
         username = quote(self.username or "admin", safe="")
         password = quote(self.password or "", safe="")
         credentials = f"{username}:{password}@"
-        return (
-            f"rtsp://{credentials}{self.host}:{self.rtsp_port}"
-            f"{self._render_rtsp_path()}"
+        return f"rtsp://{credentials}{self.host}:{self.rtsp_port}{path}"
+
+    def _candidate_rtsp_paths(self) -> list[str]:
+        """Konfigurierten Pfad plus bekannte Fallbacks in Prioritätsreihenfolge."""
+        configured_path = self._render_rtsp_path()
+        paths = [configured_path]
+        for path in COMMON_RTSP_PATHS:
+            rendered = (
+                path.replace("{username}", quote(self.username or "admin", safe=""))
+                .replace("{password}", quote(self.password or "", safe=""))
+            )
+            if rendered not in paths:
+                paths.append(rendered)
+        return paths
+
+    def _rtsp_path_has_video(self, path: str, timeout: float = 4.0) -> bool:
+        """Per RTSP DESCRIBE prüfen, ob der Pfad einen Video-Track liefert."""
+        describe = (
+            f"DESCRIBE {self._build_rtsp_url(path)} RTSP/1.0\r\n"
+            "CSeq: 1\r\n"
+            "Accept: application/sdp\r\n\r\n"
         )
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(timeout)
+            sock.connect((self.host, self.rtsp_port))
+            sock.sendall(describe.encode())
+            response = sock.recv(4096).decode("utf-8", errors="ignore")
+            return "m=video" in response.lower()
+        except Exception as e:
+            _LOGGER.debug("RTSP DESCRIBE fehlgeschlagen für %s: %s", path, e)
+            return False
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
+    async def async_resolve_rtsp_path(self) -> None:
+        """Ersten RTSP-Pfad mit Video-Track finden und merken."""
+        if self.protocol not in (PROTOCOL_RTSP, PROTOCOL_ONVIF):
+            return
+
+        if self.protocol == PROTOCOL_ONVIF:
+            onvif_url = await self.async_onvif_stream_url()
+            if onvif_url:
+                self._resolved_rtsp_path = None
+                self.rtsp_path = onvif_url
+            return
+
+        for path in self._candidate_rtsp_paths():
+            has_video = await self.hass.async_add_executor_job(
+                self._rtsp_path_has_video,
+                path,
+            )
+            if has_video:
+                self._resolved_rtsp_path = path
+                if path != self._render_rtsp_path():
+                    _LOGGER.info("RTSP-Fallback mit Video erkannt: %s", path)
+                return
+
+        self._resolved_rtsp_path = self._render_rtsp_path()
+
+    @property
+    def rtsp_url(self) -> str:
+        path = self._resolved_rtsp_path or self._render_rtsp_path()
+        if path.startswith("rtsp://"):
+            return path
+        return self._build_rtsp_url(path)
 
     @property
     def snapshot_url(self) -> str:
@@ -393,6 +467,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # XM SDK verbinden (in executor, da synchron)
         if self.protocol == PROTOCOL_XM:
             await self.hass.async_add_executor_job(self._setup_xm)
+
+        await self.async_resolve_rtsp_path()
 
         await self.async_refresh()
 

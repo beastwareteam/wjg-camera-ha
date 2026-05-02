@@ -409,7 +409,7 @@ def test_rtsp_url_uses_username_and_password():
     )
     coordinator = _make_coordinator(MagicMock(), entry)
 
-    assert coordinator.rtsp_url == "rtsp://user1:secret@192.168.1.51:554/user=user1&password=secret&channel=1&stream=0.sdp?real_stream"
+    assert coordinator.rtsp_url == "rtsp://user1:secret@192.168.1.51:554/user=admin&password=&channel=1&stream=0.sdp?real_stream"
 
 
 def test_rtsp_url_uses_default_admin_when_username_missing():
@@ -425,6 +425,78 @@ def test_rtsp_url_uses_default_admin_when_username_missing():
     coordinator = _make_coordinator(MagicMock(), entry)
 
     assert coordinator.rtsp_url == "rtsp://admin:@192.168.1.52:554/user=admin&password=&channel=1&stream=0.sdp?real_stream"
+
+
+def test_rtsp_url_supports_explicit_username_password_placeholders():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.53",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "user1",
+            "password": "secret",
+            "protocol": "rtsp",
+            "rtsp_path": "/user={username}&password={password}&channel=1&stream=0.sdp?real_stream",
+        }
+    )
+    coordinator = _make_coordinator(MagicMock(), entry)
+
+    assert coordinator.rtsp_url == "rtsp://user1:secret@192.168.1.53:554/user=user1&password=secret&channel=1&stream=0.sdp?real_stream"
+
+
+@pytest.mark.asyncio
+async def test_async_resolve_rtsp_path_uses_first_candidate_with_video():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.54",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "rtsp",
+            "rtsp_path": "/user=admin&password=&channel=1&stream=0.sdp?real_stream",
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    checked_paths: list[str] = []
+
+    def _fake_has_video(path: str, timeout: float = 4.0) -> bool:
+        _ = timeout
+        checked_paths.append(path)
+        return path == "/stream0"
+
+    _set_private_attr(coordinator, "_rtsp_path_has_video", _fake_has_video)
+
+    await coordinator.async_resolve_rtsp_path()
+
+    assert checked_paths[0] == "/user=admin&password=&channel=1&stream=0.sdp?real_stream"
+    assert coordinator.rtsp_url == "rtsp://admin:@192.168.1.54:554/stream0"
+
+
+@pytest.mark.asyncio
+async def test_async_resolve_rtsp_path_keeps_configured_path_when_none_have_video():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.55",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "rtsp",
+            "rtsp_path": "/custom-stream",
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    _set_private_attr(
+        coordinator,
+        "_rtsp_path_has_video",
+        lambda path, timeout=4.0: False,
+    )
+
+    await coordinator.async_resolve_rtsp_path()
+
+    assert coordinator.rtsp_url == "rtsp://admin:@192.168.1.55:554/custom-stream"
 
 
 def test_last_motion_time_property_returns_timestamp():
