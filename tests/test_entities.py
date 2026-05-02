@@ -10,7 +10,7 @@ from custom_components.wjg_camera.binary_sensor import WJGMotionSensor
 from custom_components.wjg_camera.button import WJGPTZButton
 from custom_components.wjg_camera.camera import WJGCamera
 from custom_components.wjg_camera.sensor import WJGFileListSensor
-from custom_components.wjg_camera.switch import WJGRecordingSwitch
+from custom_components.wjg_camera.switch import WJGMicrophoneSwitch, WJGRecordingSwitch
 from tests_helpers import as_any as _as_any
 
 
@@ -35,6 +35,8 @@ class DummyCoordinator:
         self.last_motion_time = 1234567890.0
         self.async_ptz_command = AsyncMock(return_value=True)
         self.async_set_recording = AsyncMock(return_value=True)
+        self.microphone_enabled = True
+        self.async_set_microphone_enabled = AsyncMock(return_value=True)
         self.async_get_file_list = AsyncMock(return_value=[{"name": "a.h264"}, {"name": "b.h264"}])
         self.async_snapshot = AsyncMock(return_value=b"live-image")
 
@@ -161,6 +163,32 @@ async def test_recording_switch_failure_and_sync_methods_and_properties():
     assert switch.is_on is True
     assert info.get("identifiers") is not None
     coordinator.async_set_recording.assert_awaited_once_with(True)
+    with pytest.raises(NotImplementedError):
+        switch.turn_on()
+    with pytest.raises(NotImplementedError):
+        switch.turn_off()
+
+
+@pytest.mark.asyncio
+async def test_microphone_switch_toggles_microphone():
+    coordinator = DummyCoordinator()
+    switch = WJGMicrophoneSwitch(_as_any(coordinator), _as_any(DummyEntry()))
+    switch.async_write_ha_state = MagicMock()
+
+    await switch.async_turn_off()
+    await switch.async_turn_on()
+
+    coordinator.async_set_microphone_enabled.assert_any_await(False)
+    coordinator.async_set_microphone_enabled.assert_any_await(True)
+    assert switch.async_write_ha_state.call_count == 2
+
+
+def test_microphone_switch_sync_methods_raise_not_implemented():
+    coordinator = DummyCoordinator()
+    switch = WJGMicrophoneSwitch(_as_any(coordinator), _as_any(DummyEntry(entry_id="mic-1")))
+
+    assert switch.is_on is True
+    assert switch.device_info.get("identifiers") is not None
     with pytest.raises(NotImplementedError):
         switch.turn_on()
     with pytest.raises(NotImplementedError):

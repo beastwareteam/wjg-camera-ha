@@ -26,6 +26,7 @@ async def async_setup_entry(
             WJGRecordingSwitch(coordinator, entry),
             WJGWDRSwitch(coordinator, entry),
             WJGIRCutSwitch(coordinator, entry),
+            WJGMicrophoneSwitch(coordinator, entry),
         ]
     )
 
@@ -150,6 +151,44 @@ class WJGIRCutSwitch(  # pyright: ignore[reportAbstractUsage]
 
     async def async_turn_off(self, **_: Any) -> None:
         await self.coordinator.async_set_imaging_setting("ir_cut", "OFF")
+        self.async_write_ha_state()
+
+    def turn_off(self, **kwargs: Any) -> None:
+        raise NotImplementedError
+
+
+class WJGMicrophoneSwitch(  # pyright: ignore[reportAbstractUsage]
+    CoordinatorEntity[WJGCameraCoordinator],
+    SwitchEntity,
+):
+    """Mikrofon ein-/ausschalten (ONVIF AudioOutput)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Mikrofon"
+    _attr_icon = "mdi:microphone"
+
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_microphone"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.microphone_enabled
+
+    async def async_turn_on(self, **_: Any) -> None:
+        await self.coordinator.async_set_microphone_enabled(True)
+        self.async_write_ha_state()
+
+    def turn_on(self, **kwargs: Any) -> None:
+        raise NotImplementedError
+
+    async def async_turn_off(self, **_: Any) -> None:
+        await self.coordinator.async_set_microphone_enabled(False)
         self.async_write_ha_state()
 
     def turn_off(self, **kwargs: Any) -> None:

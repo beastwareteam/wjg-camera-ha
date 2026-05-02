@@ -10,7 +10,11 @@ from custom_components.wjg_camera.binary_sensor import WJGMotionSensor, async_se
 from custom_components.wjg_camera.button import WJGPTZButton, async_setup_entry as setup_button
 from custom_components.wjg_camera.camera import WJGCamera, async_setup_entry as setup_camera
 from custom_components.wjg_camera.sensor import WJGFileListSensor, async_setup_entry as setup_sensor
-from custom_components.wjg_camera.switch import WJGRecordingSwitch, async_setup_entry as setup_switch
+from custom_components.wjg_camera.switch import (
+    WJGMicrophoneSwitch,
+    WJGRecordingSwitch,
+    async_setup_entry as setup_switch,
+)
 from tests_helpers import as_any as _as_any, make_add_entities_callback as _make_add_entities_callback
 
 
@@ -57,6 +61,11 @@ class DummyCoordinator:
     serial_number = "NDUB10241204QMPM"
     mac_address = "44:e6:4a:d2:c0:84"
     camera_time = None
+    microphone_enabled = True
+
+    async def async_set_microphone_enabled(self, enabled: bool):
+        self.microphone_enabled = enabled
+        return True
 
     def async_add_listener(self, update_callback):
         _ = update_callback
@@ -88,8 +97,9 @@ async def test_switch_platform_setup_adds_recording_switch():
 
     await setup_switch(_as_any(hass), _as_any(entry), _make_add_entities_callback(added))
 
-    assert len(added) == 3
+    assert len(added) == 4
     assert any(isinstance(e, WJGRecordingSwitch) for e in added)
+    assert any(isinstance(e, WJGMicrophoneSwitch) for e in added)
 
 
 @pytest.mark.asyncio

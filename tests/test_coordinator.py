@@ -898,3 +898,73 @@ async def test_async_onvif_pull_messages_once_updates_motion_tamper_and_signal()
     assert coordinator.tamper_detected is True
     assert coordinator.signal_loss is True
     assert listener_calls["value"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_fetch_audio_settings_reads_token_and_level():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.92",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    async def _fake_soap(_service_path, _body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        return (
+            "<trt:GetAudioOutputConfigurationsResponse>"
+            "<trt:Configurations token=\"AO_000\">"
+            "<tt:SendPrimacy>www.onvif.org/ver10/schema/Always</tt:SendPrimacy>"
+            "<tt:OutputLevel>0</tt:OutputLevel>"
+            "</trt:Configurations>"
+            "<trt:AudioOutputConfiguration token=\"AO_000\">"
+            "<tt:SendPrimacy>www.onvif.org/ver10/schema/Always</tt:SendPrimacy>"
+            "<tt:OutputLevel>0</tt:OutputLevel>"
+            "</trt:AudioOutputConfiguration>"
+            "</trt:GetAudioOutputConfigurationsResponse>"
+        )
+
+    _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+
+    assert await coordinator.async_fetch_audio_settings() is True
+    assert coordinator.microphone_enabled is False
+    assert _get_private_attr(coordinator, "_audio_output_token") == "AO_000"
+
+
+@pytest.mark.asyncio
+async def test_async_set_microphone_enabled_sends_set_audio_output_configuration():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.93",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    _set_private_attr(coordinator, "_audio_output_token", "AO_001")
+    _set_private_attr(coordinator, "_audio_output_level", 45)
+
+    captured = {"body": ""}
+
+    async def _fake_soap(_service_path, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        captured["body"] = body
+        return "<trt:SetAudioOutputConfigurationResponse/>"
+
+    _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+
+    assert await coordinator.async_set_microphone_enabled(False) is True
+    assert "<tt:OutputLevel>0</tt:OutputLevel>" in captured["body"]
+    assert coordinator.microphone_enabled is False

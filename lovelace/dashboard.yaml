@@ -337,6 +337,8 @@ views:
             name: Stream-Qualität
           - entity: sensor.wjg_xm_3820_aktiver_stream
             name: Aktiv
+          - entity: switch.wjg_xm_3820_mikrofon
+            name: Mikrofon
 
       - type: entities
         title: Verbindungsdetails

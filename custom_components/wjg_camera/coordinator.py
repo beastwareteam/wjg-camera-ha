@@ -297,6 +297,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._signal_loss: bool = False
         # Stream
         self._active_stream: str = "000"  # "000"=main, "001"=sub
+        # Audio
+        self._microphone_enabled: bool = True
+        self._audio_output_token: str = ""
+        self._audio_output_level: int = 100
+        self._audio_output_send_primacy: str = "www.onvif.org/ver10/schema/Always"
         # System
         self._fw_version: str = ""
         self._serial_number: str = ""
@@ -537,6 +542,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             await self.async_ptz_get_presets()
         except Exception as exc:
             _LOGGER.debug("PTZ-Presets nicht abrufbar: %s", exc)
+        try:
+            await self.async_fetch_audio_settings()
+        except Exception as exc:
+            _LOGGER.debug("Audio-Einstellungen nicht abrufbar: %s", exc)
 
         if self.protocol == PROTOCOL_ONVIF:
             self._event_task = asyncio.create_task(self._async_onvif_event_loop())
@@ -1302,6 +1311,82 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             f"rtsp://{authority}{self.host}:{self.rtsp_port}/streamtype={stream_type}"
         )
         self.async_update_listeners()
+
+    # ── Audio ────────────────────────────────────────────────────────────────
+
+    @property
+    def microphone_enabled(self) -> bool:
+        return self._microphone_enabled
+
+    async def async_fetch_audio_settings(self) -> bool:
+        """AudioOutput-Konfiguration laden und Mikrofonstatus ableiten."""
+        resp = await self._onvif_soap(
+            "/onvif/Media",
+            "<trt:GetAudioOutputConfigurations/>",
+        )
+        if not resp:
+            return False
+        if (
+            "AudioOutputConfiguration" not in resp
+            and "GetAudioOutputConfigurationsResponse" not in resp
+            and "Configurations" not in resp
+        ):
+            return False
+
+        token_match = re.search(
+            r'<[^>]*(?:AudioOutputConfiguration|Configurations)[^>]*token=["\']([^"\']+)["\']',
+            resp,
+            re.IGNORECASE,
+        )
+        if token_match:
+            self._audio_output_token = token_match.group(1)
+
+        level_raw = self._xml_text(resp, "OutputLevel")
+        try:
+            level = int(float(level_raw)) if level_raw else self._audio_output_level
+        except (TypeError, ValueError):
+            level = self._audio_output_level
+        self._audio_output_level = max(0, min(100, level))
+
+        send_primacy = self._xml_text(resp, "SendPrimacy")
+        if send_primacy:
+            self._audio_output_send_primacy = send_primacy
+
+        self._microphone_enabled = self._audio_output_level > 0
+        return True
+
+    async def async_set_microphone_enabled(self, enabled: bool) -> bool:
+        """Mikrofon ein/aus (ONVIF AudioOutput OutputLevel >0 oder 0)."""
+        if not self._audio_output_token:
+            await self.async_fetch_audio_settings()
+        if not self._audio_output_token:
+            return False
+
+        current_on_level = self._audio_output_level if self._audio_output_level > 0 else 100
+        target_level = current_on_level if enabled else 0
+        target_level = max(0, min(100, target_level))
+
+        send_primacy = self._audio_output_send_primacy or "www.onvif.org/ver10/schema/Always"
+        body = (
+            "<trt:SetAudioOutputConfiguration>"
+            "<trt:Configuration token=\""
+            f"{self._audio_output_token}"
+            "\">"
+            "<tt:Name>AudioOut</tt:Name>"
+            f"<tt:OutputToken>{self._audio_output_token}</tt:OutputToken>"
+            f"<tt:SendPrimacy>{send_primacy}</tt:SendPrimacy>"
+            f"<tt:OutputLevel>{target_level}</tt:OutputLevel>"
+            "</trt:Configuration>"
+            "<trt:ForcePersistence>true</trt:ForcePersistence>"
+            "</trt:SetAudioOutputConfiguration>"
+        )
+        resp = await self._onvif_soap("/onvif/Media", body)
+        ok = "SetAudioOutputConfigurationResponse" in resp
+        if ok:
+            self._audio_output_level = target_level
+            self._microphone_enabled = enabled
+            self.async_update_listeners()
+        return ok
 
     # ── System ───────────────────────────────────────────────────────────────
 
