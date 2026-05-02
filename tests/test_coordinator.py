@@ -815,3 +815,86 @@ async def test_async_ptz_command_xm_exception_without_http_returns_false():
     _set_private_attr(coordinator, "_session", None)
 
     assert await coordinator.async_ptz_command("up") is False
+
+
+@pytest.mark.asyncio
+async def test_async_onvif_create_pullpoint_uses_address_path():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.90",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    async def _fake_soap(_service_path, _body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        return (
+            "<CreatePullPointSubscriptionResponse>"
+            "<SubscriptionReference>"
+            "<Address>http://192.168.1.90:8899/onvif/Subscription?Idx=2</Address>"
+            "</SubscriptionReference>"
+            "</CreatePullPointSubscriptionResponse>"
+        )
+
+    _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+
+    assert await coordinator.async_onvif_create_pullpoint() is True
+    assert _get_private_attr(coordinator, "_event_pullpoint_path") == "/onvif/Subscription"
+
+
+@pytest.mark.asyncio
+async def test_async_onvif_pull_messages_once_updates_motion_tamper_and_signal():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.91",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    _set_private_attr(coordinator, "_event_pullpoint_path", "/onvif/Subscription")
+
+    async def _fake_soap(_service_path, _body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        return (
+            "<tev:PullMessagesResponse>"
+            "<wsnt:NotificationMessage>"
+            "<wsnt:Topic>tns1:RuleEngine/CellMotionDetector/Motion</wsnt:Topic>"
+            "<tt:Message><tt:Data><tt:SimpleItem Name=\"IsMotion\" Value=\"true\"/></tt:Data></tt:Message>"
+            "</wsnt:NotificationMessage>"
+            "<wsnt:NotificationMessage>"
+            "<wsnt:Topic>tns1:RuleEngine/TamperDetector/Tamper</wsnt:Topic>"
+            "<tt:Message><tt:Data><tt:SimpleItem Name=\"Tamper\" Value=\"true\"/></tt:Data></tt:Message>"
+            "</wsnt:NotificationMessage>"
+            "<wsnt:NotificationMessage>"
+            "<wsnt:Topic>tns1:VideoSource/VideoLoss</wsnt:Topic>"
+            "<tt:Message><tt:Data><tt:SimpleItem Name=\"VideoLoss\" Value=\"true\"/></tt:Data></tt:Message>"
+            "</wsnt:NotificationMessage>"
+            "</tev:PullMessagesResponse>"
+        )
+
+    _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+    listener_calls = {"value": 0}
+
+    def _fake_update_listeners():
+        listener_calls["value"] += 1
+
+    coordinator.async_update_listeners = _fake_update_listeners
+
+    assert await coordinator.async_onvif_pull_messages_once() is True
+    assert coordinator.motion_detected is True
+    assert coordinator.tamper_detected is True
+    assert coordinator.signal_loss is True
+    assert listener_calls["value"] == 1

@@ -23,6 +23,7 @@ import time
 from datetime import timedelta
 from typing import Any
 from urllib.parse import quote
+from urllib.parse import urlparse
 
 import aiohttp
 import async_timeout
@@ -302,6 +303,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._mac_address: str = ""
         self._camera_time: str = ""
         self._update_count: int = 0
+        self._event_pullpoint_path: str = ""
+        self._event_task: asyncio.Task | None = None
         if self.protocol == "onvif":
             try:
                 from onvif import ONVIFCamera
@@ -534,6 +537,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             await self.async_ptz_get_presets()
         except Exception as exc:
             _LOGGER.debug("PTZ-Presets nicht abrufbar: %s", exc)
+
+        if self.protocol == PROTOCOL_ONVIF:
+            self._event_task = asyncio.create_task(self._async_onvif_event_loop())
 
         await self.async_refresh()
 
@@ -789,7 +795,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         )
 
     async def _onvif_soap(
-        self, service_path: str, body: str, use_auth: bool = True
+        self,
+        service_path: str,
+        body: str,
+        use_auth: bool = True,
+        timeout_seconds: int = 5,
     ) -> str:
         """ONVIF SOAP-Anfrage direkt via HTTP."""
         if not self._session:
@@ -810,7 +820,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         )
         url = f"http://{self.host}:{self.onvif_port}{service_path}"
         try:
-            async with async_timeout.timeout(5):
+            async with async_timeout.timeout(timeout_seconds):
                 async with self._session.post(
                     url,
                     data=envelope.encode("utf-8"),
@@ -1122,6 +1132,153 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     # ── Sensoren (Tamper, Signal Loss) ──────────────────────────────────────
 
+    @staticmethod
+    def _parse_event_bool(value: str | None) -> bool | None:
+        if value is None:
+            return None
+        norm = str(value).strip().lower()
+        if norm in {"1", "true", "on", "yes", "active"}:
+            return True
+        if norm in {"0", "false", "off", "no", "inactive"}:
+            return False
+        return None
+
+    @staticmethod
+    def _parse_event_items(xml_fragment: str) -> dict[str, str]:
+        items: dict[str, str] = {}
+        pattern = re.compile(
+            r'<[^>]*(?:SimpleItem|ElementItem)[^>]*Name=["\']([^"\']+)["\'][^>]*Value=["\']([^"\']*)["\']',
+            re.IGNORECASE,
+        )
+        for match in pattern.finditer(xml_fragment):
+            items[match.group(1).strip().lower()] = match.group(2).strip()
+        return items
+
+    def _apply_onvif_event(self, topic: str, items: dict[str, str]) -> bool:
+        changed = False
+        topic_l = (topic or "").lower()
+
+        # Motion: bei Trigger den Zeitstempel setzen (Sensor bleibt 30s aktiv).
+        motion_keys = ("ismotion", "motion", "motionalarm", "videomotion")
+        motion_values = [self._parse_event_bool(items.get(k)) for k in motion_keys if k in items]
+        motion_true = any(v is True for v in motion_values)
+        if motion_true or ("motion" in topic_l and not motion_values):
+            self._last_motion_time = time.time()
+            changed = True
+
+        tamper_keys = ("tamper", "sabotage", "is_tamper", "cellmotiondetector")
+        tamper_values = [self._parse_event_bool(items.get(k)) for k in tamper_keys if k in items]
+        if tamper_values:
+            new_tamper = any(v is True for v in tamper_values)
+            if new_tamper != self._tamper:
+                self._tamper = new_tamper
+                changed = True
+        elif "tamper" in topic_l or "sabotage" in topic_l:
+            if not self._tamper:
+                self._tamper = True
+                changed = True
+
+        signal_keys = ("videoloss", "signal", "signal_loss", "loss")
+        signal_values = [self._parse_event_bool(items.get(k)) for k in signal_keys if k in items]
+        if signal_values:
+            new_signal = any(v is True for v in signal_values)
+            if new_signal != self._signal_loss:
+                self._signal_loss = new_signal
+                changed = True
+        elif "videoloss" in topic_l or "signal" in topic_l:
+            if not self._signal_loss:
+                self._signal_loss = True
+                changed = True
+
+        return changed
+
+    async def async_onvif_pull_messages_once(self) -> bool:
+        """Einmal PullMessages ausführen und Events in den State übernehmen."""
+        if not self._event_pullpoint_path:
+            return False
+
+        resp = await self._onvif_soap(
+            self._event_pullpoint_path,
+            "<tev:PullMessages>"
+            "<tev:Timeout>PT15S</tev:Timeout>"
+            "<tev:MessageLimit>16</tev:MessageLimit>"
+            "</tev:PullMessages>",
+            timeout_seconds=20,
+        )
+        if not resp:
+            return False
+
+        changed = False
+        for m in re.finditer(
+            r"<[^>]*NotificationMessage[^>]*>(.*?)</[^>]*NotificationMessage>",
+            resp,
+            re.DOTALL,
+        ):
+            block = m.group(1)
+            topic = self._xml_text(block, "Topic")
+            items = self._parse_event_items(block)
+            if self._apply_onvif_event(topic, items):
+                changed = True
+
+        if changed:
+            self.async_update_listeners()
+
+        return "PullMessagesResponse" in resp
+
+    async def async_onvif_create_pullpoint(self) -> bool:
+        """Pull-Point Subscription erzeugen und Endpoint-Pfad merken."""
+        resp = await self._onvif_soap(
+            "/onvif/Events",
+            "<tev:CreatePullPointSubscription>"
+            "<tev:InitialTerminationTime>PT30M</tev:InitialTerminationTime>"
+            "</tev:CreatePullPointSubscription>",
+        )
+        if not resp:
+            return False
+
+        address = self._xml_text(resp, "Address")
+        if not address:
+            self._event_pullpoint_path = "/onvif/Events"
+            return True
+
+        if address.startswith("http://") or address.startswith("https://"):
+            parsed = urlparse(address)
+            self._event_pullpoint_path = parsed.path or "/onvif/Events"
+        elif address.startswith("/"):
+            self._event_pullpoint_path = address
+        else:
+            self._event_pullpoint_path = f"/{address}"
+        return True
+
+    async def _async_onvif_event_loop(self) -> None:
+        """ONVIF Pull-Point Event-Loop mit Reconnect/Backoff."""
+        backoff_seconds = 1
+        try:
+            while True:
+                if not self._session:
+                    await asyncio.sleep(1)
+                    continue
+
+                if not self._event_pullpoint_path:
+                    ok = await self.async_onvif_create_pullpoint()
+                    if not ok:
+                        await asyncio.sleep(backoff_seconds)
+                        backoff_seconds = min(backoff_seconds * 2, 30)
+                        continue
+
+                ok = await self.async_onvif_pull_messages_once()
+                if ok:
+                    backoff_seconds = 1
+                    continue
+
+                self._event_pullpoint_path = ""
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds = min(backoff_seconds * 2, 30)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _LOGGER.debug("ONVIF Event-Loop beendet: %s", exc)
+
     @property
     def tamper_detected(self) -> bool:
         return self._tamper
@@ -1216,6 +1373,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_shutdown(self) -> None:
         """Verbindungen schließen."""
+        if self._event_task:
+            self._event_task.cancel()
+            try:
+                await self._event_task
+            except asyncio.CancelledError:
+                pass
+            self._event_task = None
+        self._event_pullpoint_path = ""
         if self._session:
             await self._session.close()
             self._session = None
