@@ -393,6 +393,22 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         else:
             _LOGGER.warning("XM SDK nicht verfügbar — Fallback auf HTTP")
 
+    async def _tcp_port_reachable(self, port: int, timeout: float = 3.0) -> bool:
+        """Prüft per TCP-Connect ob ein Port erreichbar ist (Fallback-Ping)."""
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection(self.host, port),
+                timeout=timeout,
+            )
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+            return True
+        except Exception:
+            return False
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Kamera-Status aktualisieren."""
         data: dict[str, Any] = {
@@ -406,17 +422,36 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         session = self._session
         if session is not None:
             try:
+                auth = None
+                if self.username:
+                    auth = aiohttp.BasicAuth(self.username, self.password or "")
                 async with async_timeout.timeout(5):
                     async with session.get(
-                        self.snapshot_url, allow_redirects=True
+                        self.snapshot_url,
+                        allow_redirects=True,
+                        auth=auth,
                     ) as resp:
-                        if resp.status == 200:
+                        # 200 = OK, 401/403 = Kamera antwortet (Auth fehlt oder
+                        # nicht nötig), trotzdem erreichbar
+                        if resp.status in (200, 401, 403):
                             data["available"] = True
+                        if resp.status == 200:
                             ct = resp.headers.get("Content-Type", "")
                             if "image" in ct:
                                 data["snapshot_bytes"] = await resp.read()
             except Exception as e:
                 _LOGGER.debug("Snapshot fehlgeschlagen: %s", e)
+
+        # Fallback: TCP-Erreichbarkeit prüfen (RTSP-Port oder HTTP-Port)
+        if not data["available"]:
+            for port in {self.rtsp_port, self.http_port, self.xm_port}:
+                if port and await self._tcp_port_reachable(port):
+                    data["available"] = True
+                    _LOGGER.debug(
+                        "Kamera via TCP-Port %s erreichbar (Snapshot nicht verfügbar)",
+                        port,
+                    )
+                    break
 
         # XM Keepalive + Status
         if self._xm:
