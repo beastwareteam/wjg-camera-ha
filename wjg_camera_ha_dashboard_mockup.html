@@ -1,0 +1,334 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+.ha-wrap{display:flex;min-height:560px;border-radius:var(--border-radius-lg);overflow:hidden;border:0.5px solid var(--color-border-tertiary)}
+.ha-sidebar{width:64px;background:#1c1c1e;display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:6px;flex-shrink:0}
+.ha-nav{width:40px;height:40px;border-radius:var(--border-radius-md);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .15s}
+.ha-nav svg{width:20px;height:20px;fill:#888}
+.ha-nav.active{background:#2d5a8e}
+.ha-nav.active svg{fill:#78b4f0}
+.ha-nav:hover{background:#2a2a2e}
+.ha-main{flex:1;background:#111114;overflow:hidden;display:flex;flex-direction:column}
+.ha-topbar{background:#1c1c1e;padding:10px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:0.5px solid #2a2a2e}
+.ha-topbar-title{font-size:14px;font-weight:500;color:#e0e0e0}
+.ha-tabs{display:flex;gap:2px}
+.ha-tab{padding:5px 12px;font-size:12px;border-radius:20px;cursor:pointer;color:#888;transition:all .15s}
+.ha-tab.active{background:#2d5a8e;color:#78b4f0}
+.ha-tab:hover:not(.active){color:#bbb}
+.ha-content{padding:12px;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.ha-row{display:flex;gap:10px}
+.ha-card{background:#1c1c1e;border-radius:var(--border-radius-lg);border:0.5px solid #2a2a2e;overflow:hidden}
+.ha-card-title{font-size:11px;font-weight:500;color:#888;padding:10px 12px 6px;text-transform:uppercase;letter-spacing:.06em}
+.cam-feed{background:#0a0a0a;aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;position:relative;min-height:140px}
+.cam-scene{width:100%;height:100%;position:relative;overflow:hidden}
+.cam-sky{background:#0d1520;width:100%;height:55%}
+.cam-ground{background:#0f1a0d;width:100%;height:45%}
+.cam-grid{position:absolute;inset:0;opacity:.06}
+.cam-timestamp{position:absolute;top:8px;left:8px;font-size:10px;font-family:var(--font-mono);color:#4af;background:rgba(0,0,0,.6);padding:2px 6px;border-radius:4px}
+.cam-rec{position:absolute;top:8px;right:8px;display:flex;align-items:center;gap:4px;font-size:10px;background:rgba(0,0,0,.6);padding:2px 8px;border-radius:4px}
+.cam-rec-dot{width:7px;height:7px;border-radius:50%;background:#e24b4a}
+.cam-rec-dot.off{background:#555}
+.cam-rec-text{font-size:10px;font-family:var(--font-mono);color:#e0e0e0}
+.cam-ir{position:absolute;bottom:8px;right:8px;font-size:9px;background:rgba(0,0,0,.6);padding:2px 6px;border-radius:4px;color:#888}
+.cam-motion-bar{position:absolute;bottom:0;left:0;right:0;height:2px;background:#e24b4a;transform:scaleX(0);transform-origin:left;transition:transform .3s}
+.cam-motion-bar.active{transform:scaleX(1)}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px;background:#2a2a2e}
+.stat-cell{background:#1c1c1e;padding:10px 12px}
+.stat-label{font-size:10px;color:#666;margin-bottom:3px}
+.stat-val{font-size:13px;font-weight:500}
+.stat-val.green{color:#4caf7d}
+.stat-val.red{color:#e24b4a}
+.stat-val.amber{color:#f0a020}
+.stat-val.blue{color:#78b4f0}
+.ptz-pad{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;padding:10px 12px;width:100%}
+.ptz-btn{background:#252528;border:0.5px solid #333;border-radius:var(--border-radius-md);padding:8px;display:flex;align-items:center;justify-content:center;cursor:pointer;transition:background .12s;color:#aaa}
+.ptz-btn:hover{background:#2d5a8e;color:#78b4f0;border-color:#2d5a8e}
+.ptz-btn:active{transform:scale(.95)}
+.ptz-btn.stop{background:#252528;color:#666}
+.ptz-btn svg{width:14px;height:14px;fill:currentColor}
+.action-row{display:flex;gap:8px;padding:10px 12px}
+.ha-btn{flex:1;padding:7px 6px;border-radius:var(--border-radius-md);font-size:11px;font-weight:500;text-align:center;cursor:pointer;border:0.5px solid #333;background:#252528;color:#aaa;transition:all .15s;display:flex;align-items:center;justify-content:center;gap:4px}
+.ha-btn:hover{border-color:#555;color:#e0e0e0}
+.ha-btn.danger{border-color:#5a2020;color:#e24b4a;background:#1a1010}
+.ha-btn.danger:hover{background:#2a1414}
+.ha-btn.primary{border-color:#2d5a8e;color:#78b4f0;background:#0d2035}
+.ha-btn.primary:hover{background:#152840}
+.ha-btn.recording{border-color:#5a2020;color:#e24b4a;background:#1a1010}
+.ha-btn svg{width:12px;height:12px;fill:currentColor;flex-shrink:0}
+.event-list{padding:0 12px 10px}
+.event-row{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:0.5px solid #222}
+.event-row:last-child{border-bottom:none}
+.event-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.event-text{font-size:11px;color:#888;flex:1}
+.event-time{font-size:10px;color:#555;font-family:var(--font-mono)}
+.ip-row{padding:8px 12px;display:flex;justify-content:space-between;align-items:center;border-bottom:0.5px solid #222;font-size:11px}
+.ip-row:last-child{border-bottom:none}
+.ip-key{color:#666}
+.ip-val{font-family:var(--font-mono);color:#78b4f0;font-size:11px}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.blink{animation:blink 1.4s ease-in-out infinite}
+@keyframes pulse-motion{0%{transform:scaleX(0)}30%{transform:scaleX(1)}70%{transform:scaleX(1)}100%{transform:scaleX(0)}}
+.pulse-m{animation:pulse-motion 3s ease-in-out}
+</style>
+
+<h2 class="sr-only">Home Assistant Dashboard Mockup für die WJG XM-3820 Kamera – interaktiver Prototyp mit Livestream, PTZ-Steuerung, Aufnahme-Schalter und Ereignis-Log</h2>
+
+<div class="ha-wrap">
+  <div class="ha-sidebar">
+    <div class="ha-nav active" title="Übersicht">
+      <svg viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></svg>
+    </div>
+    <div class="ha-nav" title="Energie">
+      <svg viewBox="0 0 24 24"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>
+    </div>
+    <div class="ha-nav" title="Karte">
+      <svg viewBox="0 0 24 24"><path d="M20.5 3l-.16.03L15 5.1 9 3 3.36 4.9c-.21.07-.36.25-.36.48V20.5c0 .28.22.5.5.5l.16-.03L9 18.9l6 2.1 5.64-1.9c.21-.07.36-.25.36-.48V3.5c0-.28-.22-.5-.5-.5zM15 19l-6-2.11V5l6 2.11V19z"/></svg>
+    </div>
+    <div style="flex:1"></div>
+    <div class="ha-nav" title="Einstellungen">
+      <svg viewBox="0 0 24 24"><path d="M19.14,12.94c0.04-0.3,0.06-0.61,0.06-0.94c0-0.32-0.02-0.64-0.07-0.94l2.03-1.58c0.18-0.14,0.23-0.41,0.12-0.61 l-1.92-3.32c-0.12-0.22-0.37-0.29-0.59-0.22l-2.39,0.96c-0.5-0.38-1.03-0.7-1.62-0.94L14.4,2.81c-0.04-0.24-0.24-0.41-0.48-0.41 h-3.84c-0.24,0-0.43,0.17-0.47,0.41L9.25,5.35C8.66,5.59,8.12,5.92,7.63,6.29L5.24,5.33c-0.22-0.08-0.47,0-0.59,0.22L2.74,8.87 C2.62,9.08,2.66,9.34,2.86,9.48l2.03,1.58C4.84,11.36,4.8,11.69,4.8,12s0.02,0.64,0.07,0.94l-2.03,1.58 c-0.18,0.14-0.23,0.41-0.12,0.61l1.92,3.32c0.12,0.22,0.37,0.29,0.59,0.22l2.39-0.96c0.5,0.38,1.03,0.7,1.62,0.94l0.36,2.54 c0.05,0.24,0.24,0.41,0.48,0.41h3.84c0.24,0,0.44-0.17,0.47-0.41l0.36-2.54c0.59-0.24,1.13-0.56,1.62-0.94l2.39,0.96 c0.22,0.08,0.47,0,0.59-0.22l1.92-3.32c0.12-0.22,0.07-0.47-0.12-0.61L19.14,12.94z M12,15.6c-1.98,0-3.6-1.62-3.6-3.6 s1.62-3.6,3.6-3.6s3.6,1.62,3.6,3.6S13.98,15.6,12,15.6z"/></svg>
+    </div>
+  </div>
+
+  <div class="ha-main">
+    <div class="ha-topbar">
+      <span class="ha-topbar-title">Kamera-Überwachung</span>
+      <div class="ha-tabs">
+        <div class="ha-tab active" onclick="switchView('live')">Live</div>
+        <div class="ha-tab" onclick="switchView('rec')">Aufnahmen</div>
+        <div class="ha-tab" onclick="switchView('info')">Info</div>
+      </div>
+    </div>
+
+    <div class="ha-content" id="view-live">
+
+      <div class="ha-card">
+        <div class="cam-feed">
+          <div class="cam-scene" id="cam-scene">
+            <div class="cam-sky" id="cam-sky"></div>
+            <div class="cam-ground"></div>
+            <svg class="cam-grid" style="position:absolute;inset:0;width:100%;height:100%">
+              <defs><pattern id="g" width="30" height="30" patternUnits="userSpaceOnUse"><path d="M30 0L0 0 0 30" fill="none" stroke="#fff" stroke-width="0.5"/></pattern></defs>
+              <rect width="100%" height="100%" fill="url(#g)"/>
+            </svg>
+            <div class="cam-timestamp" id="cam-ts">02.05.2026  21:34:07</div>
+            <div class="cam-rec" id="cam-rec-badge">
+              <div class="cam-rec-dot blink" id="rec-dot"></div>
+              <span class="cam-rec-text" id="rec-text">REC</span>
+            </div>
+            <div class="cam-ir">IR-Nacht</div>
+            <div class="cam-motion-bar" id="motion-bar"></div>
+          </div>
+        </div>
+        <div class="stat-grid">
+          <div class="stat-cell">
+            <div class="stat-label">Verbindung</div>
+            <div class="stat-val green" id="stat-conn">Online</div>
+          </div>
+          <div class="stat-cell">
+            <div class="stat-label">Aufnahme</div>
+            <div class="stat-val red" id="stat-rec">Aktiv</div>
+          </div>
+          <div class="stat-cell">
+            <div class="stat-label">Bewegung</div>
+            <div class="stat-val amber" id="stat-mot">Erkannt</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ha-row">
+        <div class="ha-card" style="flex:1">
+          <div class="ha-card-title">PTZ-Steuerung</div>
+          <div class="ptz-pad">
+            <div></div>
+            <div class="ptz-btn" onclick="ptz('up')"><svg viewBox="0 0 24 24"><path d="M7 14l5-5 5 5z"/></svg></div>
+            <div></div>
+            <div class="ptz-btn" onclick="ptz('left')"><svg viewBox="0 0 24 24"><path d="M15 7l-5 5 5 5z"/></svg></div>
+            <div class="ptz-btn stop" onclick="ptz('stop')"><svg viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg></div>
+            <div class="ptz-btn" onclick="ptz('right')"><svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5z"/></svg></div>
+            <div></div>
+            <div class="ptz-btn" onclick="ptz('down')"><svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5z"/></svg></div>
+            <div></div>
+          </div>
+          <div style="display:flex;gap:6px;padding:0 12px 10px">
+            <div class="ha-btn" onclick="ptz('zoom_in')" style="font-size:13px">+</div>
+            <div class="ha-btn" style="font-size:10px;color:#555;cursor:default">Zoom</div>
+            <div class="ha-btn" onclick="ptz('zoom_out')" style="font-size:13px">−</div>
+          </div>
+        </div>
+
+        <div class="ha-card" style="flex:1;display:flex;flex-direction:column">
+          <div class="ha-card-title">Schnellaktionen</div>
+          <div class="action-row" style="flex-direction:column;gap:7px">
+            <div class="ha-btn recording" id="rec-btn" onclick="toggleRec()" style="justify-content:flex-start;padding:9px 12px">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/></svg>
+              <span id="rec-btn-text">Aufnahme stoppen</span>
+            </div>
+            <div class="ha-btn primary" onclick="takeSnapshot()" style="justify-content:flex-start;padding:9px 12px">
+              <svg viewBox="0 0 24 24"><path d="M12 15.2A3.2 3.2 0 0 1 8.8 12 3.2 3.2 0 0 1 12 8.8 3.2 3.2 0 0 1 15.2 12 3.2 3.2 0 0 1 12 15.2M12 7a5 5 0 0 0-5 5 5 5 0 0 0 5 5 5 5 0 0 0 5-5 5 5 0 0 0-5-5m-7-1h2.6l1.4-1.5h6L16.4 6H19a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2z"/></svg>
+              <span>Snapshot speichern</span>
+            </div>
+            <div class="ha-btn" onclick="toggleIR()" style="justify-content:flex-start;padding:9px 12px" id="ir-btn">
+              <svg viewBox="0 0 24 24"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1z"/></svg>
+              <span id="ir-text">IR-LEDs: Nacht</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="ha-card">
+        <div class="ha-card-title">Ereignis-Log</div>
+        <div class="event-list" id="event-list">
+          <div class="event-row"><div class="event-dot" style="background:#e24b4a"></div><span class="event-text">Bewegung erkannt – Eingang</span><span class="event-time">21:33</span></div>
+          <div class="event-row"><div class="event-dot" style="background:#4caf7d"></div><span class="event-text">Aufnahme gestartet</span><span class="event-time">21:30</span></div>
+          <div class="event-row"><div class="event-dot" style="background:#78b4f0"></div><span class="event-text">Kamera verbunden – RTSP aktiv</span><span class="event-time">21:28</span></div>
+          <div class="event-row"><div class="event-dot" style="background:#888"></div><span class="event-text">HA Integration geladen</span><span class="event-time">21:28</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ha-content" id="view-rec" style="display:none">
+      <div class="ha-card">
+        <div class="ha-card-title">Gespeicherte Aufnahmen (SD-Karte)</div>
+        <div class="event-list">
+          <div class="event-row"><div class="event-dot" style="background:#78b4f0"></div><span class="event-text">CH01_20260502_213000.mp4</span><span class="event-time" style="color:#78b4f0">42 MB</span></div>
+          <div class="event-row"><div class="event-dot" style="background:#78b4f0"></div><span class="event-text">CH01_20260502_200000.mp4</span><span class="event-time" style="color:#78b4f0">128 MB</span></div>
+          <div class="event-row"><div class="event-dot" style="background:#78b4f0"></div><span class="event-text">CH01_20260501_183000.mp4</span><span class="event-time" style="color:#78b4f0">87 MB</span></div>
+          <div class="event-row"><div class="event-dot" style="background:#888"></div><span class="event-text">CH01_20260501_120000.mp4</span><span class="event-time">55 MB</span></div>
+        </div>
+      </div>
+      <div class="ha-card" style="margin-top:0">
+        <div class="ha-card-title">SD-Karte</div>
+        <div style="padding:10px 12px">
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#888;margin-bottom:6px"><span>Belegt: 2.1 GB</span><span>Frei: 26 GB</span></div>
+          <div style="height:6px;background:#2a2a2e;border-radius:3px"><div style="width:7%;height:100%;background:#78b4f0;border-radius:3px"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ha-content" id="view-info" style="display:none">
+      <div class="ha-card">
+        <div class="ha-card-title">Verbindungsdetails</div>
+        <div class="ip-row"><span class="ip-key">IP-Adresse</span><span class="ip-val">192.168.178.42</span></div>
+        <div class="ip-row"><span class="ip-key">Protokoll</span><span class="ip-val">RTSP + XM SDK</span></div>
+        <div class="ip-row"><span class="ip-key">RTSP-Port</span><span class="ip-val">554</span></div>
+        <div class="ip-row"><span class="ip-key">HTTP-Port</span><span class="ip-val">80</span></div>
+        <div class="ip-row"><span class="ip-key">XM SDK</span><span class="ip-val" style="color:#4caf7d">Verbunden</span></div>
+        <div class="ip-row"><span class="ip-key">Pi-hole</span><span class="ip-val" style="color:#4caf7d">Cloud geblockt (lokal aktiv)</span></div>
+        <div class="ip-row"><span class="ip-key">Firmware</span><span class="ip-val">IPC_GK6621X V4.02</span></div>
+      </div>
+      <div class="ha-card" style="margin-top:0">
+        <div class="ha-card-title">RTSP-URL</div>
+        <div style="padding:8px 12px;font-family:var(--font-mono);font-size:10px;color:#78b4f0;word-break:break-all;line-height:1.6">rtsp://admin:@192.168.178.42:554/user=admin&password=&channel=1&stream=0.sdp?real_stream</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" style="display:none;margin-top:8px;padding:7px 12px;background:var(--color-background-success);border-radius:var(--border-radius-md);font-size:12px;color:var(--color-text-success)"></div>
+
+<script>
+let recording = true;
+let irMode = 'night';
+let ts;
+
+function tick(){
+  const now = new Date();
+  const p = n => String(n).padStart(2,'0');
+  document.getElementById('cam-ts').textContent =
+    `${p(now.getDate())}.${p(now.getMonth()+1)}.${now.getFullYear()}  ${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
+}
+tick();
+setInterval(tick, 1000);
+
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  setTimeout(()=>t.style.display='none', 2200);
+}
+
+function addEvent(color, text){
+  const list = document.getElementById('event-list');
+  const now = new Date();
+  const p = n => String(n).padStart(2,'0');
+  const timeStr = `${p(now.getHours())}:${p(now.getMinutes())}`;
+  const row = document.createElement('div');
+  row.className = 'event-row';
+  row.innerHTML = `<div class="event-dot" style="background:${color}"></div><span class="event-text">${text}</span><span class="event-time">${timeStr}</span>`;
+  list.insertBefore(row, list.firstChild);
+  if(list.children.length > 6) list.removeChild(list.lastChild);
+}
+
+function toggleRec(){
+  recording = !recording;
+  const dot = document.getElementById('rec-dot');
+  const recText = document.getElementById('rec-text');
+  const btnText = document.getElementById('rec-btn-text');
+  const statRec = document.getElementById('stat-rec');
+  const btn = document.getElementById('rec-btn');
+  if(recording){
+    dot.className = 'cam-rec-dot blink';
+    recText.textContent = 'REC';
+    btnText.textContent = 'Aufnahme stoppen';
+    statRec.textContent = 'Aktiv';
+    statRec.className = 'stat-val red';
+    btn.className = 'ha-btn recording';
+    addEvent('#4caf7d','Aufnahme gestartet');
+    toast('Aufnahme gestartet');
+  } else {
+    dot.className = 'cam-rec-dot off';
+    recText.textContent = 'STOP';
+    btnText.textContent = 'Aufnahme starten';
+    statRec.textContent = 'Inaktiv';
+    statRec.className = 'stat-val';
+    statRec.style.color = '#666';
+    btn.className = 'ha-btn';
+    addEvent('#e24b4a','Aufnahme gestoppt');
+    toast('Aufnahme gestoppt');
+  }
+}
+
+function takeSnapshot(){
+  addEvent('#78b4f0','Snapshot gespeichert');
+  toast('Snapshot gespeichert: /config/www/snapshots/wjg_20260502_213407.jpg');
+}
+
+function toggleIR(){
+  irMode = irMode === 'night' ? 'day' : 'night';
+  document.getElementById('ir-text').textContent = `IR-LEDs: ${irMode === 'night' ? 'Nacht' : 'Tag'}`;
+  document.querySelector('.cam-ir').textContent = irMode === 'night' ? 'IR-Nacht' : 'Farbe';
+  const sky = document.getElementById('cam-sky');
+  sky.style.background = irMode === 'night' ? '#0d1520' : '#1a3a1a';
+  toast(`Modus: ${irMode === 'night' ? 'IR-Nachtsicht' : 'Farbsicht (Tag)'}`);
+}
+
+const ptzDirs = {up:'Oben',down:'Unten',left:'Links',right:'Rechts',zoom_in:'Zoom +',zoom_out:'Zoom −',stop:'Stop'};
+function ptz(dir){
+  addEvent('#f0a020',`PTZ: ${ptzDirs[dir]}`);
+  toast(`PTZ-Befehl: ${ptzDirs[dir]}`);
+  if(dir !== 'stop'){
+    const mb = document.getElementById('motion-bar');
+    mb.classList.remove('pulse-m');
+    void mb.offsetWidth;
+    mb.style.background = '#f0a020';
+    mb.classList.add('pulse-m');
+    setTimeout(()=>{mb.classList.remove('pulse-m');mb.style.background='#e24b4a';},3100);
+  }
+}
+
+function switchView(v){
+  ['live','rec','info'].forEach(id=>{
+    document.getElementById('view-'+id).style.display = id===v ? 'flex' : 'none';
+  });
+  document.querySelectorAll('.ha-tab').forEach((t,i)=>{
+    t.classList.toggle('active', ['live','rec','info'][i]===v);
+  });
+}
+
+setTimeout(()=>{
+  const mb = document.getElementById('motion-bar');
+  mb.classList.add('active');
+  setTimeout(()=>mb.classList.remove('active'),2000);
+},1800);
+</script>

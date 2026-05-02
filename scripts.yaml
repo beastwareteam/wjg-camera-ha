@@ -1,0 +1,151 @@
+licht_an:
+  alias: Licht AN
+  description: ""
+  mode: single
+  sequence:
+    - action: light.turn_on
+      target:
+        entity_id:
+          - light.wohnzimmer
+      data:
+        color_temp_kelvin: 4206
+        brightness_pct: 50
+    - action: light.turn_on
+      target:
+        entity_id:
+          - light.wohnzimmerdecke
+      data:
+        color_temp_kelvin: 4292
+        brightness_pct: 50
+
+arbeitslicht:
+  alias: Arbeitslicht
+  icon: mdi:desk-lamp
+  mode: single
+  sequence:
+    - action: light.turn_on
+      target:
+        entity_id: light.wohnzimmer
+      data:
+        color_temp_kelvin: 4614
+        brightness_pct: 100
+    - action: light.turn_on
+      target:
+        entity_id: light.wohnzimmerdecke
+      data:
+        color_temp_kelvin: 4418
+        brightness_pct: 100
+    - type: toggle
+      device_id: 8df09b170c6bd91d1ad30c3d942835b9
+      entity_id: bac2b3dc3c2776400ebf18d9d9f9844b
+      domain: switch
+
+kuschelicht:
+  alias: Kuschelicht
+  description: ""
+  icon: mdi:weather-night
+  mode: single
+  sequence:
+    - action: light.turn_on
+      target:
+        entity_id:
+          - light.wohnzimmer
+          - light.wohnzimmerdecke
+      data:
+        rgb_color:
+          - 0
+          - 0
+          - 255
+
+gute_nacht:
+  alias: Gute Nacht
+  description: ""
+  mode: single
+  sequence:
+    - type: turn_off
+      device_id: e3fe918123c8c0ef09a3c9f0a6e428a8
+      entity_id: 3e3801d049d5fc5159992468331175a7
+      domain: switch
+    - type: turn_off
+      device_id: 89bfec56bdbddd660b9b6a0273bc81b8
+      entity_id: d89a40d39bfb060b1a4e2b94bf451020
+      domain: switch
+    - type: turn_on
+      device_id: 01ab7d8bec83a45f0d66bcbcdf574c2b
+      entity_id: 018908048b8d9d2da275041f7f08f8dd
+      domain: light
+    - type: turn_on
+      device_id: eb6b69d697dc3511e1f4a93d336c02a9
+      entity_id: 18e2ffa212da5836a6a095dc5c5ea248
+      domain: switch
+    - action: light.turn_on
+      target:
+        entity_id:
+          - light.wohnzimmer
+      data:
+        brightness_pct: 15
+        color_temp_kelvin: 4188
+    - type: turn_off
+      device_id: 4fabf487c8e43d722d4f19fe45f95f30
+      entity_id: 18191411e09a0242f50a844d02431310
+      domain: light
+    - delay:
+        minutes: 5
+    - type: turn_off
+      device_id: 71e06f031a9183ada578c34ad9238b77
+      entity_id: 748d01cf70f31295c1fabb8d40720183
+      domain: light
+    - delay:
+        minutes: 15
+        seconds: 30
+    - type: turn_off
+      device_id: 01ab7d8bec83a45f0d66bcbcdf574c2b
+      entity_id: 018908048b8d9d2da275041f7f08f8dd
+      domain: light
+    - delay:
+        minutes: 10
+        seconds: 30
+    - type: turn_off
+      device_id: fcbfcc94ebadcafdd1bb9d74c4842d34
+      entity_id: 8a0db7fe542be6f83a418f73cf5eb233
+      domain: switch
+    - delay:
+        hours: 3
+        seconds: 30
+    - type: turn_off
+      device_id: eb6b69d697dc3511e1f4a93d336c02a9
+      entity_id: 18e2ffa212da5836a6a095dc5c5ea248
+      domain: switch
+
+pc_ratti_starten:
+  alias: Guten Morgen
+  description: ""
+  mode: single
+  sequence:
+    - action: switch.turn_on
+      target:
+        entity_id: switch.tm_beastpc
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ state_attr('sun.sun', 'elevation') > 0 }}"
+          sequence:
+            - action: switch.turn_on
+              target:
+                entity_id: switch.tm_rattihome
+        - conditions:
+            - condition: template
+              value_template: "{{ now().hour < 12 and state_attr('sun.sun', 'elevation') <= 0 }}"
+          sequence:
+            - action: light.turn_on
+              target:
+                entity_id: light.wohnzimmer
+            - wait_for_trigger:
+                - trigger: sun
+                  event: sunrise
+            - action: light.turn_off
+              target:
+                entity_id: light.wohnzimmer
+            - action: switch.turn_on
+              target:
+                entity_id: switch.tm_rattihome

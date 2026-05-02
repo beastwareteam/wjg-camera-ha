@@ -1,0 +1,6 @@
+pytest
+pytest-asyncio
+homeassistant
+numpy
+onvif-zeep
+ffmpeg-python

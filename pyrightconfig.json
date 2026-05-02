@@ -1,0 +1,24 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": [
+    "custom_components",
+    "tests"
+  ],
+  "extraPaths": [
+    ".",
+    "custom_components",
+    ".venv/Lib/site-packages"
+  ],
+  "typeCheckingMode": "basic",
+  "executionEnvironments": [
+    {
+      "root": ".",
+      "extraPaths": [
+        ".",
+        "custom_components",
+        ".venv/Lib/site-packages"
+      ]
+    }
+  ]
+}
