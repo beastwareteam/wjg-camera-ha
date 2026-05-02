@@ -48,7 +48,7 @@ DEFAULT_HTTP_RETRIES: Final = 1
 
 # Standard RTSP-Pfad für XM-basierte Kameras
 DEFAULT_RTSP_PATH: Final = (
-    "/user=admin&password=&channel=1&stream=0.sdp?real_stream"
+    "/user=admin&password=&channel=1&stream=1.sdp?real_stream"
 )
 DEFAULT_SNAPSHOT_PATH: Final = "/webcapture.jpg?command=snap&channel=1"
 

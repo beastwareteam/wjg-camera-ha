@@ -36,12 +36,12 @@ CONF_RTSP_PORT = "rtsp_port"
 CONF_SNAPSHOT_PATH = "snapshot_path"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_HTTP_RETRIES = 1
-DEFAULT_RTSP_PATH = "/user=admin&password=&channel=1&stream=0.sdp?real_stream"
+DEFAULT_RTSP_PATH = "/user=admin&password=&channel=1&stream=1.sdp?real_stream"
 DEFAULT_SNAPSHOT_PATH = "/webcapture.jpg?command=snap&channel=1"
 DEFAULT_XM_PORT = 34567
 COMMON_RTSP_PATHS = (
-    "/user=admin&password=&channel=1&stream=0.sdp?real_stream",
     "/user=admin&password=&channel=1&stream=1.sdp?real_stream",
+    "/user=admin&password=&channel=1&stream=0.sdp?real_stream",
     "/live/ch00_0",
     "/h264",
     "/stream0",
