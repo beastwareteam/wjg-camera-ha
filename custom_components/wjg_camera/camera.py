@@ -40,6 +40,8 @@ class WJGCamera(  # pyright: ignore[reportArgumentType]
     ) -> None:
         super().__init__(coordinator)
         Camera.__init__(self)
+        # RTSP over TCP ist in HA-Container-Umgebungen robuster als UDP.
+        self.stream_options["rtsp_transport"] = "tcp"
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_camera"
         self._attr_supported_features = (

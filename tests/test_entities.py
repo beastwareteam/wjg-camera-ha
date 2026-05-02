@@ -95,6 +95,7 @@ async def test_camera_entity_misc_properties_and_noop_controls():
 
     assert entity.motion_detection_enabled is True
     assert stream == coordinator.rtsp_url
+    assert entity.stream_options.get("rtsp_transport") == "tcp"
     assert device_info.get("manufacturer") is not None
     assert device_info.get("model") is not None
     assert device_info.get("configuration_url") is not None
