@@ -439,6 +439,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             has_video = await self.hass.async_add_executor_job(
                 self._rtsp_url_has_video,
                 rtsp_url,
+                4.0,
             )
             if has_video:
                 self._resolved_rtsp_url = rtsp_url
