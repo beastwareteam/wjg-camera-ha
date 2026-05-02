@@ -18,7 +18,16 @@ async def async_setup_entry(
 ) -> None:
     """Sensor-Entities fuer einen Config-Entry registrieren."""
     coordinator: WJGCameraCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([WJGFileListSensor(coordinator, entry)])
+    async_add_entities(
+        [
+            WJGFileListSensor(coordinator, entry),
+            WJGFirmwareSensor(coordinator, entry),
+            WJGSerialSensor(coordinator, entry),
+            WJGMacSensor(coordinator, entry),
+            WJGCameraTimeSensor(coordinator, entry),
+            WJGActiveStreamSensor(coordinator, entry),
+        ]
+    )
 
 
 class WJGFileListSensor(CoordinatorEntity[WJGCameraCoordinator], SensorEntity):
@@ -46,3 +55,86 @@ class WJGFileListSensor(CoordinatorEntity[WJGCameraCoordinator], SensorEntity):
         files = await self.coordinator.async_get_file_list()
         self._attr_native_value = len(files)
         self._attr_extra_state_attributes = {"files": files}
+
+
+class _WJGStaticSensor(CoordinatorEntity[WJGCameraCoordinator], SensorEntity):
+    """Basis für statische Text-Sensoren."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: WJGCameraCoordinator,
+        entry: ConfigEntry,
+        key: str,
+        name: str,
+        icon: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._key = key
+        self._attr_unique_id = f"{entry.entry_id}_{key}"
+        self._attr_name = name
+        self._attr_icon = icon
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
+
+
+class WJGFirmwareSensor(_WJGStaticSensor):
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry, "firmware", "Firmware", "mdi:chip")
+
+    @property
+    def native_value(self) -> str:
+        return self.coordinator.firmware_version or "–"
+
+
+class WJGSerialSensor(_WJGStaticSensor):
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator, entry, "serial", "Seriennummer", "mdi:barcode"
+        )
+
+    @property
+    def native_value(self) -> str:
+        return self.coordinator.serial_number or "–"
+
+
+class WJGMacSensor(_WJGStaticSensor):
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator, entry, "mac", "MAC-Adresse", "mdi:ethernet"
+        )
+
+    @property
+    def native_value(self) -> str:
+        return self.coordinator.mac_address or "–"
+
+
+class WJGCameraTimeSensor(_WJGStaticSensor):
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator, entry, "cam_time", "Kamera-Uhrzeit", "mdi:clock-outline"
+        )
+
+    @property
+    def native_value(self) -> str:
+        return self.coordinator.camera_time or "–"
+
+
+class WJGActiveStreamSensor(_WJGStaticSensor):
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(
+            coordinator,
+            entry,
+            "active_stream",
+            "Aktiver Stream",
+            "mdi:video-wireless",
+        )
+
+    @property
+    def native_value(self) -> str:
+        profile = self.coordinator.active_stream
+        return "Hauptstream (1080p)" if profile == "000" else "Substream (360p)"

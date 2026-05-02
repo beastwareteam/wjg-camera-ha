@@ -34,6 +34,29 @@ class DummyCoordinator:
     last_motion_time = 0.0
     rtsp_url = "rtsp://192.168.1.60:554/stream"
     snapshot_url = "http://192.168.1.60/snap.jpg"
+    tamper_detected = False
+    signal_loss = False
+    imaging = {
+        "Brightness": 50,
+        "Contrast": 50,
+        "Saturation": 50,
+        "Sharpness": 7,
+        "WdrMode": "OFF",
+        "WdrLevel": 50,
+        "IrCutFilter": "AUTO",
+        "ExposureMode": "AUTO",
+        "ExposurePriority": "LowNoise",
+        "WhiteBalance": "AUTO",
+        "CrGain": 50,
+        "CbGain": 50,
+    }
+    ptz_speed = 4
+    ptz_presets: list = []
+    active_stream = "000"
+    firmware_version = "V100.ONVIF"
+    serial_number = "NDUB10241204QMPM"
+    mac_address = "44:e6:4a:d2:c0:84"
+    camera_time = None
 
     def async_add_listener(self, update_callback):
         _ = update_callback
@@ -65,8 +88,8 @@ async def test_switch_platform_setup_adds_recording_switch():
 
     await setup_switch(_as_any(hass), _as_any(entry), _make_add_entities_callback(added))
 
-    assert len(added) == 1
-    assert isinstance(added[0], WJGRecordingSwitch)
+    assert len(added) == 3
+    assert any(isinstance(e, WJGRecordingSwitch) for e in added)
 
 
 @pytest.mark.asyncio
@@ -78,8 +101,8 @@ async def test_binary_sensor_platform_setup_adds_motion_sensor():
 
     await setup_binary_sensor(_as_any(hass), _as_any(entry), _make_add_entities_callback(added))
 
-    assert len(added) == 1
-    assert isinstance(added[0], WJGMotionSensor)
+    assert len(added) == 3
+    assert any(isinstance(e, WJGMotionSensor) for e in added)
 
 
 @pytest.mark.asyncio
@@ -91,8 +114,8 @@ async def test_button_platform_setup_adds_ptz_buttons():
 
     await setup_button(_as_any(hass), _as_any(entry), _make_add_entities_callback(added))
 
-    assert len(added) == 6
-    assert all(isinstance(entity, WJGPTZButton) for entity in added)
+    assert len(added) == 20
+    assert any(isinstance(e, WJGPTZButton) for e in added)
 
 
 @pytest.mark.asyncio
@@ -104,5 +127,5 @@ async def test_sensor_platform_setup_adds_file_list_sensor():
 
     await setup_sensor(_as_any(hass), _as_any(entry), _make_add_entities_callback(added))
 
-    assert len(added) == 1
-    assert isinstance(added[0], WJGFileListSensor)
+    assert len(added) == 6
+    assert any(isinstance(e, WJGFileListSensor) for e in added)

@@ -1,4 +1,437 @@
-# WJG XM-3820 Kamera Dashboard für Home Assistant Lovelace
+# WJG XM-3820 Kamera Dashboard – vollständig (v2.0)
+# ============================================================
+# Einfügen unter: Einstellungen → Dashboards → Neues Dashboard
+# Datei nach /config/lovelace/kamera.yaml kopieren
+
+title: "WJG Kamera"
+path: wjg-kamera
+icon: mdi:cctv
+
+views:
+
+  # ════════════════════════════════════════════════════════════
+  # TAB 1: Live & Übersicht
+  # ════════════════════════════════════════════════════════════
+  - title: Live
+    path: live
+    icon: mdi:video
+    badges:
+      - entity: binary_sensor.wjg_xm_3820_bewegung
+        name: Bewegung
+      - entity: binary_sensor.wjg_xm_3820_manipulation
+        name: Tamper
+      - entity: binary_sensor.wjg_xm_3820_signalverlust
+        name: Signal
+      - entity: switch.wjg_xm_3820_aufnahme
+        name: Aufnahme
+    cards:
+      - type: picture-glance
+        title: WJG XM-3820 Live
+        camera_image: camera.wjg_xm_3820
+        camera_view: live
+        entities:
+          - entity: binary_sensor.wjg_xm_3820_bewegung
+            icon: mdi:motion-sensor
+          - entity: binary_sensor.wjg_xm_3820_manipulation
+            icon: mdi:shield-alert
+          - entity: switch.wjg_xm_3820_aufnahme
+            icon: mdi:record-circle
+
+      - type: horizontal-stack
+        cards:
+          - type: entity
+            entity: switch.wjg_xm_3820_aufnahme
+            name: Aufnahme
+            icon: mdi:record-circle
+            state_color: true
+            tap_action:
+              action: toggle
+          - type: entity
+            entity: binary_sensor.wjg_xm_3820_bewegung
+            name: Bewegung
+            state_color: true
+          - type: entity
+            entity: binary_sensor.wjg_xm_3820_manipulation
+            name: Tamper
+            state_color: true
+          - type: entity
+            entity: binary_sensor.wjg_xm_3820_signalverlust
+            name: Signal
+            state_color: true
+
+      - type: horizontal-stack
+        cards:
+          - type: button
+            name: Snapshot
+            icon: mdi:camera-iris
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_snapshot
+          - type: button
+            name: Aufnahme EIN
+            icon: mdi:record
+            tap_action:
+              action: call-service
+              service: switch.turn_on
+              target:
+                entity_id: switch.wjg_xm_3820_aufnahme
+          - type: button
+            name: Aufnahme AUS
+            icon: mdi:stop
+            tap_action:
+              action: call-service
+              service: switch.turn_off
+              target:
+                entity_id: switch.wjg_xm_3820_aufnahme
+
+      - type: history-graph
+        title: Verlauf (24h)
+        hours_to_show: 24
+        entities:
+          - entity: binary_sensor.wjg_xm_3820_bewegung
+            name: Bewegung
+          - entity: switch.wjg_xm_3820_aufnahme
+            name: Aufnahme
+          - entity: binary_sensor.wjg_xm_3820_manipulation
+            name: Tamper
+
+  # ════════════════════════════════════════════════════════════
+  # TAB 2: PTZ & Presets
+  # ════════════════════════════════════════════════════════════
+  - title: PTZ
+    path: ptz
+    icon: mdi:camera-control
+    cards:
+      - type: grid
+        title: PTZ-Steuerung
+        columns: 3
+        square: true
+        cards:
+          - type: button
+            icon: mdi:arrow-up-bold-circle
+            name: Hoch
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_up
+          - type: button
+            icon: mdi:home-map-marker
+            name: Home
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_home
+          - type: button
+            icon: mdi:magnify-plus
+            name: Zoom +
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_zoom_in
+          - type: button
+            icon: mdi:arrow-left-bold-circle
+            name: Links
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_left
+          - type: button
+            icon: mdi:stop-circle
+            name: Stopp
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_stopp
+          - type: button
+            icon: mdi:arrow-right-bold-circle
+            name: Rechts
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_right
+          - type: button
+            icon: mdi:arrow-down-bold-circle
+            name: Runter
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_down
+          - type: button
+            icon: mdi:home-edit
+            name: Home setzen
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_home_setzen
+          - type: button
+            icon: mdi:magnify-minus
+            name: Zoom -
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_zoom_out
+
+      - type: entities
+        title: PTZ-Geschwindigkeit
+        entities:
+          - entity: number.wjg_xm_3820_ptz_geschwindigkeit
+            name: Geschwindigkeit (1–8)
+
+      - type: entities
+        title: Preset anfahren
+        entities:
+          - entity: select.wjg_xm_3820_ptz_preset_anfahren
+            name: Preset wählen & anfahren
+
+      - type: grid
+        title: Presets speichern
+        columns: 4
+        square: false
+        cards:
+          - type: button
+            name: Preset 1 speichern
+            icon: mdi:map-marker-plus
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_preset_1_speichern
+          - type: button
+            name: Preset 2 speichern
+            icon: mdi:map-marker-plus
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_preset_2_speichern
+          - type: button
+            name: Preset 3 speichern
+            icon: mdi:map-marker-plus
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_preset_3_speichern
+          - type: button
+            name: Preset 4 speichern
+            icon: mdi:map-marker-plus
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_preset_4_speichern
+
+      - type: grid
+        title: Presets direkt anfahren
+        columns: 4
+        square: false
+        cards:
+          - type: button
+            name: Preset 1
+            icon: mdi:map-marker-radius
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_preset_1_anfahren
+          - type: button
+            name: Preset 2
+            icon: mdi:map-marker-radius
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_preset_2_anfahren
+          - type: button
+            name: Preset 3
+            icon: mdi:map-marker-radius
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_preset_3_anfahren
+          - type: button
+            name: Preset 4
+            icon: mdi:map-marker-radius
+            tap_action:
+              action: call-service
+              service: button.press
+              target:
+                entity_id: button.wjg_xm_3820_ptz_preset_4_anfahren
+
+  # ════════════════════════════════════════════════════════════
+  # TAB 3: Bildeinstellungen
+  # ════════════════════════════════════════════════════════════
+  - title: Bild
+    path: bild
+    icon: mdi:image-edit
+    cards:
+      - type: entities
+        title: IR & Nachtmodus
+        entities:
+          - entity: switch.wjg_xm_3820_ir_cut_nachtmodus
+            name: IR-Cut manuell (Nacht)
+          - entity: select.wjg_xm_3820_ir_modus
+            name: IR-Modus (Auto/Tag/Nacht)
+
+      - type: entities
+        title: Bildparameter
+        entities:
+          - entity: number.wjg_xm_3820_helligkeit
+            name: Helligkeit
+          - entity: number.wjg_xm_3820_kontrast
+            name: Kontrast
+          - entity: number.wjg_xm_3820_saettigung
+            name: Sättigung
+          - entity: number.wjg_xm_3820_schaerfe
+            name: Schärfe
+
+      - type: entities
+        title: WDR (Weitbereichsdynamik)
+        entities:
+          - entity: switch.wjg_xm_3820_wdr
+            name: WDR aktiv
+          - entity: number.wjg_xm_3820_wdr_starke
+            name: WDR-Stärke
+
+      - type: entities
+        title: Belichtung
+        entities:
+          - entity: select.wjg_xm_3820_belichtungs_modus
+            name: Modus
+          - entity: select.wjg_xm_3820_belichtungs_prioritat
+            name: Priorität
+
+      - type: entities
+        title: Weißabgleich
+        entities:
+          - entity: select.wjg_xm_3820_weissabgleich
+            name: Modus
+          - entity: number.wjg_xm_3820_weissabgleich_crgain
+            name: CrGain
+          - entity: number.wjg_xm_3820_weissabgleich_cbgain
+            name: CbGain
+
+  # ════════════════════════════════════════════════════════════
+  # TAB 4: Stream & Qualität
+  # ════════════════════════════════════════════════════════════
+  - title: Stream
+    path: stream
+    icon: mdi:video-wireless
+    cards:
+      - type: entities
+        title: Stream-Konfiguration
+        entities:
+          - entity: select.wjg_xm_3820_stream_qualitat
+            name: Stream-Qualität
+          - entity: sensor.wjg_xm_3820_aktiver_stream
+            name: Aktiv
+
+      - type: entities
+        title: Verbindungsdetails
+        entities:
+          - entity: camera.wjg_xm_3820
+            name: Protokoll
+            attribute: protocol
+            icon: mdi:protocol
+          - entity: camera.wjg_xm_3820
+            name: RTSP-URL
+            attribute: rtsp_url
+            icon: mdi:video-wireless
+
+  # ════════════════════════════════════════════════════════════
+  # TAB 5: Sicherheit & Ereignisse
+  # ════════════════════════════════════════════════════════════
+  - title: Sicherheit
+    path: sicherheit
+    icon: mdi:shield-check
+    cards:
+      - type: entities
+        title: Sensor-Status
+        entities:
+          - entity: binary_sensor.wjg_xm_3820_bewegung
+            name: Bewegungserkennung
+          - entity: binary_sensor.wjg_xm_3820_manipulation
+            name: Kamera-Manipulation
+          - entity: binary_sensor.wjg_xm_3820_signalverlust
+            name: Videosignal-Verlust
+
+      - type: logbook
+        title: Kamera-Ereignisse (48h)
+        hours_to_show: 48
+        entities:
+          - camera.wjg_xm_3820
+          - binary_sensor.wjg_xm_3820_bewegung
+          - binary_sensor.wjg_xm_3820_manipulation
+          - switch.wjg_xm_3820_aufnahme
+
+      - type: history-graph
+        title: Sicherheits-Verlauf (24h)
+        hours_to_show: 24
+        entities:
+          - entity: binary_sensor.wjg_xm_3820_bewegung
+            name: Bewegung
+          - entity: binary_sensor.wjg_xm_3820_manipulation
+            name: Tamper
+          - entity: binary_sensor.wjg_xm_3820_signalverlust
+            name: Signal
+
+  # ════════════════════════════════════════════════════════════
+  # TAB 6: System & Aufnahmen
+  # ════════════════════════════════════════════════════════════
+  - title: System
+    path: system
+    icon: mdi:cog-outline
+    cards:
+      - type: entities
+        title: Kamera-Informationen
+        entities:
+          - entity: sensor.wjg_xm_3820_firmware
+            name: Firmware
+            icon: mdi:chip
+          - entity: sensor.wjg_xm_3820_seriennummer
+            name: Seriennummer
+          - entity: sensor.wjg_xm_3820_mac_adresse
+            name: MAC-Adresse
+          - entity: sensor.wjg_xm_3820_kamera_uhrzeit
+            name: Kamera-Uhrzeit
+
+      - type: entities
+        title: SD-Karte
+        entities:
+          - entity: sensor.wjg_xm_3820_dateiliste
+            name: Anzahl Aufnahmen
+
+      - type: history-graph
+        title: Aufnahme-Aktivität (24h)
+        hours_to_show: 24
+        entities:
+          - entity: switch.wjg_xm_3820_aufnahme
+            name: Aufnahme
+
+      - type: entities
+        title: System-Aktionen
+        entities:
+          - type: button
+            entity: button.wjg_xm_3820_kamera_neu_starten
+            name: Kamera neu starten
+            icon: mdi:restart
+          - type: button
+            entity: button.wjg_xm_3820_ntp_synchronisieren
+            name: NTP synchronisieren
+            icon: mdi:clock-check
+
 # ============================================================
 # Einfügen unter: Einstellungen → Dashboards → Neues Dashboard
 # oder in /config/lovelace/dashboards/kamera.yaml

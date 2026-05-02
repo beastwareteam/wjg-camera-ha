@@ -21,7 +21,13 @@ async def async_setup_entry(
 ) -> None:
     """Binary-Sensor-Entities fuer einen Config-Entry registrieren."""
     coordinator: WJGCameraCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([WJGMotionSensor(coordinator, entry)])
+    async_add_entities(
+        [
+            WJGMotionSensor(coordinator, entry),
+            WJGTamperSensor(coordinator, entry),
+            WJGSignalLossSensor(coordinator, entry),
+        ]
+    )
 
 
 class WJGMotionSensor(CoordinatorEntity[WJGCameraCoordinator], BinarySensorEntity):
@@ -51,3 +57,47 @@ class WJGMotionSensor(CoordinatorEntity[WJGCameraCoordinator], BinarySensorEntit
     def extra_state_attributes(self) -> dict[str, float]:
         """Zeitpunkt der letzten erkannten Bewegung exponieren."""
         return {"last_motion": self.coordinator.last_motion_time}
+
+
+class WJGTamperSensor(CoordinatorEntity[WJGCameraCoordinator], BinarySensorEntity):
+    """Kamera-Manipulations-Detektor."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Manipulation"
+    _attr_device_class = BinarySensorDeviceClass.TAMPER
+    _attr_icon = "mdi:shield-alert"
+
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_tamper"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.tamper_detected
+
+
+class WJGSignalLossSensor(CoordinatorEntity[WJGCameraCoordinator], BinarySensorEntity):
+    """Videosignal-Verlust-Sensor."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Signalverlust"
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_icon = "mdi:video-off"
+
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_signal_loss"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.signal_loss

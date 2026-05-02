@@ -21,7 +21,13 @@ async def async_setup_entry(
 ) -> None:
     """Switch-Entities fuer einen Config-Entry registrieren."""
     coordinator: WJGCameraCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([WJGRecordingSwitch(coordinator, entry)])
+    async_add_entities(
+        [
+            WJGRecordingSwitch(coordinator, entry),
+            WJGWDRSwitch(coordinator, entry),
+            WJGIRCutSwitch(coordinator, entry),
+        ]
+    )
 
 class WJGRecordingSwitch(  # pyright: ignore[reportAbstractUsage]
     CoordinatorEntity[WJGCameraCoordinator],
@@ -72,3 +78,79 @@ class WJGRecordingSwitch(  # pyright: ignore[reportAbstractUsage]
     def turn_off(self, **kwargs: Any) -> None:
         """Sync-API bewusst nicht unterstuetzen."""
         raise NotImplementedError("Use async_turn_off instead")
+
+
+class WJGWDRSwitch(  # pyright: ignore[reportAbstractUsage]
+    CoordinatorEntity[WJGCameraCoordinator],
+    SwitchEntity,
+):
+    """Wide Dynamic Range (WDR) ein-/ausschalten."""
+
+    _attr_has_entity_name = True
+    _attr_name = "WDR"
+    _attr_icon = "mdi:brightness-7"
+
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_wdr"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
+
+    @property
+    def is_on(self) -> bool:
+        return bool(self.coordinator.imaging.get("wdr_enabled", False))
+
+    async def async_turn_on(self, **_: Any) -> None:
+        await self.coordinator.async_set_imaging_setting("wdr_enabled", True)
+        self.async_write_ha_state()
+
+    def turn_on(self, **kwargs: Any) -> None:
+        raise NotImplementedError
+
+    async def async_turn_off(self, **_: Any) -> None:
+        await self.coordinator.async_set_imaging_setting("wdr_enabled", False)
+        self.async_write_ha_state()
+
+    def turn_off(self, **kwargs: Any) -> None:
+        raise NotImplementedError
+
+
+class WJGIRCutSwitch(  # pyright: ignore[reportAbstractUsage]
+    CoordinatorEntity[WJGCameraCoordinator],
+    SwitchEntity,
+):
+    """IR-Cut-Filter manuell ein-/ausschalten (Nacht=ON, Tag=OFF)."""
+
+    _attr_has_entity_name = True
+    _attr_name = "IR-Cut (Nachtmodus)"
+    _attr_icon = "mdi:weather-night"
+
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_ir_cut"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.imaging.get("ir_cut", "AUTO") == "ON"
+
+    async def async_turn_on(self, **_: Any) -> None:
+        await self.coordinator.async_set_imaging_setting("ir_cut", "ON")
+        self.async_write_ha_state()
+
+    def turn_on(self, **kwargs: Any) -> None:
+        raise NotImplementedError
+
+    async def async_turn_off(self, **_: Any) -> None:
+        await self.coordinator.async_set_imaging_setting("ir_cut", "OFF")
+        self.async_write_ha_state()
+
+    def turn_off(self, **kwargs: Any) -> None:
+        raise NotImplementedError

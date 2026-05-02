@@ -9,9 +9,14 @@ Unterstützt: RTSP, HTTP Snapshot, XM SDK (Port 34567), ONVIF.
 from __future__ import annotations
 
 import asyncio
+import base64
+import datetime
+import hashlib
 import inspect
 import json
 import logging
+import os
+import re
 import socket
 import struct
 import time
@@ -279,6 +284,24 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._last_motion_time: float = 0
         self._resolved_rtsp_url: str | None = None
         self._onvif = None
+        # ONVIF direkt
+        self.onvif_port: int = entry.data.get("onvif_port", 8899)
+        # PTZ
+        self._ptz_speed: int = 5
+        self._ptz_presets: dict[str, str] = {}  # token -> name
+        # Imaging
+        self._imaging: dict[str, Any] = {}
+        # Sensoren
+        self._tamper: bool = False
+        self._signal_loss: bool = False
+        # Stream
+        self._active_stream: str = "000"  # "000"=main, "001"=sub
+        # System
+        self._fw_version: str = ""
+        self._serial_number: str = ""
+        self._mac_address: str = ""
+        self._camera_time: str = ""
+        self._update_count: int = 0
         if self.protocol == "onvif":
             try:
                 from onvif import ONVIFCamera
@@ -498,6 +521,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         await self.async_resolve_rtsp_path()
 
+        # Einmalig Geräte-Infos und Bildeinstellungen laden
+        try:
+            await self.async_fetch_device_info()
+        except Exception as exc:
+            _LOGGER.debug("Geräte-Info nicht abrufbar: %s", exc)
+        try:
+            await self.async_fetch_imaging_settings()
+        except Exception as exc:
+            _LOGGER.debug("Imaging-Einstellungen nicht abrufbar: %s", exc)
+        try:
+            await self.async_ptz_get_presets()
+        except Exception as exc:
+            _LOGGER.debug("PTZ-Presets nicht abrufbar: %s", exc)
+
         await self.async_refresh()
 
     def _setup_xm(self) -> None:
@@ -531,6 +568,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Kamera-Status aktualisieren."""
+        self._update_count += 1
         data: dict[str, Any] = {
             "available": False,
             "recording": self._recording,
@@ -582,6 +620,18 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             except Exception as e:
                 _LOGGER.debug("XM Keepalive fehlgeschlagen: %s — reconnect", e)
                 await self.hass.async_add_executor_job(self._setup_xm)
+
+        # Alle 60 Sekunden: Kamerazeit + Imaging refresh
+        if self._update_count % 6 == 0:
+            try:
+                await self.async_fetch_camera_time()
+            except Exception:
+                pass
+            if self._update_count % 30 == 0:
+                try:
+                    await self.async_fetch_imaging_settings()
+                except Exception:
+                    pass
 
         return data
 
@@ -711,6 +761,458 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             data = await self._async_http_get_data(url, timeout_seconds=3)
             return isinstance(data, (bytes, bytearray))
         return False
+
+    # ── ONVIF Direct-SOAP helper ────────────────────────────────────────────
+
+    def _wsse_header(self) -> str:
+        nonce = os.urandom(16)
+        created = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        pwd = (self.password or "").encode("utf-8")
+        digest = base64.b64encode(
+            hashlib.sha1(nonce + created.encode() + pwd).digest()
+        ).decode()
+        nonce_b64 = base64.b64encode(nonce).decode()
+        return (
+            '<wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01'
+            '/oasis-200401-wss-wssecurity-secext-1.0.xsd">'
+            "<wsse:UsernameToken>"
+            f"<wsse:Username>{self.username}</wsse:Username>"
+            f'<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01'
+            f'/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">'
+            f"{digest}</wsse:Password>"
+            f'<wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01'
+            f'/oasis-200401-wss-wssecurity-secext-1.0.xsd#Base64Binary">'
+            f"{nonce_b64}</wsse:Nonce>"
+            f'<wsu:Created xmlns:wsu="http://docs.oasis-open.org/wss/2004/01'
+            f'/oasis-200401-wss-wssecurity-utility-1.0.xsd">{created}</wsu:Created>'
+            "</wsse:UsernameToken></wsse:Security>"
+        )
+
+    async def _onvif_soap(
+        self, service_path: str, body: str, use_auth: bool = True
+    ) -> str:
+        """ONVIF SOAP-Anfrage direkt via HTTP."""
+        if not self._session:
+            return ""
+        auth_header = self._wsse_header() if use_auth else ""
+        envelope = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
+            ' xmlns:tds="http://www.onvif.org/ver10/device/wsdl"'
+            ' xmlns:trt="http://www.onvif.org/ver10/media/wsdl"'
+            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
+            ' xmlns:tt="http://www.onvif.org/ver10/schema"'
+            ' xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl"'
+            ' xmlns:tev="http://www.onvif.org/ver10/events/wsdl">'
+            f"<s:Header>{auth_header}</s:Header>"
+            f"<s:Body>{body}</s:Body>"
+            "</s:Envelope>"
+        )
+        url = f"http://{self.host}:{self.onvif_port}{service_path}"
+        try:
+            async with async_timeout.timeout(5):
+                async with self._session.post(
+                    url,
+                    data=envelope.encode("utf-8"),
+                    headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+                ) as resp:
+                    return await resp.text()
+        except Exception as exc:
+            _LOGGER.debug("ONVIF SOAP [%s] fehlgeschlagen: %s", service_path, exc)
+            return ""
+
+    @staticmethod
+    def _xml_text(text: str, tag: str) -> str:
+        """Ersten Textwert eines einfachen XML-Tags extrahieren."""
+        m = re.search(rf"<[^>]*{re.escape(tag)}[^>/]*>([^<]*)<", text)
+        return m.group(1).strip() if m else ""
+
+    @staticmethod
+    def _xml_all(text: str, tag: str) -> list[str]:
+        """Alle Textwerte eines XML-Tags extrahieren."""
+        return [
+            m.group(1).strip()
+            for m in re.finditer(rf"<[^>]*{re.escape(tag)}[^>/]*>([^<]*)<", text)
+        ]
+
+    # ── PTZ ─────────────────────────────────────────────────────────────────
+
+    @property
+    def ptz_speed(self) -> int:
+        return self._ptz_speed
+
+    async def async_set_ptz_speed(self, speed: int) -> None:
+        self._ptz_speed = max(1, min(8, speed))
+
+    @property
+    def ptz_presets(self) -> dict[str, str]:
+        return dict(self._ptz_presets)
+
+    async def async_ptz_home(self) -> bool:
+        """PTZ-Heimposition anfahren (ONVIF GoToHomePosition)."""
+        spd = f"{self._ptz_speed / 8:.2f}"
+        resp = await self._onvif_soap(
+            "/onvif/PTZ",
+            f"<tptz:GotoHomePosition>"
+            f"<tptz:ProfileToken>000</tptz:ProfileToken>"
+            f'<tptz:Speed><tt:PanTilt x="{spd}" y="{spd}"/></tptz:Speed>'
+            f"</tptz:GotoHomePosition>",
+        )
+        return "GotoHomePositionResponse" in resp
+
+    async def async_ptz_set_home(self) -> bool:
+        """Aktuelle Position als Heimposition speichern."""
+        resp = await self._onvif_soap(
+            "/onvif/PTZ",
+            "<tptz:SetHomePosition>"
+            "<tptz:ProfileToken>000</tptz:ProfileToken>"
+            "</tptz:SetHomePosition>",
+        )
+        return "SetHomePositionResponse" in resp
+
+    async def async_ptz_stop(self) -> bool:
+        """Laufende PTZ-Bewegung sofort stoppen."""
+        resp = await self._onvif_soap(
+            "/onvif/PTZ",
+            "<tptz:Stop>"
+            "<tptz:ProfileToken>000</tptz:ProfileToken>"
+            "<tptz:PanTilt>true</tptz:PanTilt>"
+            "<tptz:Zoom>true</tptz:Zoom>"
+            "</tptz:Stop>",
+        )
+        return "StopResponse" in resp
+
+    async def async_ptz_get_presets(self) -> dict[str, str]:
+        """Alle PTZ-Presets laden (token -> name)."""
+        resp = await self._onvif_soap(
+            "/onvif/PTZ",
+            "<tptz:GetPresets><tptz:ProfileToken>000</tptz:ProfileToken></tptz:GetPresets>",
+        )
+        presets: dict[str, str] = {}
+        for m in re.finditer(
+            r'<[^>]*Preset[^>]*token=["\']([^"\']+)["\'][^>]*>(.*?)</[^>]*Preset>',
+            resp,
+            re.DOTALL,
+        ):
+            token = m.group(1)
+            nm = re.search(r"<[^>]*Name[^>]*>([^<]+)<", m.group(2))
+            presets[token] = nm.group(1) if nm else f"Preset {token}"
+        self._ptz_presets = presets
+        return presets
+
+    async def async_ptz_goto_preset(self, token: str) -> bool:
+        """Preset anfahren."""
+        spd = f"{self._ptz_speed / 8:.2f}"
+        resp = await self._onvif_soap(
+            "/onvif/PTZ",
+            f"<tptz:GotoPreset>"
+            f"<tptz:ProfileToken>000</tptz:ProfileToken>"
+            f"<tptz:PresetToken>{token}</tptz:PresetToken>"
+            f'<tptz:Speed><tt:PanTilt x="{spd}" y="{spd}"/>'
+            f'<tt:Zoom x="{spd}"/></tptz:Speed>'
+            f"</tptz:GotoPreset>",
+        )
+        return "GotoPresetResponse" in resp
+
+    async def async_ptz_set_preset(
+        self, name: str, token: str | None = None
+    ) -> str | None:
+        """Aktuelle Position als Preset speichern. Gibt neuen Token zurück."""
+        tok_xml = f"<tptz:PresetToken>{token}</tptz:PresetToken>" if token else ""
+        resp = await self._onvif_soap(
+            "/onvif/PTZ",
+            f"<tptz:SetPreset>"
+            f"<tptz:ProfileToken>000</tptz:ProfileToken>"
+            f"<tptz:PresetName>{name}</tptz:PresetName>"
+            f"{tok_xml}"
+            f"</tptz:SetPreset>",
+        )
+        new_token = self._xml_text(resp, "PresetToken")
+        if new_token:
+            self._ptz_presets[new_token] = name
+            return new_token
+        return None
+
+    async def async_ptz_delete_preset(self, token: str) -> bool:
+        """Preset löschen."""
+        resp = await self._onvif_soap(
+            "/onvif/PTZ",
+            f"<tptz:RemovePreset>"
+            f"<tptz:ProfileToken>000</tptz:ProfileToken>"
+            f"<tptz:PresetToken>{token}</tptz:PresetToken>"
+            f"</tptz:RemovePreset>",
+        )
+        ok = "RemovePresetResponse" in resp
+        if ok:
+            self._ptz_presets.pop(token, None)
+        return ok
+
+    # ── Imaging ─────────────────────────────────────────────────────────────
+
+    @property
+    def imaging(self) -> dict[str, Any]:
+        return dict(self._imaging)
+
+    async def async_fetch_imaging_settings(self) -> bool:
+        """Bildeinstellungen von Kamera laden und in self._imaging speichern."""
+        resp = await self._onvif_soap(
+            "/onvif/Imaging",
+            "<timg:GetImagingSettings>"
+            "<timg:VideoSourceToken>000</timg:VideoSourceToken>"
+            "</timg:GetImagingSettings>",
+        )
+        if not resp or "ImagingSettings" not in resp:
+            return False
+
+        def _f(tag: str, default: float) -> float:
+            v = self._xml_text(resp, tag)
+            try:
+                return float(v)
+            except (ValueError, TypeError):
+                return default
+
+        def _s(tag: str, default: str) -> str:
+            v = self._xml_text(resp, tag)
+            return v if v else default
+
+        # WDR nested
+        wdr_m = re.search(
+            r"<[^>]*WideDynamicRange[^>]*>(.*?)</[^>]*WideDynamicRange>",
+            resp,
+            re.DOTALL,
+        )
+        wdr_enabled = False
+        wdr_level = 50.0
+        if wdr_m:
+            wdr_content = wdr_m.group(1)
+            mode_m = re.search(r"<[^>]*Mode[^>]*>([^<]+)<", wdr_content)
+            if mode_m:
+                wdr_enabled = mode_m.group(1).strip() == "ON"
+            level_m = re.search(r"<[^>]*Level[^>]*>([^<]+)<", wdr_content)
+            if level_m:
+                try:
+                    wdr_level = float(level_m.group(1))
+                except ValueError:
+                    pass
+
+        # WhiteBalance nested
+        wb_mode = "AUTO"
+        wb_cr = 50.0
+        wb_cb = 50.0
+        wb_m = re.search(
+            r"<[^>]*WhiteBalance[^>]*>(.*?)</[^>]*WhiteBalance>",
+            resp,
+            re.DOTALL,
+        )
+        if wb_m:
+            wb_content = wb_m.group(1)
+            mode_m2 = re.search(r"<[^>]*Mode[^>]*>([^<]+)<", wb_content)
+            if mode_m2:
+                wb_mode = mode_m2.group(1).strip()
+            cr_m = re.search(r"<[^>]*CrGain[^>]*>([^<]+)<", wb_content)
+            if cr_m:
+                try:
+                    wb_cr = float(cr_m.group(1))
+                except ValueError:
+                    pass
+            cb_m = re.search(r"<[^>]*CbGain[^>]*>([^<]+)<", wb_content)
+            if cb_m:
+                try:
+                    wb_cb = float(cb_m.group(1))
+                except ValueError:
+                    pass
+
+        # Exposure nested
+        exp_mode = "AUTO"
+        exp_prio = "LowNoise"
+        exp_time = 50.0
+        exp_gain = 50.0
+        exp_m = re.search(
+            r"<[^>]*Exposure[^>]*>(.*?)</[^>]*Exposure>", resp, re.DOTALL
+        )
+        if exp_m:
+            exp_content = exp_m.group(1)
+            mode_m3 = re.search(r"<[^>]*Mode[^>]*>([^<]+)<", exp_content)
+            if mode_m3:
+                exp_mode = mode_m3.group(1).strip()
+            prio_m = re.search(r"<[^>]*Priority[^>]*>([^<]+)<", exp_content)
+            if prio_m:
+                exp_prio = prio_m.group(1).strip()
+            et_m = re.search(r"<[^>]*ExposureTime[^>]*>([^<]+)<", exp_content)
+            if et_m:
+                try:
+                    exp_time = float(et_m.group(1))
+                except ValueError:
+                    pass
+            gain_m = re.search(r"<[^>]*Gain[^>]*>([^<]+)<", exp_content)
+            if gain_m:
+                try:
+                    exp_gain = float(gain_m.group(1))
+                except ValueError:
+                    pass
+
+        # BLC
+        blc_m = re.search(
+            r"<[^>]*BacklightCompensation[^>]*>(.*?)</[^>]*BacklightCompensation>",
+            resp,
+            re.DOTALL,
+        )
+        blc_mode = "OFF"
+        if blc_m:
+            blc_mode_m = re.search(r"<[^>]*Mode[^>]*>([^<]+)<", blc_m.group(1))
+            if blc_mode_m:
+                blc_mode = blc_mode_m.group(1).strip()
+
+        self._imaging = {
+            "brightness": _f("Brightness", 50),
+            "contrast": _f("Contrast", 50),
+            "saturation": _f("ColorSaturation", 50),
+            "sharpness": _f("Sharpness", 0),
+            "ir_cut": _s("IrCutFilter", "AUTO"),
+            "wdr_enabled": wdr_enabled,
+            "wdr_level": wdr_level,
+            "wb_mode": wb_mode,
+            "wb_cr": wb_cr,
+            "wb_cb": wb_cb,
+            "exposure_mode": exp_mode,
+            "exposure_priority": exp_prio,
+            "exposure_time": exp_time,
+            "gain": exp_gain,
+            "backlight": blc_mode,
+        }
+        return True
+
+    async def async_set_imaging_setting(self, key: str, value: Any) -> bool:
+        """Einzelne Bildeinstellung setzen und an Kamera senden."""
+        if not self._imaging:
+            await self.async_fetch_imaging_settings()
+        self._imaging[key] = value
+
+        img = self._imaging
+        wdr_mode = "ON" if img.get("wdr_enabled", False) else "OFF"
+        ir_cut = img.get("ir_cut", "AUTO")
+        exp_mode = img.get("exposure_mode", "AUTO")
+        exp_prio = img.get("exposure_priority", "LowNoise")
+        wb_mode = img.get("wb_mode", "AUTO")
+        blc = img.get("backlight", "OFF")
+
+        body = (
+            "<timg:SetImagingSettings>"
+            "<timg:VideoSourceToken>000</timg:VideoSourceToken>"
+            "<timg:ImagingSettings>"
+            f"<tt:BacklightCompensation><tt:Mode>{blc}</tt:Mode></tt:BacklightCompensation>"
+            f"<tt:Brightness>{img.get('brightness', 50)}</tt:Brightness>"
+            f"<tt:ColorSaturation>{img.get('saturation', 50)}</tt:ColorSaturation>"
+            f"<tt:Contrast>{img.get('contrast', 50)}</tt:Contrast>"
+            f"<tt:Exposure><tt:Mode>{exp_mode}</tt:Mode>"
+            f"<tt:Priority>{exp_prio}</tt:Priority></tt:Exposure>"
+            f"<tt:Focus><tt:AutoFocusMode>AUTO</tt:AutoFocusMode></tt:Focus>"
+            f"<tt:IrCutFilter>{ir_cut}</tt:IrCutFilter>"
+            f"<tt:Sharpness>{img.get('sharpness', 0)}</tt:Sharpness>"
+            f"<tt:WideDynamicRange><tt:Mode>{wdr_mode}</tt:Mode>"
+            f"<tt:Level>{img.get('wdr_level', 50)}</tt:Level></tt:WideDynamicRange>"
+            f"<tt:WhiteBalance><tt:Mode>{wb_mode}</tt:Mode>"
+            f"<tt:CrGain>{img.get('wb_cr', 50)}</tt:CrGain>"
+            f"<tt:CbGain>{img.get('wb_cb', 50)}</tt:CbGain></tt:WhiteBalance>"
+            "</timg:ImagingSettings>"
+            "</timg:SetImagingSettings>"
+        )
+        resp = await self._onvif_soap("/onvif/Imaging", body)
+        return "SetImagingSettingsResponse" in resp
+
+    # ── Sensoren (Tamper, Signal Loss) ──────────────────────────────────────
+
+    @property
+    def tamper_detected(self) -> bool:
+        return self._tamper
+
+    @property
+    def signal_loss(self) -> bool:
+        return self._signal_loss
+
+    # ── Stream-Profil ────────────────────────────────────────────────────────
+
+    @property
+    def active_stream(self) -> str:
+        return self._active_stream
+
+    async def async_set_stream_profile(self, profile_token: str) -> None:
+        """Aktiven RTSP-Stream-Profil wechseln (000=main, 001=sub)."""
+        self._active_stream = profile_token
+        stream_type = "0" if profile_token == "000" else "1"
+        authority = self._credential_authorities()[0]
+        self._resolved_rtsp_url = (
+            f"rtsp://{authority}{self.host}:{self.rtsp_port}/streamtype={stream_type}"
+        )
+        self.async_update_listeners()
+
+    # ── System ───────────────────────────────────────────────────────────────
+
+    @property
+    def firmware_version(self) -> str:
+        return self._fw_version
+
+    @property
+    def serial_number(self) -> str:
+        return self._serial_number
+
+    @property
+    def mac_address(self) -> str:
+        return self._mac_address
+
+    @property
+    def camera_time(self) -> str:
+        return self._camera_time
+
+    async def async_fetch_device_info(self) -> None:
+        """Geräte-Infos einmalig laden (Firmware, Serial, MAC)."""
+        resp = await self._onvif_soap(
+            "/onvif/device_service",
+            "<tds:GetDeviceInformation/>",
+            use_auth=False,
+        )
+        self._fw_version = self._xml_text(resp, "FirmwareVersion")
+        self._serial_number = self._xml_text(resp, "SerialNumber")
+        net_resp = await self._onvif_soap(
+            "/onvif/device_service",
+            "<tds:GetNetworkInterfaces/>",
+        )
+        self._mac_address = self._xml_text(net_resp, "HwAddress")
+
+    async def async_fetch_camera_time(self) -> None:
+        """Systemzeit der Kamera abrufen."""
+        resp = await self._onvif_soap(
+            "/onvif/device_service",
+            "<tds:GetSystemDateAndTime/>",
+            use_auth=False,
+        )
+        hour = self._xml_text(resp, "Hour")
+        minute = self._xml_text(resp, "Minute")
+        second = self._xml_text(resp, "Second")
+        year = self._xml_text(resp, "Year")
+        month = self._xml_text(resp, "Month")
+        day = self._xml_text(resp, "Day")
+        if year:
+            self._camera_time = (
+                f"{year}-{month.zfill(2)}-{day.zfill(2)} "
+                f"{hour.zfill(2)}:{minute.zfill(2)}:{second.zfill(2)}"
+            )
+
+    async def async_reboot(self) -> bool:
+        """Kamera neu starten (ONVIF SystemReboot)."""
+        resp = await self._onvif_soap(
+            "/onvif/device_service",
+            "<tds:SystemReboot/>",
+        )
+        return "SystemRebootResponse" in resp
+
+    async def async_ntp_sync(self) -> bool:
+        """NTP-Zeitserver synchronisieren."""
+        resp = await self._onvif_soap(
+            "/onvif/device_service",
+            "<tds:GetNTP/>",
+        )
+        return bool(resp)
 
     async def async_shutdown(self) -> None:
         """Verbindungen schließen."""

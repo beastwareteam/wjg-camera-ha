@@ -1,0 +1,1023 @@
+- id: '1777229948150'
+  alias: Alarm - Beast Zombie (alle 3 Tage)
+  description: Ab 26.04. alle 3 Tage um 16:00, bei Samstag auf Sonntag verschoben
+  triggers:
+  - at: '16:00:00'
+    trigger: time
+  conditions:
+  - condition: template
+    value_template: "{% set days_since = ((as_timestamp(now().replace(hour=0, minute=0,
+      second=0,\n  microsecond=0)) - as_timestamp('2026-04-26')) / 86400) | int %}\n{%
+      set weekday = now().weekday() %} {% if weekday == 6 %}\n  {{ ((days_since -
+      1) % 3) == 0 }}\n{% else %}\n  {{ (days_since % 3 == 0) and weekday != 5 }}\n{%
+      endif %}\n"
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 0
+      - 204
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Beast Zombie!
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+- id: '1777230038931'
+  alias: Alarm - Star Zombie (alle 3 Tage)
+  description: Ab 26.04. alle 3 Tage um 21:00, bei Samstag auf Sonntag verschoben
+  triggers:
+  - at: '21:00:00'
+    trigger: time
+  conditions:
+  - condition: template
+    value_template: "{% set days_since = ((as_timestamp(now().replace(hour=0, minute=0,
+      second=0,\n  microsecond=0)) - as_timestamp('2026-04-26')) / 86400) | int %}\n{%
+      set weekday = now().weekday() %} {% if weekday == 6 %}\n  {{ ((days_since -
+      1) % 3) == 0 }}\n{% else %}\n  {{ (days_since % 3 == 0) and weekday != 5 }}\n{%
+      endif %}\n"
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 238
+      - 0
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Star Zombie!
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+- id: '1777230530602'
+  alias: Alarm - Neues Zeitfenster (täglich)
+  description: Täglich um 8, 12, 16, 20 und 24 Uhr - Licht blinkt rot und Benachrichtigung
+  triggers:
+  - at: 04:10:00
+    trigger: time
+  - at: 08:00:00
+    trigger: time
+  - at: '12:00:00'
+    trigger: time
+  - at: '16:00:00'
+    trigger: time
+  - at: '20:00:00'
+    trigger: time
+  - at: 00:00:00
+    trigger: time
+  conditions: []
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 255
+      - 0
+      - 0
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Neues Zeitfenster!
+      message: Neues Zeitfenster
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+- id: '1777230945997'
+  alias: Abendbeleuchtung
+  description: Steuert Wohnzimmerlichter basierend auf Sonnenuntergang
+  triggers:
+  - event: sunset
+    offset: -00:30:00
+    id: vor_sonnenuntergang
+    trigger: sun
+  - event: sunset
+    offset: 00:30:00
+    id: nach_sonnenuntergang
+    trigger: sun
+  - event: sunset
+    offset: 01:00:00
+    id: eine_stunde_nach
+    trigger: sun
+  actions:
+  - choose:
+    - conditions:
+      - condition: trigger
+        id: vor_sonnenuntergang
+      sequence:
+      - target:
+          entity_id:
+          - light.wohnzimmer
+          - light.wohnzimmerdecke
+        data:
+          hs_color: "{% set colors = {\n  'red': [0, 100],\n  'green': [120, 100],\n
+            \ 'blue': [240, 100],\n  'yellow': [60, 100],\n  'purple': [280, 100],\n
+            \ 'orange': [30, 100],\n  'pink': [330, 100],\n  'white': [0, 0]\n} %}
+            {{ colors[states('input_select.lieblingsfarbe_wohnzimmer')] }}\n"
+        action: light.turn_on
+    - conditions:
+      - condition: trigger
+        id: nach_sonnenuntergang
+      sequence:
+      - target:
+          entity_id:
+          - light.wohnzimmer
+          - light.wohnzimmerdecke
+        data:
+          brightness_pct: 1
+          hs_color: "{% set colors = {\n  'red': [0, 100],\n  'green': [120, 100],\n
+            \ 'blue': [240, 100],\n  'yellow': [60, 100],\n  'purple': [280, 100],\n
+            \ 'orange': [30, 100],\n  'pink': [330, 100],\n  'white': [0, 0]\n} %}
+            {{ colors[states('input_select.lieblingsfarbe_wohnzimmer')] }}\n"
+        action: light.turn_on
+    - conditions:
+      - condition: trigger
+        id: eine_stunde_nach
+      sequence:
+      - target:
+          entity_id:
+          - light.wohnzimmer
+          - light.wohnzimmerdecke
+        data:
+          brightness_pct: 20
+          hs_color: "{% set colors = {\n  'red': [0, 100],\n  'green': [120, 100],\n
+            \ 'blue': [240, 100],\n  'yellow': [60, 100],\n  'purple': [280, 100],\n
+            \ 'orange': [30, 100],\n  'pink': [330, 100],\n  'white': [0, 0]\n} %}
+            {{ colors[states('input_select.lieblingsfarbe_wohnzimmer')] }}\n"
+        action: light.turn_on
+  mode: single
+- id: '1777231131703'
+  alias: Warnung niedriger Akku
+  description: ''
+  triggers:
+  - entity_id:
+    - sensor.star_s24_battery_level
+    - sensor.beast_s24_battery_level
+    - sensor.homies_tablet_i10_battery_level
+    below: 20
+    trigger: numeric_state
+  actions:
+  - action: notify.mobile_app_homies_tablet_i10
+  - data:
+      title: Niedriger Akkustand
+      message: '{{ trigger.to_state.attributes.friendly_name }} hat nur noch {{ trigger.to_state.state
+        }}% Akku'
+    action: notify.mobile_app_star_s24
+- id: '1777234764180'
+  alias: Kühlschrank Hitze - Tag
+  description: ''
+  triggers:
+  - trigger: time_pattern
+    hours: /2
+  - trigger: numeric_state
+    entity_id: weather.forecast_home
+    attribute: temperature
+    above: 20
+  conditions:
+  - condition: numeric_state
+    entity_id: weather.forecast_home
+    attribute: temperature
+    above: 20
+  - condition: time
+    after: 06:00:00
+    before: '22:00:00'
+  actions:
+  - action: switch.turn_on
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 02:00:00
+  - action: switch.turn_off
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 01:00:00
+  mode: restart
+- id: '1777234790467'
+  alias: Kühlschrank Hitze - Nacht
+  description: ''
+  triggers:
+  - trigger: time_pattern
+    hours: /2
+  conditions:
+  - condition: numeric_state
+    entity_id: weather.forecast_home
+    attribute: temperature
+    above: 20
+  - condition: or
+    conditions:
+    - condition: time
+      after: '22:00:00'
+    - condition: time
+      before: 06:00:00
+  actions:
+  - action: switch.turn_on
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 01:30:00
+  - action: switch.turn_off
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 01:30:00
+  mode: restart
+- id: '1777234808183'
+  alias: Kühlschrank Mild - Tag
+  description: ''
+  triggers:
+  - trigger: time_pattern
+    hours: /2
+  - trigger: numeric_state
+    entity_id: weather.forecast_home
+    attribute: temperature
+    above: 10
+    below: 20
+  conditions:
+  - condition: numeric_state
+    entity_id: weather.forecast_home
+    attribute: temperature
+    above: 10
+    below: 20
+  - condition: time
+    after: 06:00:00
+    before: '22:00:00'
+  actions:
+  - action: switch.turn_on
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 01:30:00
+  - action: switch.turn_off
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 01:30:00
+  mode: restart
+- id: '1777234825251'
+  alias: Kühlschrank Mild - Nacht
+  description: ''
+  triggers:
+  - trigger: time_pattern
+    hours: /2
+  conditions:
+  - condition: numeric_state
+    entity_id: weather.forecast_home
+    attribute: temperature
+    above: 10
+    below: 20
+  - condition: or
+    conditions:
+    - condition: time
+      after: '22:00:00'
+    - condition: time
+      before: 06:00:00
+  actions:
+  - action: switch.turn_on
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 01:00:00
+  - action: switch.turn_off
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 02:00:00
+  mode: restart
+- id: '1777234844206'
+  alias: Kühlschrank Kalt - Tag
+  description: ''
+  triggers:
+  - trigger: time_pattern
+    hours: /3
+  - trigger: numeric_state
+    entity_id: weather.forecast_home
+    attribute: temperature
+    below: 10
+  conditions:
+  - condition: numeric_state
+    entity_id: weather.forecast_home
+    attribute: temperature
+    below: 10
+  - condition: time
+    after: 06:00:00
+    before: '22:00:00'
+  actions:
+  - action: switch.turn_on
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 01:00:00
+  - action: switch.turn_off
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 02:00:00
+  mode: restart
+- id: '1777234861902'
+  alias: Kühlschrank Kalt - Nacht
+  description: ''
+  triggers:
+  - trigger: time_pattern
+    hours: /3
+  conditions:
+  - condition: numeric_state
+    entity_id: weather.forecast_home
+    attribute: temperature
+    below: 10
+  - condition: or
+    conditions:
+    - condition: time
+      after: '22:00:00'
+    - condition: time
+      before: 06:00:00
+  actions:
+  - action: switch.turn_on
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 00:30:00
+  - action: switch.turn_off
+    target:
+      entity_id: switch.tm_kuhlschrank
+  - delay: 02:30:00
+  mode: restart
+- id: '1777301044008'
+  alias: Kühlschrank Sicherheit AUS zu lang
+  triggers:
+  - entity_id: switch.tm_kuhlschrank
+    to: 'off'
+    for: 04:00:00
+    trigger: state
+  actions:
+  - target:
+      entity_id: switch.tm_kuhlschrank
+    action: switch.turn_on
+  mode: single
+- id: '1777301668452'
+  alias: Kühlschrank Steuerung PRO (Tasmota Smart)
+  description: ''
+  triggers:
+  - event: start
+    trigger: homeassistant
+  actions:
+  - repeat:
+      while: []
+      sequence:
+      - variables:
+          temp: '{{ state_attr(''weather.forecast_home'', ''temperature'') | float
+            }}'
+          is_day: '{{ now().hour >= 6 and now().hour < 22 }}'
+      - wait_template: '{{ (as_timestamp(now()) - as_timestamp(states.switch.tm_kuhlschrank.last_changed))
+          > 600 }}
+
+          '
+      - choose:
+        - conditions:
+          - condition: template
+            value_template: '{{ temp < 10 }}'
+          sequence:
+          - variables:
+              an: "{{ states('input_number.ks_kalt_an_tag')|int if is_day\n   else
+                states('input_number.ks_kalt_an_nacht')|int }}\n"
+              aus: "{{ states('input_number.ks_kalt_aus_tag')|int if is_day\n   else
+                states('input_number.ks_kalt_aus_nacht')|int }}\n"
+        - conditions:
+          - condition: template
+            value_template: '{{ temp >= 10 and temp <= 20 }}'
+          sequence:
+          - variables:
+              an: "{{ states('input_number.ks_mild_an_tag')|int if is_day\n   else
+                states('input_number.ks_mild_an_nacht')|int }}\n"
+              aus: "{{ states('input_number.ks_mild_aus_tag')|int if is_day\n   else
+                states('input_number.ks_mild_aus_nacht')|int }}\n"
+        - conditions:
+          - condition: template
+            value_template: '{{ temp > 20 }}'
+          sequence:
+          - variables:
+              an: "{{ states('input_number.ks_heiss_an_tag')|int if is_day\n   else
+                states('input_number.ks_heiss_an_nacht')|int }}\n"
+              aus: "{{ states('input_number.ks_heiss_aus_tag')|int if is_day\n   else
+                states('input_number.ks_heiss_aus_nacht')|int }}\n"
+      - target:
+          entity_id: switch.tm_kuhlschrank
+        action: switch.turn_on
+      - wait_template: '{{ states(''sensor.tm_kuhlschrank_energy_power'') | float
+          > 50 }}
+
+          '
+        timeout: 00:10:00
+        continue_on_timeout: true
+      - wait_template: '{{ states(''sensor.tm_kuhlschrank_energy_power'') | float
+          < 25 }}
+
+          '
+        timeout: 03:00:00
+        continue_on_timeout: true
+      - target:
+          entity_id: switch.tm_kuhlschrank
+        action: switch.turn_off
+      - delay:
+          minutes: '{{ aus }}'
+  mode: single
+- id: '1777302284734'
+  alias: Kühlschrank Sensor Fehler
+  description: ''
+  triggers:
+  - entity_id: sensor.tm_kuhlschrank_energy_power
+    to: unavailable
+    for: '10:00:00'
+    trigger: state
+  actions:
+  - target:
+      entity_id: switch.tm_kuhlschrank
+    action: switch.turn_on
+  mode: single
+- id: '1777302326677'
+  alias: Kühlschrank Warnung
+  description: ''
+  triggers:
+  - entity_id: switch.tm_kuhlschrank
+    to: 'off'
+    for: 04:00:00
+    trigger: state
+  actions:
+  - data:
+      title: Kühlschrank Warnung
+      message: Kühlschrank war über 4 Stunden aus!
+    action: persistent_notification.create
+  mode: single
+- id: '1777368134186'
+  alias: Aquarium an
+  description: ''
+  triggers:
+  - trigger: time
+    at: '10:00:00'
+  conditions: []
+  actions:
+  - type: toggle
+    device_id: 3ae225cde0f370d35532fd6aef88bb3a
+    entity_id: 66a943381ebfa1ef8d5a51999b16affb
+    domain: switch
+  - delay:
+      hours: 1
+      minutes: 0
+      seconds: 0
+      milliseconds: 0
+  - type: toggle
+    device_id: 41891f95a5825c5222be70b60d0fdc11
+    entity_id: 9af749f6c3a5e5020c928b82b58bb8ea
+    domain: switch
+  mode: single
+- id: '1777372823048'
+  alias: Aquarium aus
+  description: ''
+  triggers:
+  - trigger: time
+    at: '20:00:00'
+  conditions: []
+  actions:
+  - type: toggle
+    device_id: 41891f95a5825c5222be70b60d0fdc11
+    entity_id: 9af749f6c3a5e5020c928b82b58bb8ea
+    domain: switch
+  - delay:
+      hours: 1
+      minutes: 0
+      seconds: 0
+      milliseconds: 0
+  - type: toggle
+    device_id: 3ae225cde0f370d35532fd6aef88bb3a
+    entity_id: 66a943381ebfa1ef8d5a51999b16affb
+    domain: switch
+  mode: single
+- id: '1777551570040'
+  alias: Alarm - Schluchtsturm
+  description: Schluchtsturm Do 15:50
+  triggers:
+  - trigger: time
+    at: '15:50:00'
+    weekday:
+    - thu
+  conditions: []
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 0
+      - 204
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Schluchtsturm
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+  mode: single
+- id: '1777551643387'
+  alias: Wüstensturm
+  description: Wüstensturm Fr 12:50
+  triggers:
+  - trigger: time
+    at: '12:50:00'
+    weekday:
+    - fri
+  conditions: []
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 0
+      - 204
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Wüstensturm
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+  mode: single
+- id: '1777551687192'
+  alias: WüstenSturm 2
+  description: Wüstensturm Fr 21:50
+  triggers:
+  - trigger: time
+    at: '21:50:00'
+    weekday:
+    - fri
+  conditions: []
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 0
+      - 204
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Wüstensturm
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+  mode: single
+- id: '1777551730383'
+  alias: Wintersturm
+  description: Wintersturm Fr 12:50
+  triggers:
+  - trigger: time
+    at: '12:50:00'
+    weekday:
+    - mon
+  conditions: []
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 0
+      - 204
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Wintersturm
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+  mode: single
+- id: '1777551759486'
+  alias: Wintersturm 2
+  description: Wintersturm Mo 22:50
+  triggers:
+  - trigger: time
+    at: '22:50:00'
+    weekday:
+    - mon
+  conditions: []
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 0
+      - 204
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Wintersturm
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+  mode: single
+- id: '1777551790629'
+  alias: Wintersturm Sa 2
+  description: Wintersturm Sa 22:50
+  triggers:
+  - trigger: time
+    at: '22:50:00'
+    weekday:
+    - sat
+  conditions: []
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 0
+      - 204
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Wintersturm
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+  mode: single
+- id: '1777551822208'
+  alias: 'Wintersturm Sa '
+  description: Wintersturm Sa 12:50
+  triggers:
+  - trigger: time
+    at: '12:50:00'
+    weekday:
+    - sat
+  conditions: []
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 0
+      - 204
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Wintersturm
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+  mode: single
+- id: '1777551904678'
+  alias: SVS
+  description: SVS Sa 15:50
+  triggers:
+  - trigger: time
+    at: '15:50:00'
+    weekday:
+    - sat
+  conditions: []
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 0
+      - 204
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ SVS
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+  mode: single
+- id: '1777551943454'
+  alias: Meteor
+  description: Meteor Sa 16:20
+  triggers:
+  - trigger: time
+    at: '16:20:00'
+    weekday:
+    - sat
+  conditions: []
+  actions:
+  - variables:
+      licht_war_an: '{{ is_state(''light.wohnzimmer'', ''on'') }}'
+      alte_helligkeit: '{{ state_attr(''light.wohnzimmer'', ''brightness'') | default(255)
+        }}'
+  - data:
+      message: command_screen_on
+    action: notify.mobile_app_homies_tablet_i10
+  - target:
+      entity_id: light.wohnzimmer
+    data:
+      rgb_color:
+      - 0
+      - 204
+      - 255
+      brightness: 255
+    action: light.turn_on
+  - data:
+      title: ⏰ Meteor
+      message: Jetzt starten!
+      data:
+        channel: silent_alarm
+        silent: true
+        clickAction: app://com.fun.lastwar.gp
+    action: notify.mobile_app_homies_tablet_i10
+  - delay:
+      seconds: 3
+  - if:
+    - condition: template
+      value_template: '{{ licht_war_an }}'
+    then:
+    - target:
+        entity_id: light.wohnzimmer
+      data:
+        brightness: '{{ alte_helligkeit }}'
+        color_temp_kelvin: 2700
+      action: light.turn_on
+    else:
+    - target:
+        entity_id: light.wohnzimmer
+      action: light.turn_off
+  mode: single
