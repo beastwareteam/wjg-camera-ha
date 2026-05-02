@@ -17,6 +17,7 @@ import struct
 import time
 from datetime import timedelta
 from typing import Any
+from urllib.parse import quote
 
 import aiohttp
 import async_timeout
@@ -333,10 +334,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             _LOGGER.error("ONVIF Stream-URL konnte nicht abgerufen werden: %s", e)
             return None
 
+    def _render_rtsp_path(self) -> str:
+        """RTSP-Pfad mit konfigurierten Zugangsdaten erzeugen."""
+        username = quote(self.username or "admin", safe="")
+        password = quote(self.password or "", safe="")
+        return (
+            self.rtsp_path
+            .replace("user=admin", f"user={username}")
+            .replace("password=", f"password={password}", 1)
+        )
+
     @property
     def rtsp_url(self) -> str:
-        u = f"admin:{self.password}@" if self.password else f"{self.username}:@"
-        return f"rtsp://{u}{self.host}:{self.rtsp_port}{self.rtsp_path}"
+        username = quote(self.username or "admin", safe="")
+        password = quote(self.password or "", safe="")
+        credentials = f"{username}:{password}@"
+        return (
+            f"rtsp://{credentials}{self.host}:{self.rtsp_port}"
+            f"{self._render_rtsp_path()}"
+        )
 
     @property
     def snapshot_url(self) -> str:

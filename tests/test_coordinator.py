@@ -409,7 +409,22 @@ def test_rtsp_url_uses_username_and_password():
     )
     coordinator = _make_coordinator(MagicMock(), entry)
 
-    assert coordinator.rtsp_url == "rtsp://admin:secret@192.168.1.51:554/user=admin&password=&channel=1&stream=0.sdp?real_stream"
+    assert coordinator.rtsp_url == "rtsp://user1:secret@192.168.1.51:554/user=user1&password=secret&channel=1&stream=0.sdp?real_stream"
+
+
+def test_rtsp_url_uses_default_admin_when_username_missing():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.52",
+            "rtsp_port": 554,
+            "port": 80,
+            "password": "",
+            "protocol": "rtsp",
+        }
+    )
+    coordinator = _make_coordinator(MagicMock(), entry)
+
+    assert coordinator.rtsp_url == "rtsp://admin:@192.168.1.52:554/user=admin&password=&channel=1&stream=0.sdp?real_stream"
 
 
 def test_last_motion_time_property_returns_timestamp():
