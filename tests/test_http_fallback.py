@@ -60,11 +60,12 @@ class FakeSession:
         self._routes = routes or {}
         self._raise_on = raise_on or []
         self.calls = []
+        self.request_kwargs = []
         self._route_counters = {}
 
     def get(self, url, **request_kwargs):
-        _ = request_kwargs
         self.calls.append(url)
+        self.request_kwargs.append(request_kwargs)
         for marker in self._raise_on:
             if marker in url:
                 raise RuntimeError("network error")
@@ -227,13 +228,15 @@ async def test_http_fallback_get_file_list_retries_and_succeeds():
 @pytest.mark.asyncio
 async def test_http_fallback_snapshot_success():
     coordinator = _make_coordinator(DummyHass(), DummyEntry())
-    _set_private_attr(coordinator, _private_name("session"), FakeSession(
+    session = FakeSession(
         routes={"/webcapture.jpg": FakeResponse(status=200, payload_bytes=b"jpeg-bytes")}
-    ))
+    )
+    _set_private_attr(coordinator, _private_name("session"), session)
 
     data = await coordinator.async_snapshot()
 
     assert data == b"jpeg-bytes"
+    assert session.request_kwargs[0].get("auth") is not None
 
 
 @pytest.mark.asyncio

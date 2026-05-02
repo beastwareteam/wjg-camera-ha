@@ -495,12 +495,16 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if not self._session:
             return None
 
+        auth = None
+        if self.username:
+            auth = aiohttp.BasicAuth(self.username, self.password or "")
+
         effective_retries = self.http_retries if retries is None else retries
         attempts = max(1, effective_retries + 1)
         for attempt in range(attempts):
             try:
                 async with async_timeout.timeout(timeout_seconds):
-                    async with self._session.get(url) as resp:
+                    async with self._session.get(url, auth=auth) as resp:
                         if resp.status == 200:
                             if as_json:
                                 return await resp.json()
