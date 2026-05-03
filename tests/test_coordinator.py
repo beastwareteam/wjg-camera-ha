@@ -118,11 +118,108 @@ async def test_onvif_soap_retries_content_type_and_caches_successful_variant():
     response = await coordinator._onvif_soap("/onvif/PTZ", "<tptz:ContinuousMove/>", use_auth=False)
 
     assert response == "<ok/>"
-    assert seen_content_types[:2] == [
+    assert seen_content_types[:3] == [
+        "application/soap+xml; charset=utf-8",
         "application/soap+xml; charset=utf-8",
         "text/xml; charset=utf-8",
     ]
     assert coordinator.onvif_content_type == "text/xml; charset=utf-8"
+
+
+@pytest.mark.asyncio
+async def test_onvif_soap_retries_without_http_auth_on_auth_fault():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    seen_auth: list[bool] = []
+
+    class DummyResponse:
+        def __init__(self, text: str):
+            self._text = text
+
+        async def text(self):
+            return self._text
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummySession:
+        def post(self, _url, data=None, headers=None, auth=None):
+            _ = data
+            _ = headers
+            seen_auth.append(auth is not None)
+            if auth is not None:
+                return DummyResponse("An error was discovered processing the &lt;wsse:Security&gt; header")
+            return DummyResponse("<ok/>")
+
+    _set_private_attr(coordinator, "_session", DummySession())
+
+    response = await coordinator._onvif_soap("/onvif/PTZ", "<tptz:ContinuousMove/>", use_auth=False)
+
+    assert response == "<ok/>"
+    assert seen_auth[:2] == [True, False]
+
+
+@pytest.mark.asyncio
+async def test_onvif_soap_legacy_retries_without_http_auth_on_auth_fault():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    seen_auth: list[bool] = []
+
+    class DummyResponse:
+        def __init__(self, text: str):
+            self._text = text
+
+        async def text(self):
+            return self._text
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummySession:
+        def post(self, _url, data=None, headers=None, auth=None):
+            _ = data
+            _ = headers
+            seen_auth.append(auth is not None)
+            if auth is not None:
+                return DummyResponse("An error was discovered processing the &lt;wsse:Security&gt; header")
+            return DummyResponse("<tptz:ContinuousMoveResponse/>")
+
+    _set_private_attr(coordinator, "_session", DummySession())
+
+    response = await coordinator._onvif_soap_legacy(
+        "/onvif/PTZ",
+        "<tptz:ContinuousMove/>",
+        "http://www.onvif.org/ver20/ptz/wsdl/ContinuousMove",
+    )
+
+    assert response == "<tptz:ContinuousMoveResponse/>"
+    assert seen_auth[:2] == [True, False]
 
 @pytest.mark.asyncio
 async def test_is_adb_proxy():

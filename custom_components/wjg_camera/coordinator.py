@@ -786,7 +786,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.1.3: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.1.4: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self._onvif_content_type,
                 self.host,
@@ -1237,39 +1237,45 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         ]
         last_result = ""
         for content_type in content_types_to_try:
-            try:
-                async with async_timeout.timeout(timeout_seconds):
-                    async with self._session.post(
-                        url,
-                        data=envelope.encode("utf-8"),
-                        auth=http_auth,
-                        headers={"Content-Type": content_type},
-                    ) as resp:
-                        result = await resp.text()
-                last_result = result
-                if self._looks_like_onvif_auth_fault(result):
+            auth_candidates: list[aiohttp.BasicAuth | None] = [http_auth] if http_auth is not None else [None]
+            if http_auth is not None:
+                auth_candidates.append(None)
+            for auth_candidate in auth_candidates:
+                try:
+                    async with async_timeout.timeout(timeout_seconds):
+                        async with self._session.post(
+                            url,
+                            data=envelope.encode("utf-8"),
+                            auth=auth_candidate,
+                            headers={"Content-Type": content_type},
+                        ) as resp:
+                            result = await resp.text()
+                    last_result = result
+                    if self._looks_like_onvif_auth_fault(result):
+                        _LOGGER.debug(
+                            "ONVIF SOAP Auth-Fault mit content_type=%s path=%s http_auth=%s",
+                            content_type,
+                            service_path,
+                            "on" if auth_candidate is not None else "off",
+                        )
+                        continue
+                    if content_type != self._onvif_content_type:
+                        _LOGGER.debug(
+                            "ONVIF SOAP Content-Type geaendert: %s -> %s",
+                            self._onvif_content_type,
+                            content_type,
+                        )
+                        self._onvif_content_type = content_type
+                    return result
+                except Exception as exc:
                     _LOGGER.debug(
-                        "ONVIF SOAP Auth-Fault mit content_type=%s path=%s",
-                        content_type,
+                        "ONVIF SOAP [%s] fehlgeschlagen fuer content_type=%s http_auth=%s: %s",
                         service_path,
+                        content_type,
+                        "on" if auth_candidate is not None else "off",
+                        exc,
                     )
                     continue
-                if content_type != self._onvif_content_type:
-                    _LOGGER.debug(
-                        "ONVIF SOAP Content-Type geaendert: %s -> %s",
-                        self._onvif_content_type,
-                        content_type,
-                    )
-                    self._onvif_content_type = content_type
-                return result
-            except Exception as exc:
-                _LOGGER.debug(
-                    "ONVIF SOAP [%s] fehlgeschlagen fuer content_type=%s: %s",
-                    service_path,
-                    content_type,
-                    exc,
-                )
-                continue
         return last_result
 
     async def _onvif_soap_legacy(
@@ -1299,21 +1305,41 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             "</soap:Envelope>"
         )
         url = f"http://{self.host}:{self.onvif_port}{service_path}"
-        try:
-            async with async_timeout.timeout(timeout_seconds):
-                async with self._session.post(
-                    url,
-                    data=envelope.encode("utf-8"),
-                    auth=http_auth,
-                    headers={
-                        "Content-Type": "text/xml; charset=utf-8",
-                        "SOAPAction": f'"{soap_action}"',
-                    },
-                ) as resp:
-                    return await resp.text()
-        except Exception as exc:
-            _LOGGER.debug("ONVIF SOAP 1.1 [%s] fehlgeschlagen: %s", service_path, exc)
-            return ""
+        auth_candidates: list[aiohttp.BasicAuth | None] = [http_auth] if http_auth is not None else [None]
+        if http_auth is not None:
+            auth_candidates.append(None)
+        last_result = ""
+        for auth_candidate in auth_candidates:
+            try:
+                async with async_timeout.timeout(timeout_seconds):
+                    async with self._session.post(
+                        url,
+                        data=envelope.encode("utf-8"),
+                        auth=auth_candidate,
+                        headers={
+                            "Content-Type": "text/xml; charset=utf-8",
+                            "SOAPAction": f'"{soap_action}"',
+                        },
+                    ) as resp:
+                        result = await resp.text()
+                last_result = result
+                if self._looks_like_onvif_auth_fault(result):
+                    _LOGGER.debug(
+                        "ONVIF SOAP 1.1 Auth-Fault path=%s http_auth=%s",
+                        service_path,
+                        "on" if auth_candidate is not None else "off",
+                    )
+                    continue
+                return result
+            except Exception as exc:
+                _LOGGER.debug(
+                    "ONVIF SOAP 1.1 [%s] fehlgeschlagen http_auth=%s: %s",
+                    service_path,
+                    "on" if auth_candidate is not None else "off",
+                    exc,
+                )
+                continue
+        return last_result
 
     async def _onvif_soap_legacy_for(
         self,
