@@ -437,6 +437,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._onvif_profile_tokens: dict[str, str] = {}
         self._onvif_video_source_token: str = "000"
         self._last_ptz_fault: str = ""
+        self._onvif_wsse_enabled: bool = True
         self._onvif_service_paths: dict[str, str] = {
             key: paths[0] for key, paths in ONVIF_SERVICE_PATH_CANDIDATES.items()
         }
@@ -1348,17 +1349,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     ) -> str:
         """ONVIF-Request mit Service-Fallbacks senden und erfolgreichen Pfad cachen."""
         last_response = ""
+        effective_use_auth = bool(use_auth and self._onvif_wsse_enabled)
         for service_path in self._candidate_onvif_service_paths(service_key):
             _LOGGER.debug("ONVIF SOAP versuche service=%s path=%s", service_key, service_path)
             response_text = await self._onvif_soap(
                 service_path,
                 body,
-                use_auth=use_auth,
+                use_auth=effective_use_auth,
                 timeout_seconds=timeout_seconds,
             )
-            if use_auth and self._looks_like_onvif_auth_fault(response_text):
+            if effective_use_auth and self._looks_like_onvif_auth_fault(response_text):
+                # Kamera akzeptiert WSSE nicht: für alle folgenden ONVIF-Requests abschalten.
+                self._onvif_wsse_enabled = False
                 _LOGGER.debug(
-                    "ONVIF SOAP Auth-Fault erkannt, versuche ohne WSSE erneut: service=%s path=%s",
+                    "ONVIF SOAP Auth-Fault erkannt, deaktiviere WSSE und versuche erneut: service=%s path=%s",
                     service_key,
                     service_path,
                 )
