@@ -1,6 +1,7 @@
 import sys
 import os
 import types
+import re
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pytest
@@ -382,6 +383,43 @@ async def test_async_ptz_command_succeeds_with_auth_fault_retry():
     _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
 
     assert await coordinator.async_ptz_command("right") is True
+
+
+@pytest.mark.asyncio
+async def test_async_ptz_command_falls_back_to_alternate_profile_token():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    attempted_tokens: list[str] = []
+
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        match = re.search(r"<tptz:ProfileToken>([^<]+)</tptz:ProfileToken>", body)
+        token = match.group(1) if match else ""
+        attempted_tokens.append(token)
+        if token == "GOOD":
+            return "<tptz:ContinuousMoveResponse/>"
+        return "<s:Fault><s:Reason><s:Text>invalid profile token</s:Text></s:Reason></s:Fault>"
+
+    _set_private_attr(coordinator, "_onvif", None)
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_onvif_profile_tokens", {"000": "BAD", "001": "GOOD"})
+    _set_private_attr(coordinator, "_active_stream", "000")
+
+    assert await coordinator.async_ptz_command("right") is True
+    assert attempted_tokens[0] == "BAD"
+    assert "GOOD" in attempted_tokens
+    assert _get_private_attr(coordinator, "_onvif_profile_tokens")["000"] == "GOOD"
 
 
 @pytest.mark.asyncio

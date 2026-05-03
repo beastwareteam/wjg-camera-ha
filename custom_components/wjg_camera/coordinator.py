@@ -990,7 +990,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             if cmd == "stop":
                 return await self.async_ptz_stop()
             spd = f"{min(speed, 8) / 8:.2f}"
-            profile_token = await self._async_active_onvif_profile_token()
             soap_velocity_map: dict[str, str] = {
                 "up":       f'<tt:PanTilt x="0.00" y="{spd}"/>',
                 "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/>',
@@ -1000,23 +999,26 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 "zoom_out": f'<tt:Zoom x="-{spd}"/>',
             }
             if cmd in soap_velocity_map:
-                _LOGGER.debug(
-                    "ONVIF PTZ sende: cmd=%s speed=%s profile=%s ptz_path=%s",
-                    cmd,
-                    speed,
-                    profile_token,
-                    self._onvif_service_paths.get(ONVIF_SERVICE_PTZ),
-                )
-                resp = await self._onvif_soap_for(
-                    ONVIF_SERVICE_PTZ,
-                    f"<tptz:ContinuousMove>"
-                    f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-                    f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
-                    f"</tptz:ContinuousMove>",
-                )
-                if "ContinuousMoveResponse" in resp:
-                    _LOGGER.debug("ONVIF PTZ erfolgreich: cmd=%s profile=%s", cmd, profile_token)
-                    return True
+                tried_tokens = await self._async_candidate_ptz_profile_tokens()
+                for profile_token in tried_tokens:
+                    _LOGGER.debug(
+                        "ONVIF PTZ sende: cmd=%s speed=%s profile=%s ptz_path=%s",
+                        cmd,
+                        speed,
+                        profile_token,
+                        self._onvif_service_paths.get(ONVIF_SERVICE_PTZ),
+                    )
+                    resp = await self._onvif_soap_for(
+                        ONVIF_SERVICE_PTZ,
+                        f"<tptz:ContinuousMove>"
+                        f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+                        f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
+                        f"</tptz:ContinuousMove>",
+                    )
+                    if "ContinuousMoveResponse" in resp:
+                        self._onvif_profile_tokens[self._active_stream] = profile_token
+                        _LOGGER.debug("ONVIF PTZ erfolgreich: cmd=%s profile=%s", cmd, profile_token)
+                        return True
                 # Fallback auf python-onvif library
                 if self._onvif:
                     _LOGGER.debug("ONVIF PTZ Direct-SOAP ohne Response, nutze Library-Fallback: cmd=%s", cmd)
@@ -1385,6 +1387,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         await self._async_load_onvif_tokens()
         return self._onvif_video_source_token or "000"
 
+    async def _async_candidate_ptz_profile_tokens(self) -> list[str]:
+        """Mögliche PTZ-ProfileToken in robuster Prioritätsreihenfolge liefern."""
+        await self._async_load_onvif_tokens()
+        candidates: list[str] = []
+
+        def _add(token: Any) -> None:
+            value = str(token or "").strip()
+            if value and value not in candidates:
+                candidates.append(value)
+
+        _add(self._preferred_onvif_profile_token)
+        _add(self._onvif_profile_tokens.get(self._active_stream))
+        _add(self._active_stream)
+        _add("000")
+        _add("001")
+        for token in self._onvif_profile_tokens.values():
+            _add(token)
+        return candidates
+
     # ── PTZ ─────────────────────────────────────────────────────────────────
 
     @property
@@ -1424,16 +1445,19 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_ptz_stop(self) -> bool:
         """Laufende PTZ-Bewegung sofort stoppen."""
-        profile_token = await self._async_active_onvif_profile_token()
-        resp = await self._onvif_soap_for(
-            ONVIF_SERVICE_PTZ,
-            f"<tptz:Stop>"
-            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-            f"<tptz:PanTilt>true</tptz:PanTilt>"
-            f"<tptz:Zoom>true</tptz:Zoom>"
-            f"</tptz:Stop>",
-        )
-        return "StopResponse" in resp
+        for profile_token in await self._async_candidate_ptz_profile_tokens():
+            resp = await self._onvif_soap_for(
+                ONVIF_SERVICE_PTZ,
+                f"<tptz:Stop>"
+                f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+                f"<tptz:PanTilt>true</tptz:PanTilt>"
+                f"<tptz:Zoom>true</tptz:Zoom>"
+                f"</tptz:Stop>",
+            )
+            if "StopResponse" in resp:
+                self._onvif_profile_tokens[self._active_stream] = profile_token
+                return True
+        return False
 
     async def async_ptz_get_presets(self) -> dict[str, str]:
         """Alle PTZ-Presets laden (token -> name)."""
