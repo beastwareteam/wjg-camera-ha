@@ -1162,6 +1162,22 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return any(marker in lowered for marker in ("404 not found", "not found", "unknown service", "invalid service"))
 
     @staticmethod
+    def _looks_like_onvif_auth_fault(response_text: str) -> bool:
+        """Authentifizierungsfehler in SOAP-Antworten robust erkennen."""
+        if not response_text:
+            return False
+        lowered = response_text.lower()
+        markers = (
+            "the security token could not be authenticated",
+            "could not be authenticated or authorized",
+            "notauthorized",
+            "not authorized",
+            "wsse:failedauthentication",
+            "failedauthentication",
+        )
+        return any(marker in lowered for marker in markers)
+
+    @staticmethod
     def _service_key_for_onvif_path(path: str) -> str | None:
         """Service-Key für einen ONVIF-XAddr-Pfad ableiten."""
         normalized = path.lower()
@@ -1237,6 +1253,18 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 use_auth=use_auth,
                 timeout_seconds=timeout_seconds,
             )
+            if use_auth and self._looks_like_onvif_auth_fault(response_text):
+                _LOGGER.debug(
+                    "ONVIF SOAP Auth-Fault erkannt, versuche ohne WSSE erneut: service=%s path=%s",
+                    service_key,
+                    service_path,
+                )
+                response_text = await self._onvif_soap(
+                    service_path,
+                    body,
+                    use_auth=False,
+                    timeout_seconds=timeout_seconds,
+                )
             if not self._looks_like_wrong_onvif_path(response_text):
                 self._remember_onvif_service_path(service_key, service_path)
                 _LOGGER.debug("ONVIF SOAP erfolgreich: service=%s path=%s", service_key, service_path)

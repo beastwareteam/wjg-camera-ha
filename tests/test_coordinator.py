@@ -317,6 +317,74 @@ async def test_onvif_stream_url_loads_via_direct_soap_without_python_client():
 
 
 @pytest.mark.asyncio
+async def test_onvif_soap_for_retries_without_auth_on_security_token_fault():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    calls: list[tuple[str, bool]] = []
+
+    async def _fake_soap(service_path, body, use_auth=True, timeout_seconds=5):
+        _ = body
+        _ = timeout_seconds
+        calls.append((service_path, use_auth))
+        if use_auth:
+            return "The security token could not be authenticated or authorized"
+        return "<tptz:ContinuousMoveResponse/>"
+
+    _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+    response = await coordinator._onvif_soap_for(
+        coordinator_module.ONVIF_SERVICE_PTZ,
+        "<tptz:ContinuousMove/>",
+    )
+
+    assert response == "<tptz:ContinuousMoveResponse/>"
+    assert calls[0] == ("/onvif/PTZ", True)
+    assert calls[1] == ("/onvif/PTZ", False)
+
+
+@pytest.mark.asyncio
+async def test_async_ptz_command_succeeds_with_auth_fault_retry():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    async def _fake_soap(service_path, body, use_auth=True, timeout_seconds=5):
+        _ = service_path
+        _ = timeout_seconds
+        if "GetProfiles" in body:
+            return "<trt:GetProfilesResponse><trt:Profiles token=\"000\"/></trt:GetProfilesResponse>"
+        if use_auth:
+            return "The security token could not be authenticated or authorized"
+        if "ContinuousMove" in body:
+            return "<tptz:ContinuousMoveResponse/>"
+        return ""
+
+    _set_private_attr(coordinator, "_onvif", None)
+    _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+
+    assert await coordinator.async_ptz_command("right") is True
+
+
+@pytest.mark.asyncio
 async def test_async_shutdown_closes_session_and_disconnects_xm():
     entry = DummyEntry(
         {
