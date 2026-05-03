@@ -453,6 +453,43 @@ async def test_onvif_soap_for_retries_without_auth_on_security_token_fault():
 
 
 @pytest.mark.asyncio
+async def test_onvif_soap_for_retries_next_service_path_on_soap_fault():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    seen_paths: list[str] = []
+
+    async def _fake_soap(service_path, body, use_auth=True, timeout_seconds=5):
+        _ = body
+        _ = use_auth
+        _ = timeout_seconds
+        seen_paths.append(service_path)
+        if service_path == "/onvif/PTZ":
+            return "<s:Fault><s:Reason><s:Text>ptz fault</s:Text></s:Reason></s:Fault>"
+        return "<tptz:ContinuousMoveResponse/>"
+
+    _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+
+    response = await coordinator._onvif_soap_for(
+        coordinator_module.ONVIF_SERVICE_PTZ,
+        "<tptz:ContinuousMove/>",
+        use_auth=False,
+    )
+
+    assert response == "<tptz:ContinuousMoveResponse/>"
+    assert seen_paths[:2] == ["/onvif/PTZ", "/onvif/ptz_service"]
+
+
+@pytest.mark.asyncio
 async def test_async_ptz_command_succeeds_with_auth_fault_retry():
     entry = DummyEntry(
         {

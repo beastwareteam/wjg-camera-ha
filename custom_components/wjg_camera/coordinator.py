@@ -1307,7 +1307,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     auth=http_auth,
                     headers={
                         "Content-Type": "text/xml; charset=utf-8",
-                        "SOAPAction": soap_action,
+                        "SOAPAction": f'"{soap_action}"',
                     },
                 ) as resp:
                     return await resp.text()
@@ -1331,6 +1331,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 soap_action,
                 timeout_seconds=timeout_seconds,
             )
+            if self._looks_like_onvif_fault(response_text):
+                last_response = response_text
+                continue
             if not self._looks_like_wrong_onvif_path(response_text):
                 self._remember_onvif_service_path(service_key, service_path)
                 return response_text
@@ -1438,6 +1441,19 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if "<html" in lowered and "not found" in lowered:
             return True
         return any(marker in lowered for marker in ("404 not found", "not found", "unknown service", "invalid service"))
+
+    @staticmethod
+    def _looks_like_onvif_fault(response_text: str) -> bool:
+        """SOAP-Faults erkennen, damit Service-Fallbacks weitere Endpoints probieren."""
+        if not response_text:
+            return False
+        lowered = response_text.lower()
+        return (
+            "<fault" in lowered
+            or ":fault" in lowered
+            or "faultcode" in lowered
+            or "faultstring" in lowered
+        )
 
     @staticmethod
     def _looks_like_onvif_auth_fault(response_text: str) -> bool:
@@ -1548,6 +1564,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     use_auth=False,
                     timeout_seconds=timeout_seconds,
                 )
+            if self._looks_like_onvif_fault(response_text):
+                last_response = response_text
+                _LOGGER.debug(
+                    "ONVIF SOAP Fault erkannt, pruefe naechsten Endpoint: service=%s path=%s",
+                    service_key,
+                    service_path,
+                )
+                continue
             if not self._looks_like_wrong_onvif_path(response_text):
                 self._remember_onvif_service_path(service_key, service_path)
                 _LOGGER.debug("ONVIF SOAP erfolgreich: service=%s path=%s", service_key, service_path)
