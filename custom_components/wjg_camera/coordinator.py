@@ -437,7 +437,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._onvif_profile_tokens: dict[str, str] = {}
         self._onvif_video_source_token: str = "000"
         self._last_ptz_fault: str = ""
-        self._onvif_wsse_enabled: bool = True
+        # Viele XM-basierte Kameras mit leerem Passwort lehnen WSSE-Header ab.
+        self._onvif_wsse_enabled: bool = bool(self.password)
         self._onvif_service_paths: dict[str, str] = {
             key: paths[0] for key, paths in ONVIF_SERVICE_PATH_CANDIDATES.items()
         }

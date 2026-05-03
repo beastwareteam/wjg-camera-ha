@@ -325,7 +325,7 @@ async def test_onvif_soap_for_retries_without_auth_on_security_token_fault():
             "rtsp_port": 554,
             "port": 80,
             "username": "admin",
-            "password": "",
+            "password": "secret",
             "protocol": "onvif",
             "onvif_port": 8899,
         }
@@ -361,7 +361,7 @@ async def test_async_ptz_command_succeeds_with_auth_fault_retry():
             "rtsp_port": 554,
             "port": 80,
             "username": "admin",
-            "password": "",
+            "password": "secret",
             "protocol": "onvif",
             "onvif_port": 8899,
         }
@@ -393,7 +393,7 @@ async def test_async_ptz_command_succeeds_with_wsse_security_header_fault_retry(
             "rtsp_port": 554,
             "port": 80,
             "username": "admin",
-            "password": "",
+            "password": "secret",
             "protocol": "onvif",
             "onvif_port": 8899,
         }
@@ -425,7 +425,7 @@ async def test_onvif_wsse_is_disabled_after_security_header_fault():
             "rtsp_port": 554,
             "port": 80,
             "username": "admin",
-            "password": "",
+            "password": "secret",
             "protocol": "onvif",
             "onvif_port": 8899,
         }
@@ -451,6 +451,22 @@ async def test_onvif_wsse_is_disabled_after_security_header_fault():
     assert await coordinator.async_ptz_command("right") is True
     assert calls
     assert all(call is False for call in calls)
+
+
+def test_onvif_wsse_is_disabled_by_default_when_password_is_empty():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    assert _get_private_attr(coordinator, "_onvif_wsse_enabled") is False
 
 
 @pytest.mark.asyncio
