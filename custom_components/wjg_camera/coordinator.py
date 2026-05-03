@@ -303,6 +303,16 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return max(0, min(5, retries))
 
     @staticmethod
+    def _xm_ptz_one_shot(xm: "XMClient", code: int, speed: int) -> bool:
+        """Ephemere XM-SDK-Verbindung fuer einen einzelnen PTZ-Befehl (Executor)."""
+        if not xm.connect(timeout=3.0):
+            return False
+        try:
+            return xm.ptz_command(code, speed)
+        finally:
+            xm.disconnect()
+
+    @staticmethod
     def _parse_csv_option(value: Any) -> tuple[str, ...]:
         """CSV-/Listenoptionen robust in eine normalisierte Tupelstruktur überführen."""
         if value is None:
@@ -813,7 +823,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.1.9: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.2.0: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self._onvif_content_type,
                 self.host,
@@ -1289,6 +1299,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             except Exception as e:
                 self._last_ptz_fault = str(e)
                 _LOGGER.error("PTZ-Befehl fehlgeschlagen: %s", e)
+
+        # XM-SDK-Fallback für ONVIF-Kameras mit XM/HiSilicon-Firmware (Port 34567).
+        # Viele XM-Kameras erlauben PTZ nur über das XM-Protokoll, nicht ONVIF.
+        if not self._xm and self._last_ptz_fault:
+            code = ptz_map[cmd]
+            xm_tmp = XMClient(self.host, 34567, self.username or "", self.password or "")
+            try:
+                ok = await self.hass.async_add_executor_job(
+                    self._xm_ptz_one_shot, xm_tmp, code, speed
+                )
+                if ok:
+                    self._last_ptz_fault = ""
+                    _LOGGER.warning(
+                        "PTZ über XM-SDK-Fallback (Port 34567) erfolgreich: cmd=%s", cmd
+                    )
+                    return True
+                _LOGGER.debug("XM-SDK-Fallback (Port 34567) fehlgeschlagen: cmd=%s", cmd)
+            except Exception as xm_exc:
+                _LOGGER.debug("XM-SDK-Fallback Fehler: %s", xm_exc)
 
         # HTTP-Fallback (mehrere CGI-Varianten fuer XM/HiSilicon/Gattungsmodelle)
         if self._session:
