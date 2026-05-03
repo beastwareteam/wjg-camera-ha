@@ -15,9 +15,10 @@ from tests_helpers import (
 )
 
 class DummyEntry:
-    def __init__(self, data):
+    def __init__(self, data, options=None):
         self.data = data
         self.entry_id = "dummy"
+        self.options = options or {}
 
 
 class DummyHass:
@@ -147,6 +148,101 @@ async def test_update_data_xm_keepalive_exception_triggers_reconnect():
 
     assert reconnect_called["value"] is True
     assert data["available"] is False
+
+
+def test_coordinator_applies_onvif_option_overrides():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+        },
+        options={
+            "onvif_device_path": "/onvif/Device",
+            "onvif_media_path": "http://192.168.178.49:8899/onvif/media_service",
+            "onvif_profile_token": "002",
+            "onvif_video_source_token": "VideoSource_9",
+            "onvif_signal_item_keys": "totalarm, videoloss",
+            "onvif_signal_topic_keywords": "tot, videoloss",
+        },
+    )
+
+    coordinator = _make_coordinator(DummyHass(), entry)
+    service_paths = _get_private_attr(coordinator, "_onvif_service_paths")
+    event_rules = _get_private_attr(coordinator, "_onvif_event_rules")
+
+    assert service_paths[coordinator_module.ONVIF_SERVICE_DEVICE] == "/onvif/Device"
+    assert service_paths[coordinator_module.ONVIF_SERVICE_MEDIA] == "/onvif/media_service"
+    assert _get_private_attr(coordinator, "_preferred_onvif_profile_token") == "002"
+    assert _get_private_attr(coordinator, "_preferred_onvif_video_source_token") == "VideoSource_9"
+    assert "totalarm" in event_rules["signal_loss"]["item_keys"]
+    assert "tot" in event_rules["signal_loss"]["topic_keywords"]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_onvif_service_paths_reads_xaddrs_from_getservices():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    async def _fake_soap(service_path, body, use_auth=True, timeout_seconds=5):
+        _ = body
+        _ = use_auth
+        _ = timeout_seconds
+        if service_path != "/onvif/device_service":
+            return ""
+        return (
+            "<tds:GetServicesResponse>"
+            "<tds:Service><tds:XAddr>http://192.168.178.49:8899/onvif/device_service</tds:XAddr></tds:Service>"
+            "<tds:Service><tds:XAddr>http://192.168.178.49:8899/onvif/Media</tds:XAddr></tds:Service>"
+            "<tds:Service><tds:XAddr>http://192.168.178.49:8899/onvif/Media2</tds:XAddr></tds:Service>"
+            "<tds:Service><tds:XAddr>http://192.168.178.49:8899/onvif/PTZ</tds:XAddr></tds:Service>"
+            "<tds:Service><tds:XAddr>http://192.168.178.49:8899/onvif/Imaging</tds:XAddr></tds:Service>"
+            "</tds:GetServicesResponse>"
+        )
+
+    _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+
+    await _call_private_async(coordinator, "_async_bootstrap_onvif_service_paths")
+
+    service_paths = _get_private_attr(coordinator, "_onvif_service_paths")
+    assert service_paths[coordinator_module.ONVIF_SERVICE_DEVICE] == "/onvif/device_service"
+    assert service_paths[coordinator_module.ONVIF_SERVICE_MEDIA] == "/onvif/Media"
+    assert service_paths[coordinator_module.ONVIF_SERVICE_PTZ] == "/onvif/PTZ"
+    assert service_paths[coordinator_module.ONVIF_SERVICE_IMAGING] == "/onvif/Imaging"
+
+
+@pytest.mark.asyncio
+async def test_preferred_onvif_tokens_override_runtime_resolution():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+        },
+        options={
+            "onvif_profile_token": "002",
+            "onvif_video_source_token": "VideoSource_9",
+        },
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    assert await _call_private_async(coordinator, "_async_active_onvif_profile_token") == "002"
+    assert await _call_private_async(coordinator, "_async_onvif_video_source_token") == "VideoSource_9"
 
 
 @pytest.mark.asyncio
@@ -850,6 +946,53 @@ async def test_async_onvif_create_pullpoint_uses_address_path():
 
 
 @pytest.mark.asyncio
+async def test_async_fetch_device_info_falls_back_to_alternate_onvif_device_path():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.93",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    calls: list[str] = []
+
+    async def _fake_soap(service_path, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        calls.append(service_path)
+        if service_path == "/onvif/device_service":
+            return "404 Not Found"
+        if "GetDeviceInformation" in body:
+            return (
+                "<tds:GetDeviceInformationResponse>"
+                "<tds:FirmwareVersion>1.2.3</tds:FirmwareVersion>"
+                "<tds:SerialNumber>ABC123</tds:SerialNumber>"
+                "</tds:GetDeviceInformationResponse>"
+            )
+        return (
+            "<tds:GetNetworkInterfacesResponse>"
+            "<tt:Info><tt:HwAddress>AA:BB:CC:DD:EE:FF</tt:HwAddress></tt:Info>"
+            "</tds:GetNetworkInterfacesResponse>"
+        )
+
+    _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+
+    await coordinator.async_fetch_device_info()
+
+    assert calls[:2] == ["/onvif/device_service", "/onvif/Device"]
+    assert coordinator.firmware_version == "1.2.3"
+    assert coordinator.serial_number == "ABC123"
+    assert coordinator.mac_address == "AA:BB:CC:DD:EE:FF"
+    assert _get_private_attr(coordinator, "_onvif_service_paths")[coordinator_module.ONVIF_SERVICE_DEVICE] == "/onvif/Device"
+
+
+@pytest.mark.asyncio
 async def test_async_onvif_pull_messages_once_updates_motion_tamper_and_signal():
     entry = DummyEntry(
         {
@@ -898,6 +1041,117 @@ async def test_async_onvif_pull_messages_once_updates_motion_tamper_and_signal()
     assert coordinator.tamper_detected is True
     assert coordinator.signal_loss is True
     assert listener_calls["value"] == 1
+
+
+@pytest.mark.asyncio
+async def test_async_fetch_imaging_settings_limits_value_parsing_to_imaging_block():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    async def _fake_soap(_service_path, _body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        return (
+            "<timg:GetImagingSettingsResponse>"
+            "<tt:Contrast>17316620</tt:Contrast>"
+            "<tt:ImagingSettings>"
+            "<tt:Brightness>50</tt:Brightness>"
+            "<tt:ColorSaturation>50</tt:ColorSaturation>"
+            "<tt:Contrast>50</tt:Contrast>"
+            "<tt:Sharpness>5</tt:Sharpness>"
+            "<tt:IrCutFilter>AUTO</tt:IrCutFilter>"
+            "</tt:ImagingSettings>"
+            "</timg:GetImagingSettingsResponse>"
+        )
+
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap)
+    _set_private_attr(coordinator, "_preferred_onvif_video_source_token", "000")
+
+    assert await coordinator.async_fetch_imaging_settings() is True
+    assert coordinator.imaging["brightness"] == 50.0
+    assert coordinator.imaging["contrast"] == 50.0
+    assert coordinator.imaging["sharpness"] == 5.0
+
+
+@pytest.mark.asyncio
+async def test_async_fetch_imaging_settings_clamps_vendor_outlier_values():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    async def _fake_soap(_service_path, _body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        return (
+            "<timg:GetImagingSettingsResponse>"
+            "<timg:ImagingSettings>"
+            "<tt:Brightness>-5</tt:Brightness>"
+            "<tt:ColorSaturation>150</tt:ColorSaturation>"
+            "<tt:Contrast>17316620</tt:Contrast>"
+            "<tt:Sharpness>99</tt:Sharpness>"
+            "<tt:IrCutFilter>AUTO</tt:IrCutFilter>"
+            "</timg:ImagingSettings>"
+            "</timg:GetImagingSettingsResponse>"
+        )
+
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap)
+    _set_private_attr(coordinator, "_preferred_onvif_video_source_token", "000")
+
+    assert await coordinator.async_fetch_imaging_settings() is True
+    assert coordinator.imaging["brightness"] == 0.0
+    assert coordinator.imaging["saturation"] == 100.0
+    assert coordinator.imaging["contrast"] == 100.0
+    assert coordinator.imaging["sharpness"] == 15.0
+
+
+@pytest.mark.asyncio
+async def test_apply_onvif_event_supports_custom_signal_rule():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.94",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    rules = dict(_get_private_attr(coordinator, "_onvif_event_rules"))
+    rules["signal_loss"] = {
+        "item_keys": ("videoloss", "signal", "totalarm"),
+        "topic_keywords": ("videoloss", "signal", "tot"),
+        "state_attr": "_signal_loss",
+        "topic_only_true": True,
+    }
+    _set_private_attr(coordinator, "_onvif_event_rules", rules)
+
+    changed = _get_private_attr(coordinator, "_apply_onvif_event")(
+        "tns1:Device/TotAlarm",
+        {"totalarm": "true"},
+    )
+
+    assert changed is True
+    assert coordinator.signal_loss is True
 
 
 @pytest.mark.asyncio

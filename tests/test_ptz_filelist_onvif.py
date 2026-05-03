@@ -43,7 +43,8 @@ async def test_async_onvif_ptz():
     coordinator = _make_coordinator(MagicMock(), entry)
     class DummyMedia:
         async def GetProfiles(self):
-            class Profile: token = "t1"
+            class Profile:
+                token = "t1"
             return [Profile()]
         def create_type(self, _):
             class Req:
@@ -115,19 +116,27 @@ async def test_async_onvif_stream_url():
     coordinator = _make_coordinator(MagicMock(), entry)
     class DummyMedia:
         async def GetProfiles(self):
-            class Profile: token = "t1"
+            class Profile:
+                token = "t1"
             return [Profile()]
         def create_type(self, _):
             class Req:
                 ProfileToken = "t1"
                 StreamSetup = {}
             return Req()
-        GetStreamUri = AsyncMock(return_value=type("Uri", (), {"Uri": "rtsp://dummy/stream"})())
+        GetStreamUri = AsyncMock(return_value=type("Uri", (), {"Uri": "rtsp://1.2.3.4/stream"})())
     class DummyONVIF:
         def create_media_service(self): return DummyMedia()
     _set_private_attr(coordinator, "_onvif", DummyONVIF())
     url = await coordinator.async_onvif_stream_url()
-    assert url == "rtsp://dummy/stream"
+    assert url == "rtsp://admin:@1.2.3.4:554/stream"
+
+
+def test_normalize_onvif_rtsp_url_preserves_complete_url():
+    entry = DummyEntry({"host": "1.2.3.4", "rtsp_port": 554, "port": 80, "protocol": "rtsp"})
+    coordinator = _make_coordinator(MagicMock(), entry)
+
+    assert getattr(coordinator, "_normalize_onvif_rtsp_url")("rtsp://user:pass@5.6.7.8:8554/live") == "rtsp://user:pass@5.6.7.8:8554/live"
 
 
 @pytest.mark.asyncio

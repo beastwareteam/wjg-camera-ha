@@ -115,6 +115,55 @@ python3 discovery/scan_camera.py --ip 192.168.4.1
 **Einstellungen → Integrationen → WJG Camera → Konfigurieren**  
 Protokoll, RTSP-Pfad, Snapshot-Pfad, HTTP-Retries und ONVIF-Port sind jederzeit änderbar.
 
+### Erweiterte ONVIF-Optionen
+
+Für Geräte mit abweichenden ONVIF-Strukturen können zusätzliche Optionen gesetzt werden:
+
+| Option | Bedeutung |
+|---|---|
+| ONVIF Device Path | Überschreibt den Device-Service-Endpunkt |
+| ONVIF Media Path | Überschreibt den Media-Service-Endpunkt |
+| ONVIF PTZ Path | Überschreibt den PTZ-Service-Endpunkt |
+| ONVIF Imaging Path | Überschreibt den Imaging-Service-Endpunkt |
+| ONVIF Events Path | Überschreibt den Events-Service-Endpunkt |
+| ONVIF Profile Token | Erzwingt ein bestimmtes ONVIF-Profil für PTZ und Stream-URL |
+| ONVIF VideoSource Token | Erzwingt einen bestimmten VideoSourceToken für Imaging |
+| Motion / Tamper / Signal Item Keys | Zusätzliche ONVIF-Item-Namen als CSV |
+| Motion / Tamper / Signal Topic Keywords | Zusätzliche Topic-Teilstrings als CSV |
+
+Leere Felder bleiben optional. Standardmäßig lernt die Integration die XAddrs über `GetServices` selbst und fällt danach auf bekannte ONVIF-Kandidaten zurück.
+
+### Verifiziertes Gerätebeispiel: 192.168.178.49
+
+Der reale Test gegen `192.168.178.49` hat bestätigt:
+
+| Bereich | Verifiziert |
+|---|---|
+| RTSP | Port `554` offen |
+| ONVIF | Port `8899` offen |
+| HTTP | Port `80` geschlossen |
+| XM SDK | Port `34567` geschlossen |
+| Device | `/onvif/device_service` |
+| Media | `/onvif/Media` |
+| PTZ | `/onvif/PTZ` |
+| Imaging | `/onvif/Imaging` |
+| Events | `/onvif/Events` |
+| ProfileToken | `000`, `001`, `002` |
+| PTZ-Test | `ContinuousMove(left)` + `Stop` erfolgreich mit `ProfileToken=000` |
+
+Empfohlene Optionen für dieses Gerät, falls die Auto-Erkennung in einer bestimmten Installation nicht greift:
+
+```text
+Protokoll: onvif
+ONVIF-Port: 8899
+ONVIF Device Path: /onvif/device_service
+ONVIF Media Path: /onvif/Media
+ONVIF PTZ Path: /onvif/PTZ
+ONVIF Imaging Path: /onvif/Imaging
+ONVIF Events Path: /onvif/Events
+ONVIF Profile Token: 000
+```
+
 ---
 
 ## Feature-Übersicht
@@ -304,11 +353,13 @@ Fallback: Bei SOAP-Fehler automatisch auf python-onvif library.
 
 | Dienst | Endpunkt |
 |---|---|
-| Device | `/onvif/device_service` |
-| Media | Über python-onvif library |
+| Device | Automatisch per `GetServices`, Fallback: `/onvif/device_service`, `/onvif/Device` |
+| Media | Automatisch per `GetServices`, Fallback: `/onvif/Media`, `/onvif/Media2`, `/onvif/media_service` |
 | PTZ | `/onvif/PTZ` |
-| Imaging | `/onvif/imaging` |
-| Events | `/onvif/events` |
+| Imaging | Automatisch per `GetServices`, Fallback: `/onvif/Imaging`, `/onvif/imaging` |
+| Events | Automatisch per `GetServices`, Fallback: `/onvif/Events`, `/onvif/events_service` |
+
+Die Integration übernimmt bevorzugt die vom Gerät gemeldeten XAddrs aus `GetServices` und merkt sich erfolgreiche Endpunkte. Manuelle Overrides sind nur für Geräte nötig, deren ONVIF-Implementierung inkonsistent oder unvollständig ist.
 
 ---
 
@@ -359,17 +410,17 @@ pytest -v
 pytest tests/test_coordinator.py -v
 ```
 
-### Testabdeckung (110 Tests · 0 Fehler)
+### Testabdeckung
 
 | Testdatei | Beschreibung |
 |---|---|
 | `test_config_flow_and_init.py` | Config Flow, Options Flow, Entry-Setup |
-| `test_coordinator.py` | Coordinator-Logik, ONVIF-Init, State-Handling |
+| `test_coordinator.py` | Coordinator-Logik, ONVIF-Init, GetServices/XAddr-Bootstrap, State-Handling |
 | `test_entities.py` | Alle Entitäten-Plattformen |
 | `test_http_fallback.py` | HTTP-Retry- und Fallback-Verhalten |
 | `test_init_lifecycle.py` | Laden/Entladen der Integration |
 | `test_platform_setup.py` | Plattform-Registrierung |
-| `test_ptz_filelist_onvif.py` | PTZ-Befehle, Dateiliste, ONVIF-Methoden |
+| `test_ptz_filelist_onvif.py` | PTZ-Befehle, Dateiliste, ONVIF-Methoden, echte Profile-/VideoSource-Tokens |
 | `test_xm_protocol.py` | XM SDK Protokoll-Kommunikation |
 
 ---

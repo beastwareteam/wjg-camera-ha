@@ -24,6 +24,7 @@ from datetime import timedelta
 from typing import Any
 from urllib.parse import quote
 from urllib.parse import urlparse
+from urllib.parse import urlunparse
 
 import aiohttp
 import async_timeout
@@ -40,6 +41,19 @@ CONF_HTTP_RETRIES = "http_retries"
 CONF_RTSP_PATH = "rtsp_path"
 CONF_RTSP_PORT = "rtsp_port"
 CONF_SNAPSHOT_PATH = "snapshot_path"
+CONF_ONVIF_DEVICE_PATH = "onvif_device_path"
+CONF_ONVIF_MEDIA_PATH = "onvif_media_path"
+CONF_ONVIF_PTZ_PATH = "onvif_ptz_path"
+CONF_ONVIF_IMAGING_PATH = "onvif_imaging_path"
+CONF_ONVIF_EVENTS_PATH = "onvif_events_path"
+CONF_ONVIF_PROFILE_TOKEN = "onvif_profile_token"
+CONF_ONVIF_VIDEO_SOURCE_TOKEN = "onvif_video_source_token"
+CONF_ONVIF_MOTION_ITEM_KEYS = "onvif_motion_item_keys"
+CONF_ONVIF_MOTION_TOPIC_KEYWORDS = "onvif_motion_topic_keywords"
+CONF_ONVIF_TAMPER_ITEM_KEYS = "onvif_tamper_item_keys"
+CONF_ONVIF_TAMPER_TOPIC_KEYWORDS = "onvif_tamper_topic_keywords"
+CONF_ONVIF_SIGNAL_ITEM_KEYS = "onvif_signal_item_keys"
+CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS = "onvif_signal_topic_keywords"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_HTTP_RETRIES = 1
 DEFAULT_RTSP_PATH = "/user=admin&password=&channel=1&stream=1.sdp?real_stream"
@@ -58,6 +72,64 @@ PROTOCOL_HTTP = "http_only"
 PROTOCOL_RTSP = "rtsp"
 PROTOCOL_XM = "xm_sdk"
 PROTOCOL_ONVIF = "onvif"
+
+ONVIF_SERVICE_DEVICE = "device"
+ONVIF_SERVICE_MEDIA = "media"
+ONVIF_SERVICE_PTZ = "ptz"
+ONVIF_SERVICE_IMAGING = "imaging"
+ONVIF_SERVICE_EVENTS = "events"
+
+ONVIF_SERVICE_PATH_CANDIDATES: dict[str, tuple[str, ...]] = {
+    ONVIF_SERVICE_DEVICE: ("/onvif/device_service", "/onvif/Device"),
+    ONVIF_SERVICE_MEDIA: ("/onvif/Media", "/onvif/Media2", "/onvif/media_service"),
+    ONVIF_SERVICE_PTZ: ("/onvif/PTZ", "/onvif/ptz_service"),
+    ONVIF_SERVICE_IMAGING: ("/onvif/Imaging", "/onvif/imaging"),
+    ONVIF_SERVICE_EVENTS: ("/onvif/Events", "/onvif/events_service"),
+}
+
+ONVIF_EVENT_RULES: dict[str, dict[str, Any]] = {
+    "motion": {
+        "item_keys": ("ismotion", "motion", "motionalarm", "videomotion"),
+        "topic_keywords": ("motion",),
+        "state_attr": None,
+        "topic_only_true": True,
+    },
+    "tamper": {
+        "item_keys": ("tamper", "sabotage", "is_tamper", "cellmotiondetector"),
+        "topic_keywords": ("tamper", "sabotage"),
+        "state_attr": "_tamper",
+        "topic_only_true": True,
+    },
+    "signal_loss": {
+        "item_keys": ("videoloss", "signal", "signal_loss", "loss"),
+        "topic_keywords": ("videoloss", "signal"),
+        "state_attr": "_signal_loss",
+        "topic_only_true": True,
+    },
+}
+
+ONVIF_SERVICE_OPTION_MAP: dict[str, str] = {
+    ONVIF_SERVICE_DEVICE: CONF_ONVIF_DEVICE_PATH,
+    ONVIF_SERVICE_MEDIA: CONF_ONVIF_MEDIA_PATH,
+    ONVIF_SERVICE_PTZ: CONF_ONVIF_PTZ_PATH,
+    ONVIF_SERVICE_IMAGING: CONF_ONVIF_IMAGING_PATH,
+    ONVIF_SERVICE_EVENTS: CONF_ONVIF_EVENTS_PATH,
+}
+
+ONVIF_EVENT_OPTION_MAP: dict[str, dict[str, str]] = {
+    "motion": {
+        "item_keys": CONF_ONVIF_MOTION_ITEM_KEYS,
+        "topic_keywords": CONF_ONVIF_MOTION_TOPIC_KEYWORDS,
+    },
+    "tamper": {
+        "item_keys": CONF_ONVIF_TAMPER_ITEM_KEYS,
+        "topic_keywords": CONF_ONVIF_TAMPER_TOPIC_KEYWORDS,
+    },
+    "signal_loss": {
+        "item_keys": CONF_ONVIF_SIGNAL_ITEM_KEYS,
+        "topic_keywords": CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS,
+    },
+}
 
 _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL = timedelta(seconds=10)
@@ -138,7 +210,6 @@ class XMClient:
 
     def _login(self) -> bool:
         # Passwort-Hash nach XM-Methode (MD5 mit Padding)
-        import hashlib
         raw = hashlib.md5(self.password.encode()).hexdigest().upper()
         pwd_hash = ""
         for i in range(0, 32, 2):
@@ -225,6 +296,44 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             return DEFAULT_HTTP_RETRIES
         return max(0, min(5, retries))
 
+    @staticmethod
+    def _parse_csv_option(value: Any) -> tuple[str, ...]:
+        """CSV-/Listenoptionen robust in eine normalisierte Tupelstruktur überführen."""
+        if value is None:
+            return ()
+        if isinstance(value, (list, tuple, set)):
+            parts = [str(item).strip().lower() for item in value]
+        else:
+            parts = [part.strip().lower() for part in str(value).split(",")]
+        seen: list[str] = []
+        for part in parts:
+            if part and part not in seen:
+                seen.append(part)
+        return tuple(seen)
+
+    def _apply_onvif_option_overrides(self, options: dict[str, Any]) -> None:
+        """Gerätespezifische ONVIF-Servicepfade und Event-Aliase aus Optionen anwenden."""
+        for service_key, option_key in ONVIF_SERVICE_OPTION_MAP.items():
+            service_path = self._normalize_onvif_path(options.get(option_key))
+            if service_path:
+                self._onvif_service_paths[service_key] = service_path
+
+        for rule_name, option_map in ONVIF_EVENT_OPTION_MAP.items():
+            rule = dict(self._onvif_event_rules.get(rule_name, {}))
+            for field_name, option_key in option_map.items():
+                extras = self._parse_csv_option(options.get(option_key))
+                if not extras:
+                    continue
+                base_values = tuple(
+                    str(item).strip().lower() for item in rule.get(field_name, ()) if str(item).strip()
+                )
+                merged = list(base_values)
+                for extra in extras:
+                    if extra not in merged:
+                        merged.append(extra)
+                rule[field_name] = tuple(merged)
+            self._onvif_event_rules[rule_name] = rule
+
     def is_adb_proxy(self) -> bool:
         """Erkennt, ob ADB-Proxy-Modus aktiv ist (localhost mit Port 8080/8081)."""
         return (
@@ -299,6 +408,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._signal_loss: bool = False
         # Stream
         self._active_stream: str = "000"  # "000"=main, "001"=sub
+        self._preferred_onvif_profile_token: str = str(
+            options.get(CONF_ONVIF_PROFILE_TOKEN, "")
+        ).strip()
+        self._preferred_onvif_video_source_token: str = str(
+            options.get(CONF_ONVIF_VIDEO_SOURCE_TOKEN, "")
+        ).strip()
         # Audio
         self._microphone_enabled: bool = True
         self._audio_output_token: str = ""
@@ -312,6 +427,15 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._update_count: int = 0
         self._event_pullpoint_path: str = ""
         self._event_task: asyncio.Task | None = None
+        self._onvif_profile_tokens: dict[str, str] = {}
+        self._onvif_video_source_token: str = "000"
+        self._onvif_service_paths: dict[str, str] = {
+            key: paths[0] for key, paths in ONVIF_SERVICE_PATH_CANDIDATES.items()
+        }
+        self._onvif_event_rules: dict[str, dict[str, Any]] = {
+            name: dict(rule) for name, rule in ONVIF_EVENT_RULES.items()
+        }
+        self._apply_onvif_option_overrides(options)
         if self.protocol == "onvif":
             try:
                 from onvif import ONVIFCamera
@@ -333,10 +457,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         try:
             media_service = self._onvif.create_media_service()
             ptz_service = self._onvif.create_ptz_service()
-            profiles = await _await_if_needed(media_service.GetProfiles())
-            profile = profiles[0]
+            await _await_if_needed(media_service.GetProfiles())
+            profile_token = await self._async_active_onvif_profile_token()
             req = ptz_service.create_type('ContinuousMove')
-            req.ProfileToken = profile.token
+            req.ProfileToken = profile_token
             req.Velocity = {}
             if cmd == "up":
                 req.Velocity = {"PanTilt": {"x": 0, "y": speed}}
@@ -351,7 +475,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             elif cmd == "zoom_out":
                 req.Velocity = {"Zoom": {"x": -speed}}
             elif cmd == "stop":
-                await _await_if_needed(ptz_service.Stop({'ProfileToken': profile.token}))
+                await _await_if_needed(ptz_service.Stop({'ProfileToken': profile_token}))
                 return True
             else:
                 return False
@@ -367,16 +491,51 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             return None
         try:
             media_service = self._onvif.create_media_service()
-            profiles = await _await_if_needed(media_service.GetProfiles())
-            profile = profiles[0]
+            profiles = list(await _await_if_needed(media_service.GetProfiles()) or [])
+            profile_token = await self._async_active_onvif_profile_token()
+            if not profile_token and profiles:
+                profile_token = str(getattr(profiles[0], "token", ""))
             req = media_service.create_type('GetStreamUri')
-            req.ProfileToken = profile.token
+            req.ProfileToken = profile_token
             req.StreamSetup = {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}}
             uri = await _await_if_needed(media_service.GetStreamUri(req))
-            return uri.Uri
+            raw_uri = getattr(uri, "Uri", None)
+            normalized_uri = self._normalize_onvif_rtsp_url(raw_uri)
+            _LOGGER.debug(
+                "ONVIF Stream-URL aufgelöst: profile=%s media_path=%s raw=%s normalized=%s",
+                profile_token,
+                self._onvif_service_paths.get(ONVIF_SERVICE_MEDIA),
+                raw_uri,
+                normalized_uri,
+            )
+            return normalized_uri
         except Exception as e:
             _LOGGER.error("ONVIF Stream-URL konnte nicht abgerufen werden: %s", e)
             return None
+
+    def _normalize_onvif_rtsp_url(self, raw_url: str | None) -> str | None:
+        """ONVIF-RTSP-URLs auf Host, Port und optionale Auth vervollständigen."""
+        if not raw_url:
+            return None
+        parsed = urlparse(raw_url)
+        if parsed.scheme.lower() != "rtsp":
+            return raw_url
+
+        hostname = parsed.hostname or self.host
+        port = parsed.port or self.rtsp_port
+        username = parsed.username
+        password = parsed.password
+        if username is None and self.username:
+            username = quote(self.username or "admin", safe="")
+            password = quote(self.password or "", safe="")
+
+        if username is not None:
+            auth = f"{username}:{password or ''}@"
+        else:
+            auth = ""
+        netloc = f"{auth}{hostname}:{port}"
+        path = parsed.path or "/"
+        return urlunparse(("rtsp", netloc, path, parsed.params, parsed.query, parsed.fragment))
 
     def _render_rtsp_path(self) -> str:
         """RTSP-Pfad mit konfigurierten Zugangsdaten erzeugen."""
@@ -530,6 +689,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol == PROTOCOL_XM:
             await self.hass.async_add_executor_job(self._setup_xm)
 
+        if self.protocol == PROTOCOL_ONVIF:
+            try:
+                await self._async_bootstrap_onvif_service_paths()
+            except Exception as exc:
+                _LOGGER.debug("ONVIF GetServices-Bootstrap fehlgeschlagen: %s", exc)
+
         await self.async_resolve_rtsp_path()
 
         # Einmalig Geräte-Infos und Bildeinstellungen laden
@@ -553,7 +718,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol == PROTOCOL_ONVIF:
             if self._onvif:
                 try:
-                    await self._onvif.update_xaddrs()
+                    await _await_if_needed(self._onvif.update_xaddrs())
                     _LOGGER.debug("ONVIF xAddrs erfolgreich geladen von %s:%s", self.host, self.onvif_port)
                 except Exception as exc:
                     _LOGGER.warning(
@@ -777,6 +942,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             if cmd == "stop":
                 return await self.async_ptz_stop()
             spd = f"{min(speed, 8) / 8:.2f}"
+            profile_token = await self._async_active_onvif_profile_token()
             soap_velocity_map: dict[str, str] = {
                 "up":       f'<tt:PanTilt x="0.00" y="{spd}"/>',
                 "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/>',
@@ -786,17 +952,26 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 "zoom_out": f'<tt:Zoom x="-{spd}"/>',
             }
             if cmd in soap_velocity_map:
-                resp = await self._onvif_soap(
-                    "/onvif/PTZ",
+                _LOGGER.debug(
+                    "ONVIF PTZ sende: cmd=%s speed=%s profile=%s ptz_path=%s",
+                    cmd,
+                    speed,
+                    profile_token,
+                    self._onvif_service_paths.get(ONVIF_SERVICE_PTZ),
+                )
+                resp = await self._onvif_soap_for(
+                    ONVIF_SERVICE_PTZ,
                     f"<tptz:ContinuousMove>"
-                    f"<tptz:ProfileToken>{self._active_stream}</tptz:ProfileToken>"
+                    f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
                     f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
                     f"</tptz:ContinuousMove>",
                 )
                 if "ContinuousMoveResponse" in resp:
+                    _LOGGER.debug("ONVIF PTZ erfolgreich: cmd=%s profile=%s", cmd, profile_token)
                     return True
                 # Fallback auf python-onvif library
                 if self._onvif:
+                    _LOGGER.debug("ONVIF PTZ Direct-SOAP ohne Response, nutze Library-Fallback: cmd=%s", cmd)
                     return await self.async_onvif_ptz(cmd, min(speed, 8) / 8.0)
             return False
 
@@ -894,6 +1069,208 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             for m in re.finditer(rf"<[^>]*{re.escape(tag)}[^>/]*>([^<]*)<", text)
         ]
 
+    @staticmethod
+    def _xml_fragment(text: str, tag: str) -> str:
+        """Den Inhalt des ersten XML-Tags ohne äußeres Element extrahieren."""
+        match = re.search(
+            rf"<(?:[^:>]+:)?{re.escape(tag)}(?:\s[^>]*)?>(.*?)</(?:[^:>]+:)?{re.escape(tag)}>",
+            text,
+            re.DOTALL,
+        )
+        return match.group(1) if match else text
+
+    @staticmethod
+    def _clamp_float(value: float, minimum: float, maximum: float) -> float:
+        """Numerische ONVIF-Werte auf den von der Integration erwarteten Bereich begrenzen."""
+        return max(minimum, min(maximum, value))
+
+    @staticmethod
+    def _normalize_onvif_path(path: str | None) -> str:
+        """XAddr-/Pfadangabe auf einen stabilen ONVIF-Pfad reduzieren."""
+        if not path:
+            return ""
+        parsed = urlparse(path)
+        normalized = parsed.path or str(path)
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+        return normalized
+
+    @staticmethod
+    def _looks_like_wrong_onvif_path(response_text: str) -> bool:
+        """Antworten erkennen, die eher auf einen falschen Endpoint als auf einen SOAP-Fault hindeuten."""
+        if not response_text:
+            return True
+        lowered = response_text.lower()
+        if "<html" in lowered and "not found" in lowered:
+            return True
+        return any(marker in lowered for marker in ("404 not found", "not found", "unknown service", "invalid service"))
+
+    @staticmethod
+    def _service_key_for_onvif_path(path: str) -> str | None:
+        """Service-Key für einen ONVIF-XAddr-Pfad ableiten."""
+        normalized = path.lower()
+        if "device" in normalized:
+            return ONVIF_SERVICE_DEVICE
+        if "ptz" in normalized:
+            return ONVIF_SERVICE_PTZ
+        if "imag" in normalized:
+            return ONVIF_SERVICE_IMAGING
+        if "event" in normalized:
+            return ONVIF_SERVICE_EVENTS
+        if "media" in normalized:
+            return ONVIF_SERVICE_MEDIA
+        return None
+
+    def _remember_onvif_service_path(self, service_key: str, service_path: str) -> None:
+        """Erfolgreichen Servicepfad für spätere Requests merken."""
+        normalized = self._normalize_onvif_path(service_path)
+        if normalized:
+            self._onvif_service_paths[service_key] = normalized
+
+    def _learn_onvif_service_paths(self, response_text: str) -> None:
+        """Servicepfade aus einer GetServices-Antwort übernehmen."""
+        seen_service_keys: set[str] = set()
+        for xaddr in re.findall(r"<[^>]*XAddr[^>]*>([^<]+)</[^>]*XAddr>", response_text, re.IGNORECASE):
+            normalized = self._normalize_onvif_path(xaddr)
+            service_key = self._service_key_for_onvif_path(normalized)
+            if service_key and service_key not in seen_service_keys:
+                self._remember_onvif_service_path(service_key, normalized)
+                seen_service_keys.add(service_key)
+
+    async def _async_bootstrap_onvif_service_paths(self) -> None:
+        """Direkt per GetServices die vom Gerät gemeldeten XAddrs laden."""
+        body = "<tds:GetServices><tds:IncludeCapability>true</tds:IncludeCapability></tds:GetServices>"
+        for service_path in self._candidate_onvif_service_paths(ONVIF_SERVICE_DEVICE):
+            response_text = await self._onvif_soap(
+                service_path,
+                body,
+                use_auth=False,
+            )
+            if response_text and "GetServicesResponse" in response_text:
+                self._remember_onvif_service_path(ONVIF_SERVICE_DEVICE, service_path)
+                self._learn_onvif_service_paths(response_text)
+                _LOGGER.debug("ONVIF GetServices-Bootstrap erfolgreich: %s", self._onvif_service_paths)
+                return
+
+    def _candidate_onvif_service_paths(self, service_key: str) -> list[str]:
+        """Bekannte und kompatible Pfadkandidaten für einen ONVIF-Service liefern."""
+        candidates: list[str] = []
+        preferred = self._normalize_onvif_path(self._onvif_service_paths.get(service_key))
+        if preferred:
+            candidates.append(preferred)
+        for path in ONVIF_SERVICE_PATH_CANDIDATES.get(service_key, ()): 
+            normalized = self._normalize_onvif_path(path)
+            if normalized and normalized not in candidates:
+                candidates.append(normalized)
+        return candidates
+
+    async def _onvif_soap_for(
+        self,
+        service_key: str,
+        body: str,
+        use_auth: bool = True,
+        timeout_seconds: int = 5,
+    ) -> str:
+        """ONVIF-Request mit Service-Fallbacks senden und erfolgreichen Pfad cachen."""
+        last_response = ""
+        for service_path in self._candidate_onvif_service_paths(service_key):
+            _LOGGER.debug("ONVIF SOAP versuche service=%s path=%s", service_key, service_path)
+            response_text = await self._onvif_soap(
+                service_path,
+                body,
+                use_auth=use_auth,
+                timeout_seconds=timeout_seconds,
+            )
+            if not self._looks_like_wrong_onvif_path(response_text):
+                self._remember_onvif_service_path(service_key, service_path)
+                _LOGGER.debug("ONVIF SOAP erfolgreich: service=%s path=%s", service_key, service_path)
+                return response_text
+            last_response = response_text
+            _LOGGER.debug("ONVIF SOAP Pfad verworfen: service=%s path=%s", service_key, service_path)
+        return last_response
+
+    async def _async_load_onvif_tokens(self) -> None:
+        """ONVIF Profile- und VideoSource-Tokens aus der Kamera laden."""
+        if self._preferred_onvif_profile_token and self._preferred_onvif_video_source_token:
+            self._onvif_profile_tokens.setdefault(self._active_stream, self._preferred_onvif_profile_token)
+            self._onvif_video_source_token = self._preferred_onvif_video_source_token
+            _LOGGER.debug(
+                "ONVIF Tokens per Override gesetzt: profile=%s video_source=%s",
+                self._preferred_onvif_profile_token,
+                self._preferred_onvif_video_source_token,
+            )
+            return
+        if not self._onvif:
+            return
+        if self._onvif_profile_tokens and self._onvif_video_source_token:
+            return
+        try:
+            media_service = self._onvif.create_media_service()
+            profiles = list(await _await_if_needed(media_service.GetProfiles()) or [])
+        except Exception as exc:
+            _LOGGER.debug("ONVIF Profile-Tokens konnten nicht geladen werden: %s", exc)
+            return
+
+        mapping: dict[str, str] = {}
+        for index, profile in enumerate(profiles):
+            token = getattr(profile, "token", None)
+            if not token:
+                continue
+            logical_token = "000" if index == 0 else "001" if index == 1 else str(token)
+            mapping[logical_token] = str(token)
+
+        if mapping:
+            first_token = next(iter(mapping.values()))
+            mapping.setdefault("000", first_token)
+            mapping.setdefault("001", mapping["000"])
+            self._onvif_profile_tokens = mapping
+            if self._preferred_onvif_profile_token:
+                self._onvif_profile_tokens[self._active_stream] = self._preferred_onvif_profile_token
+            _LOGGER.debug("ONVIF Profile-Tokens geladen: %s", self._onvif_profile_tokens)
+
+        first_profile = profiles[0] if profiles else None
+        if first_profile is not None:
+            video_source_config = getattr(first_profile, "VideoSourceConfiguration", None)
+            source_token = getattr(video_source_config, "SourceToken", None)
+            if source_token:
+                self._onvif_video_source_token = str(source_token)
+                _LOGGER.debug("ONVIF VideoSourceToken aus Profil geladen: %s", self._onvif_video_source_token)
+                return
+
+        try:
+            get_video_sources = getattr(media_service, "GetVideoSources", None)
+            if get_video_sources is None:
+                return
+            video_sources = await _await_if_needed(get_video_sources())
+        except Exception as exc:
+            _LOGGER.debug("ONVIF VideoSource-Token konnte nicht geladen werden: %s", exc)
+            return
+
+        if video_sources:
+            source_token = getattr(video_sources[0], "token", None)
+            if source_token:
+                self._onvif_video_source_token = str(source_token)
+                _LOGGER.debug("ONVIF VideoSourceToken aus GetVideoSources geladen: %s", self._onvif_video_source_token)
+
+    async def _async_active_onvif_profile_token(self) -> str:
+        """Echten ONVIF ProfileToken für den aktuell gewählten Stream liefern."""
+        if self._preferred_onvif_profile_token:
+            return self._preferred_onvif_profile_token
+        await self._async_load_onvif_tokens()
+        if self._onvif_profile_tokens:
+            return self._onvif_profile_tokens.get(
+                self._active_stream,
+                next(iter(self._onvif_profile_tokens.values())),
+            )
+        return self._active_stream or "000"
+
+    async def _async_onvif_video_source_token(self) -> str:
+        """Echten ONVIF VideoSourceToken liefern."""
+        if self._preferred_onvif_video_source_token:
+            return self._preferred_onvif_video_source_token
+        await self._async_load_onvif_tokens()
+        return self._onvif_video_source_token or "000"
+
     # ── PTZ ─────────────────────────────────────────────────────────────────
 
     @property
@@ -910,10 +1287,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_ptz_home(self) -> bool:
         """PTZ-Heimposition anfahren (ONVIF GoToHomePosition)."""
         spd = f"{self._ptz_speed / 8:.2f}"
-        resp = await self._onvif_soap(
-            "/onvif/PTZ",
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
             f"<tptz:GotoHomePosition>"
-            f"<tptz:ProfileToken>000</tptz:ProfileToken>"
+            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
             f'<tptz:Speed><tt:PanTilt x="{spd}" y="{spd}"/></tptz:Speed>'
             f"</tptz:GotoHomePosition>",
         )
@@ -921,31 +1299,34 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_ptz_set_home(self) -> bool:
         """Aktuelle Position als Heimposition speichern."""
-        resp = await self._onvif_soap(
-            "/onvif/PTZ",
-            "<tptz:SetHomePosition>"
-            "<tptz:ProfileToken>000</tptz:ProfileToken>"
-            "</tptz:SetHomePosition>",
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
+            f"<tptz:SetHomePosition>"
+            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+            f"</tptz:SetHomePosition>",
         )
         return "SetHomePositionResponse" in resp
 
     async def async_ptz_stop(self) -> bool:
         """Laufende PTZ-Bewegung sofort stoppen."""
-        resp = await self._onvif_soap(
-            "/onvif/PTZ",
-            "<tptz:Stop>"
-            "<tptz:ProfileToken>000</tptz:ProfileToken>"
-            "<tptz:PanTilt>true</tptz:PanTilt>"
-            "<tptz:Zoom>true</tptz:Zoom>"
-            "</tptz:Stop>",
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
+            f"<tptz:Stop>"
+            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+            f"<tptz:PanTilt>true</tptz:PanTilt>"
+            f"<tptz:Zoom>true</tptz:Zoom>"
+            f"</tptz:Stop>",
         )
         return "StopResponse" in resp
 
     async def async_ptz_get_presets(self) -> dict[str, str]:
         """Alle PTZ-Presets laden (token -> name)."""
-        resp = await self._onvif_soap(
-            "/onvif/PTZ",
-            "<tptz:GetPresets><tptz:ProfileToken>000</tptz:ProfileToken></tptz:GetPresets>",
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
+            f"<tptz:GetPresets><tptz:ProfileToken>{profile_token}</tptz:ProfileToken></tptz:GetPresets>",
         )
         presets: dict[str, str] = {}
         for m in re.finditer(
@@ -962,10 +1343,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_ptz_goto_preset(self, token: str) -> bool:
         """Preset anfahren."""
         spd = f"{self._ptz_speed / 8:.2f}"
-        resp = await self._onvif_soap(
-            "/onvif/PTZ",
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
             f"<tptz:GotoPreset>"
-            f"<tptz:ProfileToken>000</tptz:ProfileToken>"
+            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
             f"<tptz:PresetToken>{token}</tptz:PresetToken>"
             f'<tptz:Speed><tt:PanTilt x="{spd}" y="{spd}"/>'
             f'<tt:Zoom x="{spd}"/></tptz:Speed>'
@@ -978,10 +1360,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     ) -> str | None:
         """Aktuelle Position als Preset speichern. Gibt neuen Token zurück."""
         tok_xml = f"<tptz:PresetToken>{token}</tptz:PresetToken>" if token else ""
-        resp = await self._onvif_soap(
-            "/onvif/PTZ",
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
             f"<tptz:SetPreset>"
-            f"<tptz:ProfileToken>000</tptz:ProfileToken>"
+            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
             f"<tptz:PresetName>{name}</tptz:PresetName>"
             f"{tok_xml}"
             f"</tptz:SetPreset>",
@@ -994,10 +1377,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_ptz_delete_preset(self, token: str) -> bool:
         """Preset löschen."""
-        resp = await self._onvif_soap(
-            "/onvif/PTZ",
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
             f"<tptz:RemovePreset>"
-            f"<tptz:ProfileToken>000</tptz:ProfileToken>"
+            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
             f"<tptz:PresetToken>{token}</tptz:PresetToken>"
             f"</tptz:RemovePreset>",
         )
@@ -1014,30 +1398,32 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_fetch_imaging_settings(self) -> bool:
         """Bildeinstellungen von Kamera laden und in self._imaging speichern."""
-        resp = await self._onvif_soap(
-            "/onvif/Imaging",
-            "<timg:GetImagingSettings>"
-            "<timg:VideoSourceToken>000</timg:VideoSourceToken>"
-            "</timg:GetImagingSettings>",
+        video_source_token = await self._async_onvif_video_source_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_IMAGING,
+            f"<timg:GetImagingSettings>"
+            f"<timg:VideoSourceToken>{video_source_token}</timg:VideoSourceToken>"
+            f"</timg:GetImagingSettings>",
         )
         if not resp or "ImagingSettings" not in resp:
             return False
+        imaging_block = self._xml_fragment(resp, "ImagingSettings")
 
         def _f(tag: str, default: float) -> float:
-            v = self._xml_text(resp, tag)
+            v = self._xml_text(imaging_block, tag)
             try:
                 return float(v)
             except (ValueError, TypeError):
                 return default
 
         def _s(tag: str, default: str) -> str:
-            v = self._xml_text(resp, tag)
+            v = self._xml_text(imaging_block, tag)
             return v if v else default
 
         # WDR nested
         wdr_m = re.search(
             r"<[^>]*WideDynamicRange[^>]*>(.*?)</[^>]*WideDynamicRange>",
-            resp,
+            imaging_block,
             re.DOTALL,
         )
         wdr_enabled = False
@@ -1060,7 +1446,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         wb_cb = 50.0
         wb_m = re.search(
             r"<[^>]*WhiteBalance[^>]*>(.*?)</[^>]*WhiteBalance>",
-            resp,
+            imaging_block,
             re.DOTALL,
         )
         if wb_m:
@@ -1087,7 +1473,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         exp_time = 50.0
         exp_gain = 50.0
         exp_m = re.search(
-            r"<[^>]*Exposure[^>]*>(.*?)</[^>]*Exposure>", resp, re.DOTALL
+            r"<[^>]*Exposure[^>]*>(.*?)</[^>]*Exposure>", imaging_block, re.DOTALL
         )
         if exp_m:
             exp_content = exp_m.group(1)
@@ -1113,7 +1499,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # BLC
         blc_m = re.search(
             r"<[^>]*BacklightCompensation[^>]*>(.*?)</[^>]*BacklightCompensation>",
-            resp,
+            imaging_block,
             re.DOTALL,
         )
         blc_mode = "OFF"
@@ -1123,22 +1509,27 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 blc_mode = blc_mode_m.group(1).strip()
 
         self._imaging = {
-            "brightness": _f("Brightness", 50),
-            "contrast": _f("Contrast", 50),
-            "saturation": _f("ColorSaturation", 50),
-            "sharpness": _f("Sharpness", 0),
+            "brightness": self._clamp_float(_f("Brightness", 50), 0, 100),
+            "contrast": self._clamp_float(_f("Contrast", 50), 0, 100),
+            "saturation": self._clamp_float(_f("ColorSaturation", 50), 0, 100),
+            "sharpness": self._clamp_float(_f("Sharpness", 0), 0, 15),
             "ir_cut": _s("IrCutFilter", "AUTO"),
             "wdr_enabled": wdr_enabled,
-            "wdr_level": wdr_level,
+            "wdr_level": self._clamp_float(wdr_level, 0, 100),
             "wb_mode": wb_mode,
-            "wb_cr": wb_cr,
-            "wb_cb": wb_cb,
+            "wb_cr": self._clamp_float(wb_cr, 0, 100),
+            "wb_cb": self._clamp_float(wb_cb, 0, 100),
             "exposure_mode": exp_mode,
             "exposure_priority": exp_prio,
-            "exposure_time": exp_time,
-            "gain": exp_gain,
+            "exposure_time": self._clamp_float(exp_time, 0, 100),
+            "gain": self._clamp_float(exp_gain, 0, 100),
             "backlight": blc_mode,
         }
+        _LOGGER.debug(
+            "ONVIF Imaging geladen: video_source=%s values=%s",
+            video_source_token,
+            {k: self._imaging.get(k) for k in ("brightness", "contrast", "saturation", "sharpness", "ir_cut")},
+        )
         return True
 
     async def async_set_imaging_setting(self, key: str, value: Any) -> bool:
@@ -1146,6 +1537,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if not self._imaging:
             await self.async_fetch_imaging_settings()
         self._imaging[key] = value
+        video_source_token = await self._async_onvif_video_source_token()
 
         img = self._imaging
         wdr_mode = "ON" if img.get("wdr_enabled", False) else "OFF"
@@ -1157,7 +1549,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         body = (
             "<timg:SetImagingSettings>"
-            "<timg:VideoSourceToken>000</timg:VideoSourceToken>"
+            f"<timg:VideoSourceToken>{video_source_token}</timg:VideoSourceToken>"
             "<timg:ImagingSettings>"
             f"<tt:BacklightCompensation><tt:Mode>{blc}</tt:Mode></tt:BacklightCompensation>"
             f"<tt:Brightness>{img.get('brightness', 50)}</tt:Brightness>"
@@ -1176,7 +1568,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             "</timg:ImagingSettings>"
             "</timg:SetImagingSettings>"
         )
-        resp = await self._onvif_soap("/onvif/Imaging", body)
+        resp = await self._onvif_soap_for(ONVIF_SERVICE_IMAGING, body)
         return "SetImagingSettingsResponse" in resp
 
     # ── Sensoren (Tamper, Signal Loss) ──────────────────────────────────────
@@ -1207,36 +1599,31 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         changed = False
         topic_l = (topic or "").lower()
 
-        # Motion: bei Trigger den Zeitstempel setzen (Sensor bleibt 30s aktiv).
-        motion_keys = ("ismotion", "motion", "motionalarm", "videomotion")
-        motion_values = [self._parse_event_bool(items.get(k)) for k in motion_keys if k in items]
-        motion_true = any(v is True for v in motion_values)
-        if motion_true or ("motion" in topic_l and not motion_values):
-            self._last_motion_time = time.time()
-            changed = True
+        for rule_name, rule in self._onvif_event_rules.items():
+            item_keys = tuple(str(key).strip().lower() for key in rule.get("item_keys", ()))
+            values = [self._parse_event_bool(items.get(key)) for key in item_keys if key in items]
+            topic_keywords = tuple(
+                str(keyword).strip().lower() for keyword in rule.get("topic_keywords", ())
+            )
+            topic_match = any(keyword and keyword in topic_l for keyword in topic_keywords)
+            truthy = any(value is True for value in values)
+            if rule_name == "motion":
+                if truthy or (topic_match and not values and rule.get("topic_only_true", False)):
+                    self._last_motion_time = time.time()
+                    changed = True
+                continue
 
-        tamper_keys = ("tamper", "sabotage", "is_tamper", "cellmotiondetector")
-        tamper_values = [self._parse_event_bool(items.get(k)) for k in tamper_keys if k in items]
-        if tamper_values:
-            new_tamper = any(v is True for v in tamper_values)
-            if new_tamper != self._tamper:
-                self._tamper = new_tamper
-                changed = True
-        elif "tamper" in topic_l or "sabotage" in topic_l:
-            if not self._tamper:
-                self._tamper = True
-                changed = True
-
-        signal_keys = ("videoloss", "signal", "signal_loss", "loss")
-        signal_values = [self._parse_event_bool(items.get(k)) for k in signal_keys if k in items]
-        if signal_values:
-            new_signal = any(v is True for v in signal_values)
-            if new_signal != self._signal_loss:
-                self._signal_loss = new_signal
-                changed = True
-        elif "videoloss" in topic_l or "signal" in topic_l:
-            if not self._signal_loss:
-                self._signal_loss = True
+            state_attr = rule.get("state_attr")
+            if not state_attr:
+                continue
+            current_value = bool(getattr(self, state_attr, False))
+            new_value: bool | None = None
+            if values:
+                new_value = truthy
+            elif topic_match and rule.get("topic_only_true", False):
+                new_value = True
+            if new_value is not None and new_value != current_value:
+                setattr(self, state_attr, new_value)
                 changed = True
 
         return changed
@@ -1276,8 +1663,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_onvif_create_pullpoint(self) -> bool:
         """Pull-Point Subscription erzeugen und Endpoint-Pfad merken."""
-        resp = await self._onvif_soap(
-            "/onvif/Events",
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_EVENTS,
             "<tev:CreatePullPointSubscription>"
             "<tev:InitialTerminationTime>PT30M</tev:InitialTerminationTime>"
             "</tev:CreatePullPointSubscription>",
@@ -1297,6 +1684,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             self._event_pullpoint_path = address
         else:
             self._event_pullpoint_path = f"/{address}"
+        self._remember_onvif_service_path(ONVIF_SERVICE_EVENTS, self._event_pullpoint_path)
         return True
 
     async def _async_onvif_event_loop(self) -> None:
@@ -1323,8 +1711,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 self._event_pullpoint_path = ""
                 await asyncio.sleep(backoff_seconds)
                 backoff_seconds = min(backoff_seconds * 2, 30)
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:
             _LOGGER.debug("ONVIF Event-Loop beendet: %s", exc)
 
@@ -1345,11 +1731,22 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_set_stream_profile(self, profile_token: str) -> None:
         """Aktiven RTSP-Stream-Profil wechseln (000=main, 001=sub)."""
         self._active_stream = profile_token
-        stream_type = "0" if profile_token == "000" else "1"
-        authority = self._credential_authorities()[0]
-        self._resolved_rtsp_url = (
-            f"rtsp://{authority}{self.host}:{self.rtsp_port}/streamtype={stream_type}"
-        )
+        if self.protocol == PROTOCOL_ONVIF:
+            onvif_url = await self.async_onvif_stream_url()
+            if onvif_url:
+                self._resolved_rtsp_url = onvif_url
+            else:
+                stream_type = "0" if profile_token == "000" else "1"
+                authority = self._credential_authorities()[0]
+                self._resolved_rtsp_url = (
+                    f"rtsp://{authority}{self.host}:{self.rtsp_port}/streamtype={stream_type}"
+                )
+        else:
+            stream_type = "0" if profile_token == "000" else "1"
+            authority = self._credential_authorities()[0]
+            self._resolved_rtsp_url = (
+                f"rtsp://{authority}{self.host}:{self.rtsp_port}/streamtype={stream_type}"
+            )
         self.async_update_listeners()
 
     # ── Audio ────────────────────────────────────────────────────────────────
@@ -1360,8 +1757,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_fetch_audio_settings(self) -> bool:
         """AudioOutput-Konfiguration laden und Mikrofonstatus ableiten."""
-        resp = await self._onvif_soap(
-            "/onvif/Media",
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_MEDIA,
             "<trt:GetAudioOutputConfigurations/>",
         )
         if not resp:
@@ -1420,7 +1817,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             "<trt:ForcePersistence>true</trt:ForcePersistence>"
             "</trt:SetAudioOutputConfiguration>"
         )
-        resp = await self._onvif_soap("/onvif/Media", body)
+        resp = await self._onvif_soap_for(ONVIF_SERVICE_MEDIA, body)
         ok = "SetAudioOutputConfigurationResponse" in resp
         if ok:
             self._audio_output_level = target_level
@@ -1448,23 +1845,23 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_fetch_device_info(self) -> None:
         """Geräte-Infos einmalig laden (Firmware, Serial, MAC)."""
-        resp = await self._onvif_soap(
-            "/onvif/device_service",
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_DEVICE,
             "<tds:GetDeviceInformation/>",
             use_auth=False,
         )
         self._fw_version = self._xml_text(resp, "FirmwareVersion")
         self._serial_number = self._xml_text(resp, "SerialNumber")
-        net_resp = await self._onvif_soap(
-            "/onvif/device_service",
+        net_resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_DEVICE,
             "<tds:GetNetworkInterfaces/>",
         )
         self._mac_address = self._xml_text(net_resp, "HwAddress")
 
     async def async_fetch_camera_time(self) -> None:
         """Systemzeit der Kamera abrufen."""
-        resp = await self._onvif_soap(
-            "/onvif/device_service",
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_DEVICE,
             "<tds:GetSystemDateAndTime/>",
             use_auth=False,
         )
@@ -1482,16 +1879,16 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_reboot(self) -> bool:
         """Kamera neu starten (ONVIF SystemReboot)."""
-        resp = await self._onvif_soap(
-            "/onvif/device_service",
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_DEVICE,
             "<tds:SystemReboot/>",
         )
         return "SystemRebootResponse" in resp
 
     async def async_ntp_sync(self) -> bool:
         """NTP-Zeitserver synchronisieren."""
-        resp = await self._onvif_soap(
-            "/onvif/device_service",
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_DEVICE,
             "<tds:GetNTP/>",
         )
         return bool(resp)

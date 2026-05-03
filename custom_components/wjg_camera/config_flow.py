@@ -19,8 +19,14 @@ from homeassistant.core import callback
 import homeassistant.helpers.config_validation as cv
 
 from . import (
-    CONF_HTTP_RETRIES, CONF_ONVIF_PORT, CONF_PROTOCOL, CONF_RTSP_PATH, CONF_RTSP_PORT,
-    CONF_SNAPSHOT_PATH,
+    CONF_HTTP_RETRIES, CONF_ONVIF_DEVICE_PATH, CONF_ONVIF_EVENTS_PATH,
+    CONF_ONVIF_IMAGING_PATH, CONF_ONVIF_MEDIA_PATH, CONF_ONVIF_MOTION_ITEM_KEYS,
+    CONF_ONVIF_MOTION_TOPIC_KEYWORDS, CONF_ONVIF_PORT, CONF_ONVIF_PROFILE_TOKEN,
+    CONF_ONVIF_PTZ_PATH,
+    CONF_ONVIF_SIGNAL_ITEM_KEYS, CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS,
+    CONF_ONVIF_TAMPER_ITEM_KEYS, CONF_ONVIF_TAMPER_TOPIC_KEYWORDS,
+    CONF_ONVIF_VIDEO_SOURCE_TOKEN, CONF_PROTOCOL,
+    CONF_RTSP_PATH, CONF_RTSP_PORT, CONF_SNAPSHOT_PATH,
     DEFAULT_HTTP_PORT, DEFAULT_HTTP_RETRIES, DEFAULT_ONVIF_PORT, DEFAULT_PASSWORD,
     DEFAULT_RTSP_PATH, DEFAULT_RTSP_PORT,
     DEFAULT_SNAPSHOT_PATH, DEFAULT_USERNAME, DOMAIN,
@@ -144,6 +150,14 @@ class WJGOptionsFlow(config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self._config_entry = config_entry
 
+    @staticmethod
+    def _csv_default(value: Any) -> str:
+        if isinstance(value, (list, tuple, set)):
+            return ", ".join(str(item) for item in value if str(item).strip())
+        if value is None:
+            return ""
+        return str(value)
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -178,6 +192,70 @@ class WJGOptionsFlow(config_entries.OptionsFlow):
                     self._config_entry.data.get(CONF_ONVIF_PORT, DEFAULT_ONVIF_PORT),
                 ),
             ): cv.port,
+            vol.Optional(
+                CONF_ONVIF_DEVICE_PATH,
+                default=self._config_entry.options.get(CONF_ONVIF_DEVICE_PATH, ""),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_MEDIA_PATH,
+                default=self._config_entry.options.get(CONF_ONVIF_MEDIA_PATH, ""),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_PTZ_PATH,
+                default=self._config_entry.options.get(CONF_ONVIF_PTZ_PATH, ""),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_IMAGING_PATH,
+                default=self._config_entry.options.get(CONF_ONVIF_IMAGING_PATH, ""),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_EVENTS_PATH,
+                default=self._config_entry.options.get(CONF_ONVIF_EVENTS_PATH, ""),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_PROFILE_TOKEN,
+                default=self._config_entry.options.get(CONF_ONVIF_PROFILE_TOKEN, ""),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_VIDEO_SOURCE_TOKEN,
+                default=self._config_entry.options.get(CONF_ONVIF_VIDEO_SOURCE_TOKEN, ""),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_MOTION_ITEM_KEYS,
+                default=self._csv_default(
+                    self._config_entry.options.get(CONF_ONVIF_MOTION_ITEM_KEYS, "")
+                ),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_MOTION_TOPIC_KEYWORDS,
+                default=self._csv_default(
+                    self._config_entry.options.get(CONF_ONVIF_MOTION_TOPIC_KEYWORDS, "")
+                ),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_TAMPER_ITEM_KEYS,
+                default=self._csv_default(
+                    self._config_entry.options.get(CONF_ONVIF_TAMPER_ITEM_KEYS, "")
+                ),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_TAMPER_TOPIC_KEYWORDS,
+                default=self._csv_default(
+                    self._config_entry.options.get(CONF_ONVIF_TAMPER_TOPIC_KEYWORDS, "")
+                ),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_SIGNAL_ITEM_KEYS,
+                default=self._csv_default(
+                    self._config_entry.options.get(CONF_ONVIF_SIGNAL_ITEM_KEYS, "")
+                ),
+            ): str,
+            vol.Optional(
+                CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS,
+                default=self._csv_default(
+                    self._config_entry.options.get(CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS, "")
+                ),
+            ): str,
         })
 
         return self.async_show_form(step_id="init", data_schema=schema)

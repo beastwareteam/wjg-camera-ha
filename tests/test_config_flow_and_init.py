@@ -179,6 +179,49 @@ async def test_options_flow_create_entry_path():
     assert typed_result["data"]["rtsp_path"] == "/new"
 
 
+@pytest.mark.asyncio
+async def test_options_flow_exposes_onvif_override_fields():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.31",
+            "protocol": integration.PROTOCOL_ONVIF,
+            "rtsp_path": "/stream",
+            "snapshot_path": "/snap.jpg",
+        },
+        options={
+            integration.CONF_ONVIF_DEVICE_PATH: "/onvif/Device",
+            integration.CONF_ONVIF_PROFILE_TOKEN: "000",
+            integration.CONF_ONVIF_VIDEO_SOURCE_TOKEN: "VideoSource_1",
+            integration.CONF_ONVIF_SIGNAL_ITEM_KEYS: ["videoloss", "totalarm"],
+        },
+    )
+    flow = WJGOptionsFlow(_as_any(entry))
+
+    result = await flow.async_step_init()
+    schema = _as_any(result)["data_schema"].schema
+    device_key = next(
+        key for key in schema
+        if getattr(key, "schema", None) == integration.CONF_ONVIF_DEVICE_PATH
+    )
+    signal_key = next(
+        key for key in schema
+        if getattr(key, "schema", None) == integration.CONF_ONVIF_SIGNAL_ITEM_KEYS
+    )
+    profile_key = next(
+        key for key in schema
+        if getattr(key, "schema", None) == integration.CONF_ONVIF_PROFILE_TOKEN
+    )
+    video_source_key = next(
+        key for key in schema
+        if getattr(key, "schema", None) == integration.CONF_ONVIF_VIDEO_SOURCE_TOKEN
+    )
+
+    assert device_key.default() == "/onvif/Device"
+    assert profile_key.default() == "000"
+    assert video_source_key.default() == "VideoSource_1"
+    assert signal_key.default() == "videoloss, totalarm"
+
+
 def test_config_flow_is_matching_by_host():
     flow_a = WJGCameraConfigFlow()
     flow_b = WJGCameraConfigFlow()
