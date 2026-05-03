@@ -813,7 +813,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.1.7: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.1.8: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self._onvif_content_type,
                 self.host,
@@ -1085,6 +1085,84 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         await asyncio.sleep(0)
         return None
 
+    @staticmethod
+    def _ptz_http_payload_looks_ok(payload: bytes) -> bool:
+        """HTTP-PTZ Antwortinhalt grob validieren, um Fake-200-Fehlerseiten zu erkennen."""
+        if not payload:
+            return True
+        lowered = payload.decode("utf-8", errors="ignore").lower()
+        bad_markers = (
+            "404 not found",
+            "unknown service",
+            "unknown command",
+            "invalid",
+            "error",
+            "failed",
+            "not support",
+            "unauthorized",
+        )
+        return not any(marker in lowered for marker in bad_markers)
+
+    def _candidate_http_ptz_urls(self, cmd: str, speed: int) -> list[str]:
+        """Mehrere PTZ-CGI-Endpunkte für XM/HiSilicon und generische Kameras erzeugen."""
+        safe_speed = max(1, min(8, int(speed)))
+        candidates: list[str] = [
+            (
+                f"http://{self.host}:{self.http_port}/cgi-bin/ptz"
+                f"?channel=1&cmd={cmd}&speed={safe_speed}"
+            )
+        ]
+
+        hi3510_act = {
+            "up": "up",
+            "down": "down",
+            "left": "left",
+            "right": "right",
+            "zoom_in": "zoomin",
+            "zoom_out": "zoomout",
+            "focus_in": "focusin",
+            "focus_out": "focusout",
+        }
+        for base_path in ("/web/cgi-bin/hi3510/ptzctrl.cgi", "/cgi-bin/hi3510/ptzctrl.cgi"):
+            if cmd == "stop":
+                candidates.append(f"http://{self.host}:{self.http_port}{base_path}?-act=stop")
+            elif cmd in hi3510_act:
+                candidates.append(
+                    (
+                        f"http://{self.host}:{self.http_port}{base_path}"
+                        f"?-step=0&-act={hi3510_act[cmd]}&-speed={safe_speed}"
+                    )
+                )
+
+        decoder_cmds: dict[str, list[int]] = {
+            "up": [0],
+            "down": [2],
+            "left": [4],
+            "right": [6],
+            "zoom_in": [16],
+            "zoom_out": [18],
+            "focus_in": [20],
+            "focus_out": [22],
+            "stop": [1, 3, 5, 7, 17, 19, 21, 23],
+        }
+        for command_code in decoder_cmds.get(cmd, []):
+            base = (
+                f"http://{self.host}:{self.http_port}/decoder_control.cgi"
+                f"?command={command_code}&onestep=0"
+            )
+            candidates.append(base)
+            if self.username:
+                user_q = quote(self.username or "admin", safe="")
+                pass_q = quote(self.password or "", safe="")
+                candidates.append(f"{base}&user={user_q}&pwd={pass_q}")
+                candidates.append(f"{base}&loginuse={user_q}&loginpas={pass_q}")
+
+        deduped: list[str] = []
+        for candidate in candidates:
+            if candidate not in deduped:
+                deduped.append(candidate)
+        return deduped
+
     async def async_ptz_command(self, cmd: str, speed: int = 5) -> bool:
         """PTZ-Steuerbefehl senden (Start/Stop Up/Down/Left/Right/Zoom)."""
         self._last_ptz_fault = ""
@@ -1212,17 +1290,18 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 self._last_ptz_fault = str(e)
                 _LOGGER.error("PTZ-Befehl fehlgeschlagen: %s", e)
 
-        # HTTP-Fallback
+        # HTTP-Fallback (mehrere CGI-Varianten fuer XM/HiSilicon/Gattungsmodelle)
         if self._session:
-            url = (f"http://{self.host}:{self.http_port}/cgi-bin/ptz"
-                   f"?channel=1&cmd={cmd}&speed={speed}")
-            data = await self._async_http_get_data(url, timeout_seconds=3)
-            ok = isinstance(data, (bytes, bytearray))
-            if ok:
-                self._last_ptz_fault = ""
-            elif not self._last_ptz_fault:
+            for url in self._candidate_http_ptz_urls(cmd, speed):
+                data = await self._async_http_get_data(url, timeout_seconds=3)
+                ok = isinstance(data, (bytes, bytearray)) and self._ptz_http_payload_looks_ok(bytes(data))
+                if ok:
+                    self._last_ptz_fault = ""
+                    _LOGGER.debug("PTZ HTTP-Fallback erfolgreich: cmd=%s url=%s", cmd, url)
+                    return True
+            if not self._last_ptz_fault:
                 self._last_ptz_fault = "PTZ HTTP-Fallback fehlgeschlagen"
-            return ok
+            return False
         if not self._last_ptz_fault:
             self._last_ptz_fault = "PTZ fehlgeschlagen"
         return False

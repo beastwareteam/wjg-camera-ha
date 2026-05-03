@@ -363,6 +363,25 @@ async def test_http_fallback_ptz_non_200_returns_false():
 
 
 @pytest.mark.asyncio
+async def test_http_fallback_ptz_tries_hi3510_after_generic_endpoint_fails():
+    coordinator = _make_coordinator(DummyHass(), DummyEntry())
+    _set_private_attr(coordinator, _private_name("xm"), None)
+    session = FakeSession(
+        routes={
+            "/cgi-bin/ptz": FakeResponse(status=404),
+            "/web/cgi-bin/hi3510/ptzctrl.cgi": FakeResponse(status=200, payload_bytes=b"ok"),
+        }
+    )
+    _set_private_attr(coordinator, _private_name("session"), session)
+
+    ok = await coordinator.async_ptz_command("right", speed=4)
+
+    assert ok is True
+    assert any("/cgi-bin/ptz" in u for u in session.calls)
+    assert any("/web/cgi-bin/hi3510/ptzctrl.cgi" in u and "-act=right" in u for u in session.calls)
+
+
+@pytest.mark.asyncio
 async def test_http_fallback_ptz_exception_returns_false():
     coordinator = _make_coordinator(DummyHass(), DummyEntry())
     _set_private_attr(coordinator, _private_name("xm"), None)
