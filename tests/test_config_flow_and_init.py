@@ -222,6 +222,30 @@ async def test_options_flow_exposes_onvif_override_fields():
     assert signal_key.default() == "videoloss, totalarm"
 
 
+def test_coordinator_prefers_runtime_options_over_entry_data():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.31",
+            "protocol": integration.PROTOCOL_RTSP,
+            "rtsp_path": "/legacy-stream",
+            "snapshot_path": "/legacy-snapshot.jpg",
+        },
+        options={
+            integration.CONF_PROTOCOL: integration.PROTOCOL_ONVIF,
+            integration.CONF_RTSP_PATH: "/stream-from-options",
+            integration.CONF_SNAPSHOT_PATH: "/snapshot-from-options.jpg",
+            integration.CONF_ONVIF_PORT: 8899,
+        },
+    )
+
+    coordinator = WJGCameraCoordinator(MagicMock(), _as_any(entry))
+
+    assert coordinator.protocol == integration.PROTOCOL_ONVIF
+    assert coordinator.rtsp_path == "/stream-from-options"
+    assert coordinator.snapshot_path == "/snapshot-from-options.jpg"
+    assert coordinator.onvif_port == 8899
+
+
 def test_config_flow_is_matching_by_host():
     flow_a = WJGCameraConfigFlow()
     flow_b = WJGCameraConfigFlow()

@@ -369,18 +369,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             update_interval=SCAN_INTERVAL,
         )
         self.entry = entry
+        options = getattr(entry, "options", {}) or {}
         self.host: str = entry.data[CONF_HOST]
         self.username: str = entry.data.get(CONF_USERNAME, "admin")
         self.password: str = entry.data.get(CONF_PASSWORD, "")
-        self.protocol: str = entry.data.get(CONF_PROTOCOL, PROTOCOL_RTSP)
+        self.protocol: str = options.get(
+            CONF_PROTOCOL,
+            entry.data.get(CONF_PROTOCOL, PROTOCOL_RTSP),
+        )
         self.rtsp_port: int = entry.data.get(CONF_RTSP_PORT, 554)
         self.http_port: int = entry.data.get(CONF_PORT, DEFAULT_HTTP_PORT)
         self.xm_port: int = DEFAULT_XM_PORT
-        self.rtsp_path: str = entry.data.get(CONF_RTSP_PATH, DEFAULT_RTSP_PATH)
-        self.snapshot_path: str = entry.data.get(
-            CONF_SNAPSHOT_PATH, DEFAULT_SNAPSHOT_PATH
+        self.rtsp_path: str = options.get(
+            CONF_RTSP_PATH,
+            entry.data.get(CONF_RTSP_PATH, DEFAULT_RTSP_PATH),
         )
-        options = getattr(entry, "options", {}) or {}
+        self.snapshot_path: str = options.get(
+            CONF_SNAPSHOT_PATH,
+            entry.data.get(CONF_SNAPSHOT_PATH, DEFAULT_SNAPSHOT_PATH),
+        )
         self.http_retries: int = self._normalize_http_retries(
             options.get(
                 CONF_HTTP_RETRIES,
