@@ -769,7 +769,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.1.2: ONVIF WSSE aktiv=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.1.3: ONVIF WSSE aktiv=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self.host,
                 self.onvif_port,
@@ -1055,8 +1055,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         profile_token,
                         self._onvif_service_paths.get(ONVIF_SERVICE_PTZ),
                     )
-                    resp = await self._onvif_soap_for(
-                        ONVIF_SERVICE_PTZ,
+                    resp = await self._async_ptz_soap_request(
+                        "ContinuousMove",
                         f"<tptz:ContinuousMove>"
                         f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
                         f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
@@ -1067,22 +1067,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         self._last_ptz_fault = ""
                         _LOGGER.debug("ONVIF PTZ erfolgreich: cmd=%s profile=%s", cmd, profile_token)
                         return True
-                    self._remember_ptz_fault_from_response(resp)
-                    resp_v10 = await self._onvif_soap_for(
-                        ONVIF_SERVICE_PTZ,
-                        self._ptz_body_ver10(
-                            f"<tptz:ContinuousMove>"
-                            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-                            f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
-                            f"</tptz:ContinuousMove>"
-                        ),
-                    )
-                    if self._ptz_response_ok(resp_v10, "ContinuousMove"):
-                        self._onvif_profile_tokens[self._active_stream] = profile_token
-                        self._last_ptz_fault = ""
-                        _LOGGER.debug("ONVIF PTZ v10 erfolgreich: cmd=%s profile=%s", cmd, profile_token)
-                        return True
-                    self._remember_ptz_fault_from_response(resp_v10)
                 # Geräte-Fallback: einige Kameras erwarten ein Timeout im ContinuousMove.
                 for profile_token in tried_tokens:
                     _LOGGER.debug(
@@ -1092,8 +1076,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         profile_token,
                         self._onvif_service_paths.get(ONVIF_SERVICE_PTZ),
                     )
-                    resp = await self._onvif_soap_for(
-                        ONVIF_SERVICE_PTZ,
+                    resp = await self._async_ptz_soap_request(
+                        "ContinuousMove",
                         f"<tptz:ContinuousMove>"
                         f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
                         f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
@@ -1109,27 +1093,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                             profile_token,
                         )
                         return True
-                    self._remember_ptz_fault_from_response(resp)
-                    resp_v10 = await self._onvif_soap_for(
-                        ONVIF_SERVICE_PTZ,
-                        self._ptz_body_ver10(
-                            f"<tptz:ContinuousMove>"
-                            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-                            f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
-                            f"<tptz:Timeout>PT0.50S</tptz:Timeout>"
-                            f"</tptz:ContinuousMove>"
-                        ),
-                    )
-                    if self._ptz_response_ok(resp_v10, "ContinuousMove"):
-                        self._onvif_profile_tokens[self._active_stream] = profile_token
-                        self._last_ptz_fault = ""
-                        _LOGGER.debug(
-                            "ONVIF PTZ v10 ContinuousMove-Timeout erfolgreich: cmd=%s profile=%s",
-                            cmd,
-                            profile_token,
-                        )
-                        return True
-                    self._remember_ptz_fault_from_response(resp_v10)
                 # Geräte-Fallback: einige Kameras unterstützen RelativeMove, aber kein ContinuousMove.
                 for profile_token in tried_tokens:
                     _LOGGER.debug(
@@ -1139,8 +1102,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         profile_token,
                         self._onvif_service_paths.get(ONVIF_SERVICE_PTZ),
                     )
-                    resp = await self._onvif_soap_for(
-                        ONVIF_SERVICE_PTZ,
+                    resp = await self._async_ptz_soap_request(
+                        "RelativeMove",
                         f"<tptz:RelativeMove>"
                         f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
                         f"<tptz:Translation>{soap_translation_map[cmd]}</tptz:Translation>"
@@ -1151,22 +1114,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         self._last_ptz_fault = ""
                         _LOGGER.debug("ONVIF PTZ RelativeMove erfolgreich: cmd=%s profile=%s", cmd, profile_token)
                         return True
-                    self._remember_ptz_fault_from_response(resp)
-                    resp_v10 = await self._onvif_soap_for(
-                        ONVIF_SERVICE_PTZ,
-                        self._ptz_body_ver10(
-                            f"<tptz:RelativeMove>"
-                            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-                            f"<tptz:Translation>{soap_translation_map[cmd]}</tptz:Translation>"
-                            f"</tptz:RelativeMove>"
-                        ),
-                    )
-                    if self._ptz_response_ok(resp_v10, "RelativeMove"):
-                        self._onvif_profile_tokens[self._active_stream] = profile_token
-                        self._last_ptz_fault = ""
-                        _LOGGER.debug("ONVIF PTZ v10 RelativeMove erfolgreich: cmd=%s profile=%s", cmd, profile_token)
-                        return True
-                    self._remember_ptz_fault_from_response(resp_v10)
                 # Fallback auf python-onvif library
                 if self._onvif:
                     _LOGGER.debug("ONVIF PTZ Direct-SOAP ohne Response, nutze Library-Fallback: cmd=%s", cmd)
@@ -1267,12 +1214,103 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     url,
                     data=envelope.encode("utf-8"),
                     auth=http_auth,
-                    headers={"Content-Type": "application/text+xml; charset=utf-8"},
+                    headers={"Content-Type": "application/soap+xml; charset=utf-8"},
                 ) as resp:
                     return await resp.text()
         except Exception as exc:
             _LOGGER.debug("ONVIF SOAP [%s] fehlgeschlagen: %s", service_path, exc)
             return ""
+
+    async def _onvif_soap_legacy(
+        self,
+        service_path: str,
+        body: str,
+        soap_action: str,
+        timeout_seconds: int = 5,
+    ) -> str:
+        """ONVIF SOAP 1.1 Anfrage mit text/xml und SOAPAction fuer Legacy-Geraete."""
+        if not self._session:
+            return ""
+        http_auth = None
+        if self.username:
+            http_auth = aiohttp.BasicAuth(self.username, self.password or "")
+        envelope = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"'
+            ' xmlns:tds="http://www.onvif.org/ver10/device/wsdl"'
+            ' xmlns:trt="http://www.onvif.org/ver10/media/wsdl"'
+            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
+            ' xmlns:tptz10="http://www.onvif.org/ver10/ptz/wsdl"'
+            ' xmlns:tt="http://www.onvif.org/ver10/schema"'
+            ' xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl"'
+            ' xmlns:tev="http://www.onvif.org/ver10/events/wsdl">'
+            f"<soap:Body>{body}</soap:Body>"
+            "</soap:Envelope>"
+        )
+        url = f"http://{self.host}:{self.onvif_port}{service_path}"
+        try:
+            async with async_timeout.timeout(timeout_seconds):
+                async with self._session.post(
+                    url,
+                    data=envelope.encode("utf-8"),
+                    auth=http_auth,
+                    headers={
+                        "Content-Type": "text/xml; charset=utf-8",
+                        "SOAPAction": soap_action,
+                    },
+                ) as resp:
+                    return await resp.text()
+        except Exception as exc:
+            _LOGGER.debug("ONVIF SOAP 1.1 [%s] fehlgeschlagen: %s", service_path, exc)
+            return ""
+
+    async def _onvif_soap_legacy_for(
+        self,
+        service_key: str,
+        body: str,
+        soap_action: str,
+        timeout_seconds: int = 5,
+    ) -> str:
+        """SOAP 1.1 Variante mit Service-Fallbacks senden."""
+        last_response = ""
+        for service_path in self._candidate_onvif_service_paths(service_key):
+            response_text = await self._onvif_soap_legacy(
+                service_path,
+                body,
+                soap_action,
+                timeout_seconds=timeout_seconds,
+            )
+            if not self._looks_like_wrong_onvif_path(response_text):
+                self._remember_onvif_service_path(service_key, service_path)
+                return response_text
+            last_response = response_text
+        return last_response
+
+    async def _async_ptz_soap_request(self, action_name: str, body: str) -> str:
+        """PTZ-Request ueber SOAP 1.2/1.1 sowie v20/v10 Namespace probieren."""
+        variants = (
+            (body, f"http://www.onvif.org/ver20/ptz/wsdl/{action_name}"),
+            (self._ptz_body_ver10(body), f"http://www.onvif.org/ver10/ptz/wsdl/{action_name}"),
+        )
+        last_response = ""
+        for candidate_body, soap_action in variants:
+            response_text = await self._onvif_soap_for(ONVIF_SERVICE_PTZ, candidate_body)
+            if self._ptz_response_ok(response_text, action_name):
+                return response_text
+            self._remember_ptz_fault_from_response(response_text)
+            last_response = response_text
+
+            legacy_response = await self._onvif_soap_legacy_for(
+                ONVIF_SERVICE_PTZ,
+                candidate_body,
+                soap_action,
+            )
+            if self._ptz_response_ok(legacy_response, action_name):
+                return legacy_response
+            self._remember_ptz_fault_from_response(legacy_response)
+            if legacy_response:
+                last_response = legacy_response
+        return last_response
 
     @staticmethod
     def _xml_text(text: str, tag: str) -> str:

@@ -64,10 +64,11 @@ async def test_onvif_soap_omits_header_when_auth_disabled():
     _set_private_attr(coordinator, "_session", DummySession())
 
     response = await coordinator._onvif_soap("/onvif/PTZ", "<tptz:ContinuousMove/>", use_auth=False)
+    payload = str(captured["data"])
 
     assert response == "<ok/>"
-    assert "<s:Header>" not in captured["data"]
-    assert "wsse:Security" not in captured["data"]
+    assert "<s:Header>" not in payload
+    assert "wsse:Security" not in payload
     assert captured["auth"] is not None
     assert getattr(captured["auth"], "login", None) == "admin"
 
@@ -497,6 +498,44 @@ async def test_async_ptz_command_falls_back_to_ptz_v10_namespace():
     assert await coordinator.async_ptz_command("right") is True
     assert any("tptz:ContinuousMove" in body for body in seen_bodies)
     assert any("tptz10:ContinuousMove" in body for body in seen_bodies)
+
+
+@pytest.mark.asyncio
+async def test_async_ptz_command_falls_back_to_soap11_legacy_request():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    legacy_calls: list[tuple[str, str]] = []
+
+    async def _fake_soap_for(_service_key, _body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        return "<s:Fault><s:Reason><s:Text>SOAP 1.2 unsupported</s:Text></s:Reason></s:Fault>"
+
+    async def _fake_legacy_for(_service_key, body, soap_action, timeout_seconds=5):
+        _ = timeout_seconds
+        legacy_calls.append((body, soap_action))
+        return "<tptz:ContinuousMoveResponse/>"
+
+    _set_private_attr(coordinator, "_onvif", None)
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_onvif_soap_legacy_for", _fake_legacy_for)
+    _set_private_attr(coordinator, "_onvif_profile_tokens", {"000": "000"})
+    _set_private_attr(coordinator, "_active_stream", "000")
+
+    assert await coordinator.async_ptz_command("right") is True
+    assert legacy_calls
+    assert any("ContinuousMove" in body for body, _soap_action in legacy_calls)
+    assert any("http://www.onvif.org/ver20/ptz/wsdl/ContinuousMove" == soap_action for _body, soap_action in legacy_calls)
 
 
 @pytest.mark.asyncio
