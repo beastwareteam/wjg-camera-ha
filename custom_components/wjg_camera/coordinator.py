@@ -998,6 +998,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 "zoom_in":  f'<tt:Zoom x="{spd}"/>',
                 "zoom_out": f'<tt:Zoom x="-{spd}"/>',
             }
+            soap_translation_map: dict[str, str] = {
+                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/>',
+                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/>',
+                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/>',
+                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/>',
+                "zoom_in":  f'<tt:Zoom x="{spd}"/>',
+                "zoom_out": f'<tt:Zoom x="-{spd}"/>',
+            }
             if cmd in soap_velocity_map:
                 tried_tokens = await self._async_candidate_ptz_profile_tokens()
                 for profile_token in tried_tokens:
@@ -1018,6 +1026,26 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     if "ContinuousMoveResponse" in resp:
                         self._onvif_profile_tokens[self._active_stream] = profile_token
                         _LOGGER.debug("ONVIF PTZ erfolgreich: cmd=%s profile=%s", cmd, profile_token)
+                        return True
+                # Geräte-Fallback: einige Kameras unterstützen RelativeMove, aber kein ContinuousMove.
+                for profile_token in tried_tokens:
+                    _LOGGER.debug(
+                        "ONVIF PTZ RelativeMove-Fallback: cmd=%s speed=%s profile=%s ptz_path=%s",
+                        cmd,
+                        speed,
+                        profile_token,
+                        self._onvif_service_paths.get(ONVIF_SERVICE_PTZ),
+                    )
+                    resp = await self._onvif_soap_for(
+                        ONVIF_SERVICE_PTZ,
+                        f"<tptz:RelativeMove>"
+                        f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+                        f"<tptz:Translation>{soap_translation_map[cmd]}</tptz:Translation>"
+                        f"</tptz:RelativeMove>",
+                    )
+                    if "RelativeMoveResponse" in resp:
+                        self._onvif_profile_tokens[self._active_stream] = profile_token
+                        _LOGGER.debug("ONVIF PTZ RelativeMove erfolgreich: cmd=%s profile=%s", cmd, profile_token)
                         return True
                 # Fallback auf python-onvif library
                 if self._onvif:

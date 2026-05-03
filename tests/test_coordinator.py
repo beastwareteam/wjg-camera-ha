@@ -423,6 +423,42 @@ async def test_async_ptz_command_falls_back_to_alternate_profile_token():
 
 
 @pytest.mark.asyncio
+async def test_async_ptz_command_falls_back_to_relative_move_when_continuous_move_fails():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    seen_bodies: list[str] = []
+
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        seen_bodies.append(body)
+        if "ContinuousMove" in body:
+            return "<s:Fault><s:Reason><s:Text>ActionNotSupported</s:Text></s:Reason></s:Fault>"
+        if "RelativeMove" in body:
+            return "<tptz:RelativeMoveResponse/>"
+        return ""
+
+    _set_private_attr(coordinator, "_onvif", None)
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_onvif_profile_tokens", {"000": "000"})
+    _set_private_attr(coordinator, "_active_stream", "000")
+
+    assert await coordinator.async_ptz_command("right") is True
+    assert any("ContinuousMove" in body for body in seen_bodies)
+    assert any("RelativeMove" in body for body in seen_bodies)
+
+
+@pytest.mark.asyncio
 async def test_async_shutdown_closes_session_and_disconnects_xm():
     entry = DummyEntry(
         {
