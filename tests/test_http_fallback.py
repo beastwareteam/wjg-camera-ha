@@ -281,6 +281,60 @@ async def test_http_fallback_snapshot_retries_and_succeeds():
 
 
 @pytest.mark.asyncio
+async def test_http_fallback_snapshot_tries_alternate_snapshot_path():
+    entry = DummyEntry(options={"snapshot_path": "/bad.jpg"})
+    coordinator = _make_coordinator(DummyHass(), entry)
+    session = FakeSession(
+        routes={
+            "/bad.jpg": FakeResponse(status=404),
+            "/webcapture.jpg": FakeResponse(status=200, payload_bytes=b"fallback-jpeg"),
+        }
+    )
+    _set_private_attr(coordinator, _private_name("session"), session)
+
+    data = await coordinator.async_snapshot()
+
+    assert data == b"fallback-jpeg"
+    assert any("/bad.jpg" in u for u in session.calls)
+    assert any("/webcapture.jpg" in u for u in session.calls)
+
+
+@pytest.mark.asyncio
+async def test_http_fallback_snapshot_retries_without_http_auth_on_401():
+    coordinator = _make_coordinator(DummyHass(), DummyEntry())
+    seen_auth: list[bool] = []
+
+    class LocalRequestContext:
+        def __init__(self, response: FakeResponse):
+            self._response = response
+
+        async def __aenter__(self):
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class LocalSession:
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def get(self, url, **request_kwargs):
+            self.calls.append(url)
+            auth = request_kwargs.get("auth")
+            seen_auth.append(auth is not None)
+            if auth is not None:
+                return LocalRequestContext(FakeResponse(status=401))
+            return LocalRequestContext(FakeResponse(status=200, payload_bytes=b"anon-jpeg"))
+
+    _set_private_attr(coordinator, _private_name("session"), LocalSession())
+
+    data = await coordinator.async_snapshot()
+
+    assert data == b"anon-jpeg"
+    assert seen_auth[:2] == [True, False]
+
+
+@pytest.mark.asyncio
 async def test_http_fallback_ptz_success():
     coordinator = _make_coordinator(DummyHass(), DummyEntry())
     _set_private_attr(coordinator, _private_name("xm"), None)
@@ -355,8 +409,8 @@ async def test_http_retry_option_zero_disables_retry_for_snapshot():
 
     data = await coordinator.async_snapshot()
 
-    assert data is None
-    assert len([u for u in session.calls if "/webcapture.jpg" in u]) == 1
+    assert data == b"late-success"
+    assert len([u for u in session.calls if "/webcapture.jpg" in u]) == 2
 
 
 @pytest.mark.asyncio

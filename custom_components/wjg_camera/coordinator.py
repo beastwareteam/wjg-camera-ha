@@ -747,6 +747,33 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     def snapshot_url(self) -> str:
         return f"http://{self.host}:{self.http_port}{self.snapshot_path}"
 
+    def _candidate_snapshot_urls(self) -> list[str]:
+        """Mehrere Snapshot-URL-Kandidaten bereitstellen (XM/ONVIF Derivate)."""
+        candidates: list[str] = [self.snapshot_url]
+        fallback_paths = (
+            "/webcapture.jpg?command=snap&channel=1",
+            "/webcapture.jpg",
+            "/cgi-bin/snapshot.cgi?channel=1",
+            "/snap.jpg",
+        )
+        for path in fallback_paths:
+            url = f"http://{self.host}:{self.http_port}{path}"
+            if url not in candidates:
+                candidates.append(url)
+
+        if self.username:
+            user_q = quote(self.username or "admin", safe="")
+            pass_q = quote(self.password or "", safe="")
+            with_query_auth: list[str] = []
+            for url in candidates:
+                separator = "&" if "?" in url else "?"
+                url_with_auth = f"{url}{separator}user={user_q}&password={pass_q}"
+                if url_with_auth not in candidates and url_with_auth not in with_query_auth:
+                    with_query_auth.append(url_with_auth)
+            candidates.extend(with_query_auth)
+
+        return candidates
+
     @property
     def is_recording(self) -> bool:
         return self._recording
@@ -786,7 +813,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.1.4: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.1.5: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self._onvif_content_type,
                 self.host,
@@ -1021,12 +1048,41 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         """Aktuelles Bild von der Kamera laden."""
         if not self._session:
             return None
-        data = await self._async_http_get_data(
-            self.snapshot_url,
-            timeout_seconds=5,
-        )
-        if isinstance(data, (bytes, bytearray)):
-            return bytes(data)
+
+        auth_candidates: list[aiohttp.BasicAuth | None] = [None]
+        if self.username:
+            auth_candidates = [
+                aiohttp.BasicAuth(self.username, self.password or ""),
+                None,
+            ]
+
+        attempts = max(1, self.http_retries + 1)
+        for snapshot_url in self._candidate_snapshot_urls():
+            for auth in auth_candidates:
+                for attempt in range(attempts):
+                    try:
+                        async with async_timeout.timeout(5):
+                            async with self._session.get(
+                                snapshot_url,
+                                allow_redirects=True,
+                                auth=auth,
+                            ) as resp:
+                                if resp.status == 200:
+                                    payload = await resp.read()
+                                    if payload:
+                                        return bytes(payload)
+                                if resp.status in (401, 403) and auth is not None:
+                                    # Wenn BasicAuth abgelehnt wird, sofort ohne Auth weitermachen.
+                                    break
+                    except Exception as exc:
+                        _LOGGER.debug(
+                            "Snapshot fehlgeschlagen (%s, auth=%s): %s",
+                            snapshot_url,
+                            "on" if auth is not None else "off",
+                            exc,
+                        )
+                    if attempt < attempts - 1:
+                        await asyncio.sleep(0)
         return None
 
     async def async_ptz_command(self, cmd: str, speed: int = 5) -> bool:
