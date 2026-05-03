@@ -463,6 +463,40 @@ async def test_async_ptz_command_succeeds_with_wsse_security_header_fault_retry(
 
 
 @pytest.mark.asyncio
+async def test_async_ptz_command_falls_back_to_ptz_v10_namespace():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    seen_bodies: list[str] = []
+
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        seen_bodies.append(body)
+        if "tptz10:ContinuousMove" in body:
+            return "<tptz10:ContinuousMoveResponse/>"
+        return "<s:Fault><s:Reason><s:Text>PTZ v20 unsupported</s:Text></s:Reason></s:Fault>"
+
+    _set_private_attr(coordinator, "_onvif", None)
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_onvif_profile_tokens", {"000": "000"})
+    _set_private_attr(coordinator, "_active_stream", "000")
+
+    assert await coordinator.async_ptz_command("right") is True
+    assert any("tptz:ContinuousMove" in body for body in seen_bodies)
+    assert any("tptz10:ContinuousMove" in body for body in seen_bodies)
+
+
+@pytest.mark.asyncio
 async def test_onvif_wsse_is_disabled_after_security_header_fault():
     entry = DummyEntry(
         {
