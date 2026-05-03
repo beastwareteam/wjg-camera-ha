@@ -813,7 +813,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.1.5: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.1.6: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self._onvif_content_type,
                 self.host,

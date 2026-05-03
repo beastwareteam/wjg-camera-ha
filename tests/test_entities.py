@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from custom_components.wjg_camera.binary_sensor import WJGMotionSensor
 from custom_components.wjg_camera.button import WJGPTZButton
-from custom_components.wjg_camera.camera import WJGCamera
+from custom_components.wjg_camera.camera import WJGCamera, _FALLBACK_IMAGE_BYTES
 from custom_components.wjg_camera.sensor import WJGFileListSensor
 from custom_components.wjg_camera.switch import WJGMicrophoneSwitch, WJGRecordingSwitch
 from tests_helpers import as_any as _as_any
@@ -83,6 +83,33 @@ async def test_camera_entity_falls_back_to_live_snapshot_without_cache():
 
     assert image == b"live-image"
     coordinator.async_snapshot.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_camera_entity_uses_last_successful_image_when_snapshot_temporarily_unavailable():
+    coordinator = DummyCoordinator()
+    coordinator.data = {"available": True, "snapshot_bytes": b"cached-image"}
+    coordinator.async_snapshot = AsyncMock(return_value=None)
+    entity = WJGCamera(_as_any(coordinator), _as_any(DummyEntry()))
+
+    first = await entity.async_camera_image()
+    coordinator.data = {"available": True}
+    second = await entity.async_camera_image()
+
+    assert first == b"cached-image"
+    assert second == b"cached-image"
+
+
+@pytest.mark.asyncio
+async def test_camera_entity_returns_static_fallback_image_when_no_snapshot_available():
+    coordinator = DummyCoordinator()
+    coordinator.data = {"available": True}
+    coordinator.async_snapshot = AsyncMock(return_value=None)
+    entity = WJGCamera(_as_any(coordinator), _as_any(DummyEntry()))
+
+    image = await entity.async_camera_image()
+
+    assert image == _FALLBACK_IMAGE_BYTES
 
 
 @pytest.mark.asyncio

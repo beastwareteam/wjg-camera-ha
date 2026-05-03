@@ -20,6 +20,15 @@ from .coordinator import WJGCameraCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# 1x1 transparentes PNG als letzter Fallback, damit camera_proxy nicht mit 500 endet.
+_FALLBACK_IMAGE_BYTES = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR"
+    b"\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+    b"\x00\x00\x00\x0bIDATx\x9cc``\x00\x00\x00\x02\x00\x01\xe2!\xbc3"
+    b"\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -43,6 +52,7 @@ class WJGCamera(  # pyright: ignore[reportArgumentType]
         # RTSP over TCP ist in HA-Container-Umgebungen robuster als UDP.
         self.stream_options["rtsp_transport"] = "tcp"
         self._entry = entry
+        self._last_camera_image: bytes | None = None
         self._attr_unique_id = f"{entry.entry_id}_camera"
         self._attr_supported_features = (
             CameraEntityFeature.STREAM | CameraEntityFeature.ON_OFF
@@ -83,10 +93,26 @@ class WJGCamera(  # pyright: ignore[reportArgumentType]
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
         """Aktuelles Standbild laden."""
+        _ = width
+        _ = height
         # Bevorzuge gecachten Snapshot aus Coordinator
+        cached_snapshot = None
         if self.coordinator.data and "snapshot_bytes" in self.coordinator.data:
-            return self.coordinator.data["snapshot_bytes"]
-        return await self.coordinator.async_snapshot()
+            cached_snapshot = self.coordinator.data["snapshot_bytes"]
+        if isinstance(cached_snapshot, (bytes, bytearray)) and cached_snapshot:
+            self._last_camera_image = bytes(cached_snapshot)
+            return self._last_camera_image
+
+        live_snapshot = await self.coordinator.async_snapshot()
+        if isinstance(live_snapshot, (bytes, bytearray)) and live_snapshot:
+            self._last_camera_image = bytes(live_snapshot)
+            return self._last_camera_image
+
+        if self._last_camera_image:
+            return self._last_camera_image
+
+        _LOGGER.debug("Snapshot nicht verfügbar, liefere Fallback-Bild")
+        return _FALLBACK_IMAGE_BYTES
 
     async def async_enable_motion_detection(self) -> None:
         """Bewegungserkennung aktivieren."""
