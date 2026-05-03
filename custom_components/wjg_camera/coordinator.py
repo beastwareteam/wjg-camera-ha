@@ -436,6 +436,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._event_task: asyncio.Task | None = None
         self._onvif_profile_tokens: dict[str, str] = {}
         self._onvif_video_source_token: str = "000"
+        self._last_ptz_fault: str = ""
         self._onvif_service_paths: dict[str, str] = {
             key: paths[0] for key, paths in ONVIF_SERVICE_PATH_CANDIDATES.items()
         }
@@ -443,6 +444,28 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             name: dict(rule) for name, rule in ONVIF_EVENT_RULES.items()
         }
         self._apply_onvif_option_overrides(options)
+
+    @property
+    def last_ptz_fault(self) -> str:
+        """Letzten ONVIF-PTZ-Fehlertext fuer UI-Rueckmeldungen bereitstellen."""
+        return self._last_ptz_fault
+
+    @staticmethod
+    def _extract_onvif_fault_text(response_text: str) -> str:
+        """Best effort: lesbaren Fault-Text aus SOAP-Antwort extrahieren."""
+        if not response_text:
+            return ""
+        for tag in ("Text", "faultstring", "Subcode", "Value"):
+            value = WJGCameraCoordinator._xml_text(response_text, tag)
+            if value:
+                return value
+        return ""
+
+    def _remember_ptz_fault_from_response(self, response_text: str) -> None:
+        """PTZ-Fault aus SOAP-Antwort merken, falls vorhanden."""
+        fault = self._extract_onvif_fault_text(response_text)
+        if fault:
+            self._last_ptz_fault = fault
 
     def _setup_onvif(self) -> None:
         """ONVIF-Client blockierungsfrei über den Executor initialisieren."""
@@ -976,12 +999,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_ptz_command(self, cmd: str, speed: int = 5) -> bool:
         """PTZ-Steuerbefehl senden (Start/Stop Up/Down/Left/Right/Zoom)."""
+        self._last_ptz_fault = ""
         ptz_map = {
             "up": 0x10, "down": 0x11, "left": 0x12, "right": 0x13,
             "zoom_in": 0x01, "zoom_out": 0x02, "focus_in": 0x03,
             "focus_out": 0x04, "stop": 0xFF
         }
         if cmd not in ptz_map:
+            self._last_ptz_fault = f"Unbekannter PTZ-Befehl: {cmd}"
             _LOGGER.warning("Unbekannter PTZ-Befehl: %s", cmd)
             return False
 
@@ -1025,8 +1050,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     )
                     if "ContinuousMoveResponse" in resp:
                         self._onvif_profile_tokens[self._active_stream] = profile_token
+                        self._last_ptz_fault = ""
                         _LOGGER.debug("ONVIF PTZ erfolgreich: cmd=%s profile=%s", cmd, profile_token)
                         return True
+                    self._remember_ptz_fault_from_response(resp)
                 # Geräte-Fallback: einige Kameras erwarten ein Timeout im ContinuousMove.
                 for profile_token in tried_tokens:
                     _LOGGER.debug(
@@ -1046,12 +1073,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     )
                     if "ContinuousMoveResponse" in resp:
                         self._onvif_profile_tokens[self._active_stream] = profile_token
+                        self._last_ptz_fault = ""
                         _LOGGER.debug(
                             "ONVIF PTZ ContinuousMove-Timeout erfolgreich: cmd=%s profile=%s",
                             cmd,
                             profile_token,
                         )
                         return True
+                    self._remember_ptz_fault_from_response(resp)
                 # Geräte-Fallback: einige Kameras unterstützen RelativeMove, aber kein ContinuousMove.
                 for profile_token in tried_tokens:
                     _LOGGER.debug(
@@ -1070,12 +1099,21 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     )
                     if "RelativeMoveResponse" in resp:
                         self._onvif_profile_tokens[self._active_stream] = profile_token
+                        self._last_ptz_fault = ""
                         _LOGGER.debug("ONVIF PTZ RelativeMove erfolgreich: cmd=%s profile=%s", cmd, profile_token)
                         return True
+                    self._remember_ptz_fault_from_response(resp)
                 # Fallback auf python-onvif library
                 if self._onvif:
                     _LOGGER.debug("ONVIF PTZ Direct-SOAP ohne Response, nutze Library-Fallback: cmd=%s", cmd)
-                    return await self.async_onvif_ptz(cmd, min(speed, 8) / 8.0)
+                    ok = await self.async_onvif_ptz(cmd, min(speed, 8) / 8.0)
+                    if ok:
+                        self._last_ptz_fault = ""
+                    elif not self._last_ptz_fault:
+                        self._last_ptz_fault = "PTZ fehlgeschlagen (kein ONVIF-Response vom Geraet)"
+                    return ok
+                if not self._last_ptz_fault:
+                    self._last_ptz_fault = "PTZ fehlgeschlagen (kein ONVIF-Response vom Geraet)"
             return False
 
         if self._xm:
@@ -1085,6 +1123,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     self._xm.ptz_command, code, speed, 0
                 )
             except Exception as e:
+                self._last_ptz_fault = str(e)
                 _LOGGER.error("PTZ-Befehl fehlgeschlagen: %s", e)
 
         # HTTP-Fallback
@@ -1092,7 +1131,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             url = (f"http://{self.host}:{self.http_port}/cgi-bin/ptz"
                    f"?channel=1&cmd={cmd}&speed={speed}")
             data = await self._async_http_get_data(url, timeout_seconds=3)
-            return isinstance(data, (bytes, bytearray))
+            ok = isinstance(data, (bytes, bytearray))
+            if ok:
+                self._last_ptz_fault = ""
+            elif not self._last_ptz_fault:
+                self._last_ptz_fault = "PTZ HTTP-Fallback fehlgeschlagen"
+            return ok
+        if not self._last_ptz_fault:
+            self._last_ptz_fault = "PTZ fehlgeschlagen"
         return False
 
     # ── ONVIF Direct-SOAP helper ────────────────────────────────────────────

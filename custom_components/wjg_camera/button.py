@@ -18,8 +18,10 @@ from .coordinator import WJGCameraCoordinator
 _LOGGER = logging.getLogger(__name__)
 
 
-def _raise_action_failed(action: str) -> None:
+def _raise_action_failed(action: str, detail: str | None = None) -> None:
     """Eine einheitliche Fehlermeldung fuer fehlgeschlagene Button-Aktionen werfen."""
+    if detail:
+        raise HomeAssistantError(f"Aktion fehlgeschlagen: {action} ({detail})")
     raise HomeAssistantError(f"Aktion fehlgeschlagen: {action}")
 
 
@@ -92,7 +94,8 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
             )
         else:
             _LOGGER.warning("PTZ-Befehl '%s' fehlgeschlagen", self._direction)
-            _raise_action_failed(f"PTZ {self._direction}")
+            detail = str(getattr(self.coordinator, "last_ptz_fault", "") or "").strip()
+            _raise_action_failed(f"PTZ {self._direction}", detail)
 
     def press(self) -> None:
         """Sync-API bewusst nicht unterstuetzen."""

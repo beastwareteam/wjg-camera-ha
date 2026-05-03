@@ -34,6 +34,7 @@ class DummyCoordinator:
         self.is_recording = False
         self.motion_detected = True
         self.last_motion_time = 1234567890.0
+        self.last_ptz_fault = ""
         self.async_ptz_command = AsyncMock(return_value=True)
         self.async_set_recording = AsyncMock(return_value=True)
         self.microphone_enabled = True
@@ -119,9 +120,10 @@ async def test_ptz_button_calls_coordinator():
 async def test_ptz_button_handles_failed_command_and_device_info():
     coordinator = DummyCoordinator()
     coordinator.async_ptz_command = AsyncMock(return_value=False)
+    coordinator.last_ptz_fault = "ActionNotSupported"
     button = WJGPTZButton(_as_any(coordinator), _as_any(DummyEntry(entry_id="btn-1")), "up")
 
-    with pytest.raises(HomeAssistantError):
+    with pytest.raises(HomeAssistantError, match="ActionNotSupported"):
         await button.async_press()
     info = button.device_info
 
