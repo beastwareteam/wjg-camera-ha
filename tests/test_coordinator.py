@@ -725,6 +725,51 @@ async def test_async_ptz_command_falls_back_to_soap11_legacy_request():
 
 
 @pytest.mark.asyncio
+async def test_async_ptz_command_onvif_failure_falls_back_to_http_cgi():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    async def _fake_soap_for(_service_key, _body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        return "<s:Fault><s:Reason><s:Text>An error was discovered processing the &lt;wsse:Security&gt; header</s:Text></s:Reason></s:Fault>"
+
+    class DummyResp:
+        status = 200
+
+        async def read(self):
+            return b"ok"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummySession:
+        def get(self, url, **_kwargs):
+            assert "/cgi-bin/ptz" in url
+            return DummyResp()
+
+    _set_private_attr(coordinator, "_onvif", None)
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_session", DummySession())
+
+    assert await coordinator.async_ptz_command("right") is True
+    assert coordinator.last_ptz_fault == ""
+
+
+@pytest.mark.asyncio
 async def test_onvif_wsse_is_disabled_after_security_header_fault():
     entry = DummyEntry(
         {

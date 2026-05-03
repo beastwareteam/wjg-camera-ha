@@ -813,7 +813,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.1.6: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.1.7: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self._onvif_content_type,
                 self.host,
@@ -1199,7 +1199,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     return ok
                 if not self._last_ptz_fault:
                     self._last_ptz_fault = "PTZ fehlgeschlagen (kein ONVIF-Response vom Geraet)"
-            return False
+            # Nicht hart abbrechen: einige Kameras bewegen PTZ nur über CGI-HTTP.
+            # Daher nach ONVIF-Fehlschlag in den bestehenden HTTP/XM-Fallback laufen.
 
         if self._xm:
             code = ptz_map[cmd]
