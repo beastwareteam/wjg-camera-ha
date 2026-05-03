@@ -87,6 +87,12 @@ ONVIF_SERVICE_PATH_CANDIDATES: dict[str, tuple[str, ...]] = {
     ONVIF_SERVICE_EVENTS: ("/onvif/Events", "/onvif/events_service"),
 }
 
+# Reihenfolge ist wichtig: XM-Derivate akzeptieren haeufig nur text/xml.
+ONVIF_CONTENT_TYPE_CANDIDATES = (
+    "text/xml; charset=utf-8",
+    "application/soap+xml; charset=utf-8",
+)
+
 ONVIF_EVENT_RULES: dict[str, dict[str, Any]] = {
     "motion": {
         "item_keys": ("ismotion", "motion", "motionalarm", "videomotion"),
@@ -440,6 +446,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # WSSE verursacht bei vielen ONVIF-Implementierungen (insb. XM-Derivaten)
         # Security-Header-Faults. Standard: deaktiviert, Retry-Logik bleibt erhalten.
         self._onvif_wsse_enabled: bool = False
+        self._onvif_content_type: str = ONVIF_CONTENT_TYPE_CANDIDATES[0]
         self._onvif_service_paths: dict[str, str] = {
             key: paths[0] for key, paths in ONVIF_SERVICE_PATH_CANDIDATES.items()
         }
@@ -457,6 +464,16 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     def onvif_wsse_enabled(self) -> bool:
         """Aktuellen WSSE-Modus fuer Diagnose und UI bereitstellen."""
         return self._onvif_wsse_enabled
+
+    @property
+    def onvif_service_paths(self) -> dict[str, str]:
+        """Aktuelle ONVIF-Servicepfade fuer Diagnose und UI bereitstellen."""
+        return dict(self._onvif_service_paths)
+
+    @property
+    def onvif_content_type(self) -> str:
+        """Aktuell verwendeten SOAP Content-Type bereitstellen."""
+        return self._onvif_content_type
 
     @staticmethod
     def _extract_onvif_fault_text(response_text: str) -> str:
@@ -769,8 +786,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.1.3: ONVIF WSSE aktiv=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.1.3: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
+                self._onvif_content_type,
                 self.host,
                 self.onvif_port,
             )
@@ -1185,7 +1203,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         use_auth: bool = True,
         timeout_seconds: int = 5,
     ) -> str:
-        """ONVIF SOAP-Anfrage direkt via HTTP."""
+        """ONVIF SOAP-Anfrage direkt via HTTP.
+
+        Versucht den gecachten Content-Type zuerst und faellt bei Bedarf
+        auf die restlichen Kandidaten zurueck.
+        """
         if not self._session:
             return ""
         auth_header = self._wsse_header() if use_auth else ""
@@ -1208,18 +1230,47 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             "</s:Envelope>"
         )
         url = f"http://{self.host}:{self.onvif_port}{service_path}"
-        try:
-            async with async_timeout.timeout(timeout_seconds):
-                async with self._session.post(
-                    url,
-                    data=envelope.encode("utf-8"),
-                    auth=http_auth,
-                    headers={"Content-Type": "application/soap+xml; charset=utf-8"},
-                ) as resp:
-                    return await resp.text()
-        except Exception as exc:
-            _LOGGER.debug("ONVIF SOAP [%s] fehlgeschlagen: %s", service_path, exc)
-            return ""
+        content_types_to_try = [self._onvif_content_type] + [
+            candidate
+            for candidate in ONVIF_CONTENT_TYPE_CANDIDATES
+            if candidate != self._onvif_content_type
+        ]
+        last_result = ""
+        for content_type in content_types_to_try:
+            try:
+                async with async_timeout.timeout(timeout_seconds):
+                    async with self._session.post(
+                        url,
+                        data=envelope.encode("utf-8"),
+                        auth=http_auth,
+                        headers={"Content-Type": content_type},
+                    ) as resp:
+                        result = await resp.text()
+                last_result = result
+                if self._looks_like_onvif_auth_fault(result):
+                    _LOGGER.debug(
+                        "ONVIF SOAP Auth-Fault mit content_type=%s path=%s",
+                        content_type,
+                        service_path,
+                    )
+                    continue
+                if content_type != self._onvif_content_type:
+                    _LOGGER.debug(
+                        "ONVIF SOAP Content-Type geaendert: %s -> %s",
+                        self._onvif_content_type,
+                        content_type,
+                    )
+                    self._onvif_content_type = content_type
+                return result
+            except Exception as exc:
+                _LOGGER.debug(
+                    "ONVIF SOAP [%s] fehlgeschlagen fuer content_type=%s: %s",
+                    service_path,
+                    content_type,
+                    exc,
+                )
+                continue
+        return last_result
 
     async def _onvif_soap_legacy(
         self,
@@ -2007,6 +2058,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             "<tev:Timeout>PT15S</tev:Timeout>"
             "<tev:MessageLimit>16</tev:MessageLimit>"
             "</tev:PullMessages>",
+            use_auth=False,
             timeout_seconds=20,
         )
         if not resp:

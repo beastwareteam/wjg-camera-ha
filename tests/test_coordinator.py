@@ -72,6 +72,58 @@ async def test_onvif_soap_omits_header_when_auth_disabled():
     assert captured["auth"] is not None
     assert getattr(captured["auth"], "login", None) == "admin"
 
+
+@pytest.mark.asyncio
+async def test_onvif_soap_retries_content_type_and_caches_successful_variant():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    seen_content_types: list[str] = []
+
+    class DummyResponse:
+        def __init__(self, text: str):
+            self._text = text
+
+        async def text(self):
+            return self._text
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummySession:
+        def post(self, _url, data=None, headers=None, auth=None):
+            _ = data
+            _ = auth
+            content_type = str((headers or {}).get("Content-Type", ""))
+            seen_content_types.append(content_type)
+            if content_type == "application/soap+xml; charset=utf-8":
+                return DummyResponse("An error was discovered processing the &lt;wsse:Security&gt; header")
+            return DummyResponse("<ok/>")
+
+    _set_private_attr(coordinator, "_session", DummySession())
+    _set_private_attr(coordinator, "_onvif_content_type", "application/soap+xml; charset=utf-8")
+
+    response = await coordinator._onvif_soap("/onvif/PTZ", "<tptz:ContinuousMove/>", use_auth=False)
+
+    assert response == "<ok/>"
+    assert seen_content_types[:2] == [
+        "application/soap+xml; charset=utf-8",
+        "text/xml; charset=utf-8",
+    ]
+    assert coordinator.onvif_content_type == "text/xml; charset=utf-8"
+
 @pytest.mark.asyncio
 async def test_is_adb_proxy():
     entry = DummyEntry({
@@ -1602,8 +1654,10 @@ async def test_async_onvif_pull_messages_once_updates_motion_tamper_and_signal()
     coordinator = _make_coordinator(DummyHass(), entry)
     _set_private_attr(coordinator, "_event_pullpoint_path", "/onvif/Subscription")
 
+    seen_use_auth: list[bool] = []
+
     async def _fake_soap(_service_path, _body, use_auth=True, timeout_seconds=5):
-        _ = use_auth
+        seen_use_auth.append(bool(use_auth))
         _ = timeout_seconds
         return (
             "<tev:PullMessagesResponse>"
@@ -1635,6 +1689,7 @@ async def test_async_onvif_pull_messages_once_updates_motion_tamper_and_signal()
     assert coordinator.tamper_detected is True
     assert coordinator.signal_loss is True
     assert listener_calls["value"] == 1
+    assert seen_use_auth == [False]
 
 
 @pytest.mark.asyncio
