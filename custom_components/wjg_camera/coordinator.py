@@ -453,6 +453,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         """Letzten ONVIF-PTZ-Fehlertext fuer UI-Rueckmeldungen bereitstellen."""
         return self._last_ptz_fault
 
+    @property
+    def onvif_wsse_enabled(self) -> bool:
+        """Aktuellen WSSE-Modus fuer Diagnose und UI bereitstellen."""
+        return self._onvif_wsse_enabled
+
     @staticmethod
     def _extract_onvif_fault_text(response_text: str) -> str:
         """Best effort: lesbaren Fault-Text aus SOAP-Antwort extrahieren."""
@@ -763,8 +768,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             await self.hass.async_add_executor_job(self._setup_xm)
 
         if self.protocol == PROTOCOL_ONVIF:
-            _LOGGER.info(
-                "ONVIF WSSE aktiv: %s (Host=%s Port=%s)",
+            _LOGGER.warning(
+                "WJG PTZ Build 2.1.1: ONVIF WSSE aktiv=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self.host,
                 self.onvif_port,

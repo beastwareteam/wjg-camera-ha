@@ -95,7 +95,12 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
         else:
             _LOGGER.warning("PTZ-Befehl '%s' fehlgeschlagen", self._direction)
             detail = str(getattr(self.coordinator, "last_ptz_fault", "") or "").strip()
-            _raise_action_failed(f"PTZ {self._direction}", detail)
+            wsse_state = getattr(self.coordinator, "onvif_wsse_enabled", None)
+            suffix = "build=2.1.1"
+            if wsse_state is not None:
+                suffix = f"build=2.1.1 wsse={'on' if wsse_state else 'off'}"
+            combined_detail = f"{detail}; {suffix}" if detail else suffix
+            _raise_action_failed(f"PTZ {self._direction}", combined_detail)
 
     def press(self) -> None:
         """Sync-API bewusst nicht unterstuetzen."""
