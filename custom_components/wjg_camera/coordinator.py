@@ -456,7 +456,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 self.password,
             )
         except Exception as e:
-            _LOGGER.error("ONVIF-Initialisierung fehlgeschlagen: %s", e)
+            message = str(e).lower()
+            if "security token" in message and "authenticated" in message:
+                _LOGGER.warning(
+                    "ONVIF python-client Auth fehlgeschlagen (%s) – nutze Direct-SOAP ohne Library-Fallback",
+                    e,
+                )
+            else:
+                _LOGGER.error("ONVIF-Initialisierung fehlgeschlagen: %s", e)
 
     async def async_onvif_ptz(self, cmd: str, speed: float = 0.5) -> bool:
         """ONVIF PTZ-Befehl senden (up/down/left/right/zoom_in/zoom_out/stop)."""
@@ -495,31 +502,52 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_onvif_stream_url(self) -> str | None:
         """ONVIF Stream-URL abrufen."""
-        if not self._onvif:
-            return None
-        try:
-            media_service = self._onvif.create_media_service()
-            profiles = list(await _await_if_needed(media_service.GetProfiles()) or [])
-            profile_token = await self._async_active_onvif_profile_token()
-            if not profile_token and profiles:
-                profile_token = str(getattr(profiles[0], "token", ""))
-            req = media_service.create_type('GetStreamUri')
-            req.ProfileToken = profile_token
-            req.StreamSetup = {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}}
-            uri = await _await_if_needed(media_service.GetStreamUri(req))
-            raw_uri = getattr(uri, "Uri", None)
-            normalized_uri = self._normalize_onvif_rtsp_url(raw_uri)
+        profile_token = await self._async_active_onvif_profile_token()
+        if self._onvif:
+            try:
+                media_service = self._onvif.create_media_service()
+                profiles = list(await _await_if_needed(media_service.GetProfiles()) or [])
+                if not profile_token and profiles:
+                    profile_token = str(getattr(profiles[0], "token", ""))
+                req = media_service.create_type('GetStreamUri')
+                req.ProfileToken = profile_token
+                req.StreamSetup = {"Stream": "RTP-Unicast", "Transport": {"Protocol": "RTSP"}}
+                uri = await _await_if_needed(media_service.GetStreamUri(req))
+                raw_uri = getattr(uri, "Uri", None)
+                normalized_uri = self._normalize_onvif_rtsp_url(raw_uri)
+                _LOGGER.debug(
+                    "ONVIF Stream-URL aufgelöst: profile=%s media_path=%s raw=%s normalized=%s",
+                    profile_token,
+                    self._onvif_service_paths.get(ONVIF_SERVICE_MEDIA),
+                    raw_uri,
+                    normalized_uri,
+                )
+                return normalized_uri
+            except Exception as e:
+                _LOGGER.debug("ONVIF Stream-URL via python-client fehlgeschlagen: %s", e)
+
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_MEDIA,
+            "<trt:GetStreamUri>"
+            f"<trt:ProfileToken>{profile_token}</trt:ProfileToken>"
+            "<trt:StreamSetup>"
+            "<tt:Stream>RTP-Unicast</tt:Stream>"
+            "<tt:Transport><tt:Protocol>RTSP</tt:Protocol></tt:Transport>"
+            "</trt:StreamSetup>"
+            "</trt:GetStreamUri>",
+        )
+        raw_uri = self._xml_text(resp, "Uri")
+        normalized_uri = self._normalize_onvif_rtsp_url(raw_uri)
+        if normalized_uri:
             _LOGGER.debug(
-                "ONVIF Stream-URL aufgelöst: profile=%s media_path=%s raw=%s normalized=%s",
+                "ONVIF Stream-URL per Direct-SOAP aufgelöst: profile=%s media_path=%s raw=%s normalized=%s",
                 profile_token,
                 self._onvif_service_paths.get(ONVIF_SERVICE_MEDIA),
                 raw_uri,
                 normalized_uri,
             )
             return normalized_uri
-        except Exception as e:
-            _LOGGER.error("ONVIF Stream-URL konnte nicht abgerufen werden: %s", e)
-            return None
+        return None
 
     def _normalize_onvif_rtsp_url(self, raw_url: str | None) -> str | None:
         """ONVIF-RTSP-URLs auf Host, Port und optionale Auth vervollständigen."""
@@ -1068,7 +1096,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     @staticmethod
     def _xml_text(text: str, tag: str) -> str:
         """Ersten Textwert eines einfachen XML-Tags extrahieren."""
-        m = re.search(rf"<[^>]*{re.escape(tag)}[^>/]*>([^<]*)<", text)
+        m = re.search(
+            rf"<(?:[^:>]+:)?{re.escape(tag)}(?:\s[^>]*)?>([^<]*)</(?:[^:>]+:)?{re.escape(tag)}>",
+            text,
+            re.DOTALL,
+        )
         return m.group(1).strip() if m else ""
 
     @staticmethod
@@ -1076,7 +1108,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         """Alle Textwerte eines XML-Tags extrahieren."""
         return [
             m.group(1).strip()
-            for m in re.finditer(rf"<[^>]*{re.escape(tag)}[^>/]*>([^<]*)<", text)
+            for m in re.finditer(
+                rf"<(?:[^:>]+:)?{re.escape(tag)}(?:\s[^>]*)?>([^<]*)</(?:[^:>]+:)?{re.escape(tag)}>",
+                text,
+                re.DOTALL,
+            )
         ]
 
     @staticmethod
@@ -1210,16 +1246,32 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 self._preferred_onvif_video_source_token,
             )
             return
-        if not self._onvif:
-            return
         if self._onvif_profile_tokens and self._onvif_video_source_token:
             return
-        try:
-            media_service = self._onvif.create_media_service()
-            profiles = list(await _await_if_needed(media_service.GetProfiles()) or [])
-        except Exception as exc:
-            _LOGGER.debug("ONVIF Profile-Tokens konnten nicht geladen werden: %s", exc)
-            return
+
+        profiles: list[Any] = []
+        media_service = None
+        if self._onvif:
+            try:
+                media_service = self._onvif.create_media_service()
+                profiles = list(await _await_if_needed(media_service.GetProfiles()) or [])
+            except Exception as exc:
+                _LOGGER.debug("ONVIF Profile-Tokens via python-client fehlgeschlagen: %s", exc)
+
+        if not profiles:
+            profiles_resp = await self._onvif_soap_for(
+                ONVIF_SERVICE_MEDIA,
+                "<trt:GetProfiles/>",
+            )
+            profile_tokens = re.findall(
+                r"<[^>]*Profile[^>]*\btoken=\"([^\"]+)\"",
+                profiles_resp,
+            )
+            for token in profile_tokens:
+                profiles.append(type("Profile", (), {"token": token})())
+            source_token = self._xml_text(profiles_resp, "SourceToken")
+            if source_token:
+                self._onvif_video_source_token = str(source_token)
 
         mapping: dict[str, str] = {}
         for index, profile in enumerate(profiles):
@@ -1247,14 +1299,28 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("ONVIF VideoSourceToken aus Profil geladen: %s", self._onvif_video_source_token)
                 return
 
-        try:
-            get_video_sources = getattr(media_service, "GetVideoSources", None)
-            if get_video_sources is None:
+        video_sources = None
+        if media_service is not None:
+            try:
+                get_video_sources = getattr(media_service, "GetVideoSources", None)
+                if get_video_sources is not None:
+                    video_sources = await _await_if_needed(get_video_sources())
+            except Exception as exc:
+                _LOGGER.debug("ONVIF VideoSource-Token via python-client fehlgeschlagen: %s", exc)
+
+        if not video_sources:
+            video_sources_resp = await self._onvif_soap_for(
+                ONVIF_SERVICE_MEDIA,
+                "<trt:GetVideoSources/>",
+            )
+            token = ""
+            for match in re.finditer(r"<[^>]*VideoSource[^>]*\btoken=\"([^\"]+)\"", video_sources_resp):
+                token = match.group(1)
+                break
+            if token:
+                self._onvif_video_source_token = str(token)
+                _LOGGER.debug("ONVIF VideoSourceToken per Direct-SOAP geladen: %s", self._onvif_video_source_token)
                 return
-            video_sources = await _await_if_needed(get_video_sources())
-        except Exception as exc:
-            _LOGGER.debug("ONVIF VideoSource-Token konnte nicht geladen werden: %s", exc)
-            return
 
         if video_sources:
             source_token = getattr(video_sources[0], "token", None)

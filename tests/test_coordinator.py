@@ -246,6 +246,77 @@ async def test_preferred_onvif_tokens_override_runtime_resolution():
 
 
 @pytest.mark.asyncio
+async def test_onvif_tokens_load_via_direct_soap_without_python_client():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    async def _fake_soap_for(service_key, body, use_auth=True, timeout_seconds=5):
+        _ = service_key
+        _ = use_auth
+        _ = timeout_seconds
+        if "GetProfiles" in body:
+            return (
+                "<trt:GetProfilesResponse>"
+                "<trt:Profiles token=\"PROFILE_MAIN\">"
+                "<tt:VideoSourceConfiguration><tt:SourceToken>VS_001</tt:SourceToken></tt:VideoSourceConfiguration>"
+                "</trt:Profiles>"
+                "<trt:Profiles token=\"PROFILE_SUB\"/>"
+                "</trt:GetProfilesResponse>"
+            )
+        return ""
+
+    _set_private_attr(coordinator, "_onvif", None)
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_active_stream", "001")
+
+    assert await _call_private_async(coordinator, "_async_active_onvif_profile_token") == "PROFILE_SUB"
+    assert await _call_private_async(coordinator, "_async_onvif_video_source_token") == "VS_001"
+
+
+@pytest.mark.asyncio
+async def test_onvif_stream_url_loads_via_direct_soap_without_python_client():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    async def _fake_soap_for(service_key, body, use_auth=True, timeout_seconds=5):
+        _ = service_key
+        _ = use_auth
+        _ = timeout_seconds
+        if "GetProfiles" in body:
+            return "<trt:GetProfilesResponse><trt:Profiles token=\"PROFILE_MAIN\"/></trt:GetProfilesResponse>"
+        if "GetStreamUri" in body:
+            return (
+                "<trt:GetStreamUriResponse>"
+                "<trt:MediaUri><tt:Uri>rtsp://192.168.178.49/live</tt:Uri></trt:MediaUri>"
+                "</trt:GetStreamUriResponse>"
+            )
+        return ""
+
+    _set_private_attr(coordinator, "_onvif", None)
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+
+    assert await coordinator.async_onvif_stream_url() == "rtsp://admin:@192.168.178.49:554/live"
+
+
+@pytest.mark.asyncio
 async def test_async_shutdown_closes_session_and_disconnects_xm():
     entry = DummyEntry(
         {
