@@ -3,6 +3,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -120,7 +121,8 @@ async def test_ptz_button_handles_failed_command_and_device_info():
     coordinator.async_ptz_command = AsyncMock(return_value=False)
     button = WJGPTZButton(_as_any(coordinator), _as_any(DummyEntry(entry_id="btn-1")), "up")
 
-    await button.async_press()
+    with pytest.raises(HomeAssistantError):
+        await button.async_press()
     info = button.device_info
 
     coordinator.async_ptz_command.assert_awaited_once_with("up")

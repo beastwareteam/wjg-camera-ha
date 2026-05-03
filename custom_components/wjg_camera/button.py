@@ -7,6 +7,7 @@ import logging
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -15,6 +16,11 @@ from . import DOMAIN
 from .coordinator import WJGCameraCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _raise_action_failed(action: str) -> None:
+    """Eine einheitliche Fehlermeldung fuer fehlgeschlagene Button-Aktionen werfen."""
+    raise HomeAssistantError(f"Aktion fehlgeschlagen: {action}")
 
 
 async def async_setup_entry(
@@ -86,6 +92,7 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
             )
         else:
             _LOGGER.warning("PTZ-Befehl '%s' fehlgeschlagen", self._direction)
+            _raise_action_failed(f"PTZ {self._direction}")
 
     def press(self) -> None:
         """Sync-API bewusst nicht unterstuetzen."""
@@ -122,7 +129,9 @@ class WJGPTZHomeButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
     async def async_press(self) -> None:
-        await self.coordinator.async_ptz_home()
+        ok = await self.coordinator.async_ptz_home()
+        if not ok:
+            _raise_action_failed("PTZ Home")
 
     def press(self) -> None:
         raise NotImplementedError
@@ -145,7 +154,9 @@ class WJGPTZSetHomeButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity)
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
     async def async_press(self) -> None:
-        await self.coordinator.async_ptz_set_home()
+        ok = await self.coordinator.async_ptz_set_home()
+        if not ok:
+            _raise_action_failed("PTZ Home setzen")
 
     def press(self) -> None:
         raise NotImplementedError
@@ -168,7 +179,9 @@ class WJGPTZStopButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
     async def async_press(self) -> None:
-        await self.coordinator.async_ptz_stop()
+        ok = await self.coordinator.async_ptz_stop()
+        if not ok:
+            _raise_action_failed("PTZ Stop")
 
     def press(self) -> None:
         raise NotImplementedError
@@ -195,7 +208,9 @@ class WJGPTZPresetSetButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntit
 
     async def async_press(self) -> None:
         name = f"Preset {self._slot}"
-        await self.coordinator.async_ptz_set_preset(name, token=self._slot)
+        token = await self.coordinator.async_ptz_set_preset(name, token=self._slot)
+        if not token:
+            _raise_action_failed(f"PTZ Preset {self._slot} speichern")
 
     def press(self) -> None:
         raise NotImplementedError
@@ -221,7 +236,9 @@ class WJGPTZPresetGotoButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEnti
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
     async def async_press(self) -> None:
-        await self.coordinator.async_ptz_goto_preset(self._slot)
+        ok = await self.coordinator.async_ptz_goto_preset(self._slot)
+        if not ok:
+            _raise_action_failed(f"PTZ Preset {self._slot} anfahren")
 
     def press(self) -> None:
         raise NotImplementedError
@@ -244,7 +261,9 @@ class WJGSnapshotButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
     async def async_press(self) -> None:
-        await self.coordinator.async_snapshot()
+        image_bytes = await self.coordinator.async_snapshot()
+        if not image_bytes:
+            _raise_action_failed("Snapshot")
 
     def press(self) -> None:
         raise NotImplementedError
@@ -267,7 +286,9 @@ class WJGRebootButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
     async def async_press(self) -> None:
-        await self.coordinator.async_reboot()
+        ok = await self.coordinator.async_reboot()
+        if not ok:
+            _raise_action_failed("Kamera neu starten")
 
     def press(self) -> None:
         raise NotImplementedError
@@ -290,7 +311,9 @@ class WJGNTPSyncButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
     async def async_press(self) -> None:
-        await self.coordinator.async_ntp_sync()
+        ok = await self.coordinator.async_ntp_sync()
+        if not ok:
+            _raise_action_failed("NTP synchronisieren")
 
     def press(self) -> None:
         raise NotImplementedError
