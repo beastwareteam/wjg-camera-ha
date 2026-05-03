@@ -813,7 +813,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.1.8: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.1.9: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self._onvif_content_type,
                 self.host,
@@ -1332,6 +1332,28 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             "</wsse:UsernameToken></wsse:Security>"
         )
 
+    def _wsse_header_plaintext(self, password_override: str | None = None) -> str:
+        """WSSE-Header mit PasswordText (Klartext) – benoetigt von XM/HiSilicon-Firmware."""
+        nonce = os.urandom(16)
+        nonce_b64 = base64.b64encode(nonce).decode()
+        created = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        pwd = password_override if password_override is not None else (self.password or "")
+        return (
+            '<wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01'
+            '/oasis-200401-wss-wssecurity-secext-1.0.xsd">'
+            "<wsse:UsernameToken>"
+            f"<wsse:Username>{self.username}</wsse:Username>"
+            f'<wsse:Password Type="http://docs.oasis-open.org/wss/2004/01'
+            f'/oasis-200401-wss-username-token-profile-1.0#PasswordText">'
+            f"{pwd}</wsse:Password>"
+            f'<wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01'
+            f'/oasis-200401-wss-wssecurity-secext-1.0.xsd#Base64Binary">'
+            f"{nonce_b64}</wsse:Nonce>"
+            f'<wsu:Created xmlns:wsu="http://docs.oasis-open.org/wss/2004/01'
+            f'/oasis-200401-wss-wssecurity-utility-1.0.xsd">{created}</wsu:Created>'
+            "</wsse:UsernameToken></wsse:Security>"
+        )
+
     async def _onvif_soap(
         self,
         service_path: str,
@@ -1502,6 +1524,49 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             last_response = response_text
         return last_response
 
+    async def _onvif_soap_with_wsse_text(
+        self,
+        service_path: str,
+        body: str,
+        password_override: str | None = None,
+        timeout_seconds: int = 5,
+    ) -> str:
+        """ONVIF SOAP-Anfrage mit WSSE PasswordText (Klartext) fuer XM/HiSilicon-Geraete."""
+        if not self._session:
+            return ""
+        wsse_hdr = self._wsse_header_plaintext(password_override)
+        envelope = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
+            ' xmlns:tds="http://www.onvif.org/ver10/device/wsdl"'
+            ' xmlns:trt="http://www.onvif.org/ver10/media/wsdl"'
+            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
+            ' xmlns:tptz10="http://www.onvif.org/ver10/ptz/wsdl"'
+            ' xmlns:tt="http://www.onvif.org/ver10/schema"'
+            ' xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl"'
+            ' xmlns:tev="http://www.onvif.org/ver10/events/wsdl">'
+            f"<s:Header>{wsse_hdr}</s:Header>"
+            f"<s:Body>{body}</s:Body>"
+            "</s:Envelope>"
+        )
+        url = f"http://{self.host}:{self.onvif_port}{service_path}"
+        last = ""
+        for auth in ([None] if not self.username else [None, aiohttp.BasicAuth(self.username, self.password or "")]):
+            try:
+                async with async_timeout.timeout(timeout_seconds):
+                    async with self._session.post(
+                        url,
+                        data=envelope.encode("utf-8"),
+                        auth=auth,
+                        headers={"Content-Type": self._onvif_content_type},
+                    ) as resp:
+                        last = await resp.text()
+                if not self._looks_like_onvif_auth_fault(last):
+                    return last
+            except Exception as exc:
+                _LOGGER.debug("ONVIF WSSE-Text [%s] fehlgeschlagen: %s", service_path, exc)
+        return last
+
     async def _async_ptz_soap_request(self, action_name: str, body: str) -> str:
         """PTZ-Request ueber SOAP 1.2/1.1 sowie v20/v10 Namespace probieren."""
         variants = (
@@ -1526,6 +1591,35 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             self._remember_ptz_fault_from_response(legacy_response)
             if legacy_response:
                 last_response = legacy_response
+
+        # XM/HiSilicon-Fallback: WSSE PasswordText statt PasswordDigest probieren.
+        # Viele XM-Kameras akzeptieren keinen Digest, sondern erwarten Klartext-Passwort.
+        if self._looks_like_onvif_auth_fault(last_response):
+            password_variants = [self.password or ""]
+            if self.password:
+                password_variants.append("")  # leeres Passwort als letzten Versuch
+            for pwd_variant in password_variants:
+                for service_path in self._candidate_onvif_service_paths(ONVIF_SERVICE_PTZ):
+                    for candidate_body, _ in variants:
+                        _LOGGER.debug(
+                            "ONVIF PTZ WSSE-PasswordText Fallback: action=%s path=%s pwd_empty=%s",
+                            action_name,
+                            service_path,
+                            pwd_variant == "",
+                        )
+                        resp = await self._onvif_soap_with_wsse_text(
+                            service_path, candidate_body, password_override=pwd_variant
+                        )
+                        if self._ptz_response_ok(resp, action_name):
+                            _LOGGER.warning(
+                                "ONVIF PTZ erfolgreich mit WSSE PasswordText (pwd_empty=%s)",
+                                pwd_variant == "",
+                            )
+                            return resp
+                        if resp:
+                            self._remember_ptz_fault_from_response(resp)
+                            last_response = resp
+
         return last_response
 
     @staticmethod
