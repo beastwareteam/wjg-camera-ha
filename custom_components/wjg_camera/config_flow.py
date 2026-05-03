@@ -163,20 +163,31 @@ class WJGOptionsFlow(config_entries.OptionsFlow):
     ) -> ConfigFlowResult:
         """Optionen fuer einen bestehenden Config-Entry anzeigen oder speichern."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            merged = dict(self._config_entry.options)
+            merged.update(user_input)
+            return self.async_create_entry(title="", data=merged)
 
         schema = vol.Schema({
             vol.Optional(
                 CONF_RTSP_PATH,
-                default=self._config_entry.data.get(CONF_RTSP_PATH, DEFAULT_RTSP_PATH)
+                default=self._config_entry.options.get(
+                    CONF_RTSP_PATH,
+                    self._config_entry.data.get(CONF_RTSP_PATH, DEFAULT_RTSP_PATH),
+                )
             ): str,
             vol.Optional(
                 CONF_SNAPSHOT_PATH,
-                default=self._config_entry.data.get(CONF_SNAPSHOT_PATH, DEFAULT_SNAPSHOT_PATH)
+                default=self._config_entry.options.get(
+                    CONF_SNAPSHOT_PATH,
+                    self._config_entry.data.get(CONF_SNAPSHOT_PATH, DEFAULT_SNAPSHOT_PATH),
+                )
             ): str,
             vol.Optional(
                 CONF_PROTOCOL,
-                default=self._config_entry.data.get(CONF_PROTOCOL, PROTOCOL_RTSP)
+                default=self._config_entry.options.get(
+                    CONF_PROTOCOL,
+                    self._config_entry.data.get(CONF_PROTOCOL, PROTOCOL_RTSP),
+                )
             ): vol.In([PROTOCOL_RTSP, PROTOCOL_HTTP, PROTOCOL_XM, PROTOCOL_ONVIF]),
             vol.Optional(
                 CONF_HTTP_RETRIES,

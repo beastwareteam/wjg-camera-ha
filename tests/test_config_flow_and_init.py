@@ -142,6 +142,34 @@ async def test_options_flow_uses_retry_from_options_before_entry_data():
 
 
 @pytest.mark.asyncio
+async def test_options_flow_uses_runtime_defaults_for_protocol_and_paths_from_options():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.30",
+            "protocol": integration.PROTOCOL_RTSP,
+            "rtsp_path": "/legacy-stream",
+            "snapshot_path": "/legacy-snapshot.jpg",
+        },
+        options={
+            integration.CONF_PROTOCOL: integration.PROTOCOL_ONVIF,
+            integration.CONF_RTSP_PATH: "/streamtype=0",
+            integration.CONF_SNAPSHOT_PATH: "/snap-current.jpg",
+        },
+    )
+    flow = WJGOptionsFlow(_as_any(entry))
+
+    result = await flow.async_step_init()
+    schema = _as_any(result)["data_schema"].schema
+    protocol_key = next(key for key in schema if getattr(key, "schema", None) == integration.CONF_PROTOCOL)
+    rtsp_path_key = next(key for key in schema if getattr(key, "schema", None) == integration.CONF_RTSP_PATH)
+    snapshot_path_key = next(key for key in schema if getattr(key, "schema", None) == integration.CONF_SNAPSHOT_PATH)
+
+    assert protocol_key.default() == integration.PROTOCOL_ONVIF
+    assert rtsp_path_key.default() == "/streamtype=0"
+    assert snapshot_path_key.default() == "/snap-current.jpg"
+
+
+@pytest.mark.asyncio
 async def test_options_flow_falls_back_to_default_retry_for_legacy_entry():
     entry = DummyEntry(
         {
