@@ -1027,6 +1027,31 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         self._onvif_profile_tokens[self._active_stream] = profile_token
                         _LOGGER.debug("ONVIF PTZ erfolgreich: cmd=%s profile=%s", cmd, profile_token)
                         return True
+                # Geräte-Fallback: einige Kameras erwarten ein Timeout im ContinuousMove.
+                for profile_token in tried_tokens:
+                    _LOGGER.debug(
+                        "ONVIF PTZ ContinuousMove-Timeout-Fallback: cmd=%s speed=%s profile=%s ptz_path=%s",
+                        cmd,
+                        speed,
+                        profile_token,
+                        self._onvif_service_paths.get(ONVIF_SERVICE_PTZ),
+                    )
+                    resp = await self._onvif_soap_for(
+                        ONVIF_SERVICE_PTZ,
+                        f"<tptz:ContinuousMove>"
+                        f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+                        f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
+                        f"<tptz:Timeout>PT0.50S</tptz:Timeout>"
+                        f"</tptz:ContinuousMove>",
+                    )
+                    if "ContinuousMoveResponse" in resp:
+                        self._onvif_profile_tokens[self._active_stream] = profile_token
+                        _LOGGER.debug(
+                            "ONVIF PTZ ContinuousMove-Timeout erfolgreich: cmd=%s profile=%s",
+                            cmd,
+                            profile_token,
+                        )
+                        return True
                 # Geräte-Fallback: einige Kameras unterstützen RelativeMove, aber kein ContinuousMove.
                 for profile_token in tried_tokens:
                     _LOGGER.debug(
