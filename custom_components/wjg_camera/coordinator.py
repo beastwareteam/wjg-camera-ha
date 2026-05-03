@@ -1267,7 +1267,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     url,
                     data=envelope.encode("utf-8"),
                     auth=http_auth,
-                    headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+                    headers={"Content-Type": "application/text+xml; charset=utf-8"},
                 ) as resp:
                     return await resp.text()
         except Exception as exc:
