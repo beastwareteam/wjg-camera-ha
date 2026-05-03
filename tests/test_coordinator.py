@@ -343,6 +343,7 @@ async def test_onvif_soap_for_retries_without_auth_on_security_token_fault():
         return "<tptz:ContinuousMoveResponse/>"
 
     _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+    _set_private_attr(coordinator, "_onvif_wsse_enabled", True)
     response = await coordinator._onvif_soap_for(
         coordinator_module.ONVIF_SERVICE_PTZ,
         "<tptz:ContinuousMove/>",
@@ -381,6 +382,7 @@ async def test_async_ptz_command_succeeds_with_auth_fault_retry():
 
     _set_private_attr(coordinator, "_onvif", None)
     _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+    _set_private_attr(coordinator, "_onvif_wsse_enabled", True)
 
     assert await coordinator.async_ptz_command("right") is True
 
@@ -413,6 +415,7 @@ async def test_async_ptz_command_succeeds_with_wsse_security_header_fault_retry(
 
     _set_private_attr(coordinator, "_onvif", None)
     _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+    _set_private_attr(coordinator, "_onvif_wsse_enabled", True)
 
     assert await coordinator.async_ptz_command("right") is True
 
@@ -445,6 +448,7 @@ async def test_onvif_wsse_is_disabled_after_security_header_fault():
 
     _set_private_attr(coordinator, "_onvif", None)
     _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+    _set_private_attr(coordinator, "_onvif_wsse_enabled", True)
 
     assert await coordinator.async_ptz_command("right") is True
     calls.clear()
@@ -453,14 +457,14 @@ async def test_onvif_wsse_is_disabled_after_security_header_fault():
     assert all(call is False for call in calls)
 
 
-def test_onvif_wsse_is_disabled_by_default_when_password_is_empty():
+def test_onvif_wsse_is_disabled_by_default():
     entry = DummyEntry(
         {
             "host": "192.168.178.49",
             "rtsp_port": 554,
             "port": 80,
             "username": "admin",
-            "password": "",
+            "password": "secret",
             "protocol": "onvif",
             "onvif_port": 8899,
         }
