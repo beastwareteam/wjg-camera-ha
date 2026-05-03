@@ -699,6 +699,25 @@ def test_setup_xm_keeps_none_on_failure(monkeypatch):
 
 
 def test_init_onvif_failure_keeps_client_none(monkeypatch):
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.77",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+
+    coordinator = _make_coordinator(MagicMock(), entry)
+
+    assert _get_private_attr(coordinator, "_onvif") is None
+
+
+@pytest.mark.asyncio
+async def test_async_setup_onvif_failure_keeps_client_none(monkeypatch):
     fake_onvif_module = types.SimpleNamespace(
         ONVIFCamera=lambda host, port, username, password: (_ for _ in ()).throw(RuntimeError("onvif boom"))
     )
@@ -715,10 +734,64 @@ def test_init_onvif_failure_keeps_client_none(monkeypatch):
             "onvif_port": 8899,
         }
     )
+    coordinator = _make_coordinator(DummyHass(), entry)
 
-    coordinator = _make_coordinator(MagicMock(), entry)
+    class NoHttpSession:
+        def get(self, _url, **_kwargs):
+            raise AssertionError("HTTP probe must be skipped for ONVIF protocol")
+
+    monkeypatch.setattr("aiohttp.ClientSession", NoHttpSession)
+
+    async def _fake_refresh():
+        return None
+
+    coordinator.async_refresh = _fake_refresh
+
+    await coordinator.async_setup()
 
     assert _get_private_attr(coordinator, "_onvif") is None
+
+
+@pytest.mark.asyncio
+async def test_async_setup_onvif_skips_http_probe(monkeypatch):
+    fake_onvif_module = types.SimpleNamespace(
+        ONVIFCamera=lambda host, port, username, password: object()
+    )
+    monkeypatch.setitem(sys.modules, "onvif", fake_onvif_module)
+
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.88",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    http_get_called = {"value": False}
+
+    class NoHttpSession:
+        def get(self, _url, **_kwargs):
+            http_get_called["value"] = True
+            raise RuntimeError("not expected")
+
+    monkeypatch.setattr("aiohttp.ClientSession", NoHttpSession)
+
+    async def _fake_refresh():
+        return None
+
+    async def _fake_bootstrap():
+        return None
+
+    coordinator.async_refresh = _fake_refresh
+    _set_private_attr(coordinator, "_async_bootstrap_onvif_service_paths", _fake_bootstrap)
+
+    await coordinator.async_setup()
+
+    assert http_get_called["value"] is False
 
 
 @pytest.mark.asyncio

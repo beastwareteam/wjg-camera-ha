@@ -443,19 +443,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             name: dict(rule) for name, rule in ONVIF_EVENT_RULES.items()
         }
         self._apply_onvif_option_overrides(options)
-        if self.protocol == "onvif":
-            try:
-                from onvif import ONVIFCamera
 
-                self._onvif = ONVIFCamera(
-                    self.host,
-                    self.onvif_port,
-                    self.username,
-                    self.password,
-                )
-                # update_xaddrs wird in async_setup aufgerufen (benötigt Event-Loop)
-            except Exception as e:
-                _LOGGER.error("ONVIF-Initialisierung fehlgeschlagen: %s", e)
+    def _setup_onvif(self) -> None:
+        """ONVIF-Client blockierungsfrei über den Executor initialisieren."""
+        try:
+            from onvif import ONVIFCamera
+
+            self._onvif = ONVIFCamera(
+                self.host,
+                self.onvif_port,
+                self.username,
+                self.password,
+            )
+        except Exception as e:
+            _LOGGER.error("ONVIF-Initialisierung fehlgeschlagen: %s", e)
 
     async def async_onvif_ptz(self, cmd: str, speed: float = 0.5) -> bool:
         """ONVIF PTZ-Befehl senden (up/down/left/right/zoom_in/zoom_out/stop)."""
@@ -679,24 +680,26 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         session = self._session
         assert session is not None
 
-        # HTTP-Erreichbarkeit prüfen
-        try:
-            async with async_timeout.timeout(5):
-                async with session.get(
-                    f"http://{self.host}:{self.http_port}/",
-                    allow_redirects=True
-                ) as resp:
-                    _LOGGER.debug(
-                        "Kamera HTTP erreichbar, Status: %s", resp.status
-                    )
-        except Exception as e:
-            _LOGGER.warning("HTTP nicht erreichbar: %s — versuche RTSP-only", e)
+        if self.protocol != PROTOCOL_ONVIF:
+            # HTTP-Erreichbarkeit prüfen
+            try:
+                async with async_timeout.timeout(5):
+                    async with session.get(
+                        f"http://{self.host}:{self.http_port}/",
+                        allow_redirects=True
+                    ) as resp:
+                        _LOGGER.debug(
+                            "Kamera HTTP erreichbar, Status: %s", resp.status
+                        )
+            except Exception as e:
+                _LOGGER.warning("HTTP nicht erreichbar: %s — versuche RTSP-only", e)
 
         # XM SDK verbinden (in executor, da synchron)
         if self.protocol == PROTOCOL_XM:
             await self.hass.async_add_executor_job(self._setup_xm)
 
         if self.protocol == PROTOCOL_ONVIF:
+            await self.hass.async_add_executor_job(self._setup_onvif)
             try:
                 await self._async_bootstrap_onvif_service_paths()
             except Exception as exc:
