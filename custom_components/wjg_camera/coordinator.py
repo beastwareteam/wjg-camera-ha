@@ -1192,6 +1192,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if not self._session:
             return ""
         auth_header = self._wsse_header() if use_auth else ""
+        header_xml = f"<s:Header>{auth_header}</s:Header>" if auth_header else ""
         envelope = (
             '<?xml version="1.0" encoding="utf-8"?>'
             '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
@@ -1201,7 +1202,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             ' xmlns:tt="http://www.onvif.org/ver10/schema"'
             ' xmlns:timg="http://www.onvif.org/ver20/imaging/wsdl"'
             ' xmlns:tev="http://www.onvif.org/ver10/events/wsdl">'
-            f"<s:Header>{auth_header}</s:Header>"
+            f"{header_xml}"
             f"<s:Body>{body}</s:Body>"
             "</s:Envelope>"
         )

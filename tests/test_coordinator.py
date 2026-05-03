@@ -26,6 +26,48 @@ class DummyHass:
     async def async_add_executor_job(self, func, *args):
         return func(*args)
 
+
+@pytest.mark.asyncio
+async def test_onvif_soap_omits_header_when_auth_disabled():
+    entry = DummyEntry(
+        {
+            "host": "192.168.178.49",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "onvif_port": 8899,
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    captured: dict[str, str] = {}
+
+    class DummyResponse:
+        async def text(self):
+            return "<ok/>"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class DummySession:
+        def post(self, _url, data=None, headers=None):
+            _ = headers
+            captured["data"] = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
+            return DummyResponse()
+
+    _set_private_attr(coordinator, "_session", DummySession())
+
+    response = await coordinator._onvif_soap("/onvif/PTZ", "<tptz:ContinuousMove/>", use_auth=False)
+
+    assert response == "<ok/>"
+    assert "<s:Header>" not in captured["data"]
+    assert "wsse:Security" not in captured["data"]
+
 @pytest.mark.asyncio
 async def test_is_adb_proxy():
     entry = DummyEntry({
