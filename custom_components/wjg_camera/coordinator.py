@@ -662,8 +662,18 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol == PROTOCOL_ONVIF:
             onvif_url = await self.async_onvif_stream_url()
             if onvif_url:
-                self._resolved_rtsp_url = onvif_url
-            return
+                has_video = await self.hass.async_add_executor_job(
+                    self._rtsp_url_has_video,
+                    onvif_url,
+                    4.0,
+                )
+                if has_video:
+                    self._resolved_rtsp_url = onvif_url
+                    return
+                _LOGGER.warning(
+                    "ONVIF Stream-URL ohne Video-Track erkannt, suche RTSP-Fallback: %s",
+                    onvif_url,
+                )
 
         for rtsp_url in self._candidate_rtsp_urls():
             has_video = await self.hass.async_add_executor_job(

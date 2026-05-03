@@ -692,6 +692,69 @@ async def test_async_resolve_rtsp_path_falls_back_to_no_credentials_url():
     assert coordinator.rtsp_url == "rtsp://192.168.1.56:554/stream0"
 
 
+@pytest.mark.asyncio
+async def test_async_resolve_rtsp_path_onvif_uses_stream_uri_when_video_available():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.57",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "rtsp_path": "/custom-stream",
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+
+    async def _fake_onvif_stream_url():
+        return "rtsp://admin:@192.168.1.57:554/from-onvif"
+
+    _set_private_attr(coordinator, "async_onvif_stream_url", _fake_onvif_stream_url)
+    _set_private_attr(
+        coordinator,
+        "_rtsp_url_has_video",
+        lambda url, timeout=4.0: url.endswith("/from-onvif"),
+    )
+
+    await coordinator.async_resolve_rtsp_path()
+
+    assert coordinator.rtsp_url == "rtsp://admin:@192.168.1.57:554/from-onvif"
+
+
+@pytest.mark.asyncio
+async def test_async_resolve_rtsp_path_onvif_falls_back_when_stream_uri_has_no_video():
+    entry = DummyEntry(
+        {
+            "host": "192.168.1.58",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "onvif",
+            "rtsp_path": "/custom-stream",
+        }
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    checked_urls: list[str] = []
+
+    async def _fake_onvif_stream_url():
+        return "rtsp://admin:@192.168.1.58:554/from-onvif"
+
+    def _fake_has_video(url: str, timeout: float = 4.0) -> bool:
+        _ = timeout
+        checked_urls.append(url)
+        return url == "rtsp://192.168.1.58:554/stream0"
+
+    _set_private_attr(coordinator, "async_onvif_stream_url", _fake_onvif_stream_url)
+    _set_private_attr(coordinator, "_rtsp_url_has_video", _fake_has_video)
+
+    await coordinator.async_resolve_rtsp_path()
+
+    assert checked_urls[0] == "rtsp://admin:@192.168.1.58:554/from-onvif"
+    assert coordinator.rtsp_url == "rtsp://192.168.1.58:554/stream0"
+
+
 def test_last_motion_time_property_returns_timestamp():
     entry = DummyEntry(
         {
