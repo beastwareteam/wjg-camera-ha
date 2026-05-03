@@ -19,8 +19,10 @@ from homeassistant.core import callback
 import homeassistant.helpers.config_validation as cv
 
 from . import (
-    CONF_HTTP_RETRIES, CONF_PROTOCOL, CONF_RTSP_PATH, CONF_RTSP_PORT, CONF_SNAPSHOT_PATH,
-    DEFAULT_HTTP_PORT, DEFAULT_HTTP_RETRIES, DEFAULT_PASSWORD, DEFAULT_RTSP_PATH, DEFAULT_RTSP_PORT,
+    CONF_HTTP_RETRIES, CONF_ONVIF_PORT, CONF_PROTOCOL, CONF_RTSP_PATH, CONF_RTSP_PORT,
+    CONF_SNAPSHOT_PATH,
+    DEFAULT_HTTP_PORT, DEFAULT_HTTP_RETRIES, DEFAULT_ONVIF_PORT, DEFAULT_PASSWORD,
+    DEFAULT_RTSP_PATH, DEFAULT_RTSP_PORT,
     DEFAULT_SNAPSHOT_PATH, DEFAULT_USERNAME, DOMAIN,
     PROTOCOL_HTTP, PROTOCOL_RTSP, PROTOCOL_XM, PROTOCOL_ONVIF,
 )
@@ -33,6 +35,7 @@ STEP_USER_SCHEMA = vol.Schema({
     vol.Optional(CONF_PASSWORD, default=DEFAULT_PASSWORD): str,
     vol.Optional(CONF_PORT, default=DEFAULT_HTTP_PORT): cv.port,
     vol.Optional(CONF_RTSP_PORT, default=DEFAULT_RTSP_PORT): cv.port,
+    vol.Optional(CONF_ONVIF_PORT, default=DEFAULT_ONVIF_PORT): cv.port,
     vol.Optional(CONF_PROTOCOL, default=PROTOCOL_RTSP): vol.In([
         PROTOCOL_RTSP, PROTOCOL_HTTP, PROTOCOL_XM, PROTOCOL_ONVIF
     ]),
@@ -168,6 +171,13 @@ class WJGOptionsFlow(config_entries.OptionsFlow):
                     self._config_entry.data.get(CONF_HTTP_RETRIES, DEFAULT_HTTP_RETRIES),
                 ),
             ): vol.All(vol.Coerce(int), vol.Range(min=0, max=5)),
+            vol.Optional(
+                CONF_ONVIF_PORT,
+                default=self._config_entry.options.get(
+                    CONF_ONVIF_PORT,
+                    self._config_entry.data.get(CONF_ONVIF_PORT, DEFAULT_ONVIF_PORT),
+                ),
+            ): cv.port,
         })
 
         return self.async_show_form(step_id="init", data_schema=schema)

@@ -32,6 +32,7 @@ CONF_RTSP_PATH: Final = "rtsp_path"
 CONF_SNAPSHOT_PATH: Final = "snapshot_path"
 CONF_PROTOCOL: Final = "protocol"
 CONF_HTTP_RETRIES: Final = "http_retries"
+CONF_ONVIF_PORT: Final = "onvif_port"
 
 PROTOCOL_RTSP: Final = "rtsp"
 PROTOCOL_HTTP: Final = "http_only"

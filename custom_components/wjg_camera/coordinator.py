@@ -285,8 +285,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._last_motion_time: float = 0
         self._resolved_rtsp_url: str | None = None
         self._onvif = None
-        # ONVIF direkt
-        self.onvif_port: int = entry.data.get("onvif_port", 8899)
+        # ONVIF direkt (Options haben Vorrang vor entry.data)
+        self.onvif_port: int = int(
+            options.get("onvif_port", entry.data.get("onvif_port", 8899))
+        )
         # PTZ
         self._ptz_speed: int = 5
         self._ptz_presets: dict[str, str] = {}  # token -> name
@@ -316,10 +318,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
                 self._onvif = ONVIFCamera(
                     self.host,
-                    entry.data.get("onvif_port", 8899),
+                    self.onvif_port,
                     self.username,
-                    self.password
+                    self.password,
                 )
+                # update_xaddrs wird in async_setup aufgerufen (benötigt Event-Loop)
             except Exception as e:
                 _LOGGER.error("ONVIF-Initialisierung fehlgeschlagen: %s", e)
 
@@ -548,6 +551,15 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Audio-Einstellungen nicht abrufbar: %s", exc)
 
         if self.protocol == PROTOCOL_ONVIF:
+            if self._onvif:
+                try:
+                    await self._onvif.update_xaddrs()
+                    _LOGGER.debug("ONVIF xAddrs erfolgreich geladen von %s:%s", self.host, self.onvif_port)
+                except Exception as exc:
+                    _LOGGER.warning(
+                        "ONVIF update_xaddrs fehlgeschlagen (%s) – "
+                        "Direct-SOAP bleibt aktiv", exc
+                    )
             self._event_task = asyncio.create_task(self._async_onvif_event_loop())
 
         await self.async_refresh()
@@ -758,6 +770,34 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         }
         if cmd not in ptz_map:
             _LOGGER.warning("Unbekannter PTZ-Befehl: %s", cmd)
+            return False
+
+        # ONVIF: Direct-SOAP ContinuousMove als primärer Weg
+        if self.protocol == PROTOCOL_ONVIF:
+            if cmd == "stop":
+                return await self.async_ptz_stop()
+            spd = f"{min(speed, 8) / 8:.2f}"
+            soap_velocity_map: dict[str, str] = {
+                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/>',
+                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/>',
+                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/>',
+                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/>',
+                "zoom_in":  f'<tt:Zoom x="{spd}"/>',
+                "zoom_out": f'<tt:Zoom x="-{spd}"/>',
+            }
+            if cmd in soap_velocity_map:
+                resp = await self._onvif_soap(
+                    "/onvif/PTZ",
+                    f"<tptz:ContinuousMove>"
+                    f"<tptz:ProfileToken>{self._active_stream}</tptz:ProfileToken>"
+                    f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
+                    f"</tptz:ContinuousMove>",
+                )
+                if "ContinuousMoveResponse" in resp:
+                    return True
+                # Fallback auf python-onvif library
+                if self._onvif:
+                    return await self.async_onvif_ptz(cmd, min(speed, 8) / 8.0)
             return False
 
         if self._xm:
