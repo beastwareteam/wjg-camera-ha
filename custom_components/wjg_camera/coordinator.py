@@ -1243,6 +1243,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             return ""
         auth_header = self._wsse_header() if use_auth else ""
         header_xml = f"<s:Header>{auth_header}</s:Header>" if auth_header else ""
+        http_auth = None
+        if self.username:
+            http_auth = aiohttp.BasicAuth(self.username, self.password or "")
         envelope = (
             '<?xml version="1.0" encoding="utf-8"?>'
             '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
@@ -1263,6 +1266,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 async with self._session.post(
                     url,
                     data=envelope.encode("utf-8"),
+                    auth=http_auth,
                     headers={"Content-Type": "application/soap+xml; charset=utf-8"},
                 ) as resp:
                     return await resp.text()

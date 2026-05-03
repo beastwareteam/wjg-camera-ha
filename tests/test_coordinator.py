@@ -42,7 +42,7 @@ async def test_onvif_soap_omits_header_when_auth_disabled():
     )
     coordinator = _make_coordinator(DummyHass(), entry)
 
-    captured: dict[str, str] = {}
+    captured: dict[str, object] = {}
 
     class DummyResponse:
         async def text(self):
@@ -55,9 +55,10 @@ async def test_onvif_soap_omits_header_when_auth_disabled():
             return False
 
     class DummySession:
-        def post(self, _url, data=None, headers=None):
+        def post(self, _url, data=None, headers=None, auth=None):
             _ = headers
             captured["data"] = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
+            captured["auth"] = auth
             return DummyResponse()
 
     _set_private_attr(coordinator, "_session", DummySession())
@@ -67,6 +68,8 @@ async def test_onvif_soap_omits_header_when_auth_disabled():
     assert response == "<ok/>"
     assert "<s:Header>" not in captured["data"]
     assert "wsse:Security" not in captured["data"]
+    assert captured["auth"] is not None
+    assert getattr(captured["auth"], "login", None) == "admin"
 
 @pytest.mark.asyncio
 async def test_is_adb_proxy():
