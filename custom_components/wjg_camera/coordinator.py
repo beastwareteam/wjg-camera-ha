@@ -1271,6 +1271,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         markers = (
             "the security token could not be authenticated",
             "could not be authenticated or authorized",
+            "an error was discovered processing the <wsse:security> header",
+            "an error was discovered processing the &lt;wsse:security&gt; header",
             "notauthorized",
             "not authorized",
             "wsse:failedauthentication",
