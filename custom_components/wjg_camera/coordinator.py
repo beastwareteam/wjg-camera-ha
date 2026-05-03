@@ -306,9 +306,27 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     def _xm_ptz_one_shot(xm: "XMClient", code: int, speed: int) -> bool:
         """Ephemere XM-SDK-Verbindung fuer einen einzelnen PTZ-Befehl (Executor)."""
         if not xm.connect(timeout=3.0):
-            return False
+            raise RuntimeError("XM connect/login fehlgeschlagen")
         try:
-            return xm.ptz_command(code, speed)
+            if not xm.ptz_command(code, speed):
+                raise RuntimeError("XM PTZ-Befehl wurde vom Geraet abgelehnt")
+            return True
+        finally:
+            xm.disconnect()
+
+    @staticmethod
+    def _xm_set_recording_one_shot(xm: "XMClient", enabled: bool) -> bool:
+        """Ephemere XM-SDK-Verbindung fuer Start/Stop Aufnahme (Executor)."""
+        if not xm.connect(timeout=3.0):
+            raise RuntimeError("XM connect/login fehlgeschlagen")
+        try:
+            if enabled:
+                ok = xm.start_recording(0)
+            else:
+                ok = xm.stop_recording(0)
+            if not ok:
+                raise RuntimeError("XM Aufnahme-Befehl wurde vom Geraet abgelehnt")
+            return True
         finally:
             xm.disconnect()
 
@@ -823,7 +841,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.2.0: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.2.1: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self._onvif_content_type,
                 self.host,
@@ -1020,6 +1038,30 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             if ok:
                 self._recording = enabled
                 return True
+
+        # ONVIF-/HTTP-Modus: XM Einmal-Fallback trotzdem probieren (Port 34567).
+        if xm_client is None:
+            xm_tmp = XMClient(self.host, self.xm_port, self.username or "", self.password or "")
+            try:
+                _LOGGER.warning(
+                    "Recording XM-SDK-Fallback gestartet (Port %s): enabled=%s",
+                    self.xm_port,
+                    enabled,
+                )
+                ok = await self.hass.async_add_executor_job(
+                    self._xm_set_recording_one_shot,
+                    xm_tmp,
+                    enabled,
+                )
+                if ok:
+                    self._recording = enabled
+                    _LOGGER.warning(
+                        "Recording ueber XM-SDK-Fallback erfolgreich: enabled=%s",
+                        enabled,
+                    )
+                    return True
+            except Exception as exc:
+                _LOGGER.warning("Recording XM-SDK-Fallback fehlgeschlagen: %s", exc)
 
         # HTTP-Fallback (manche Kameras)
         if self._session:
@@ -1302,22 +1344,33 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         # XM-SDK-Fallback für ONVIF-Kameras mit XM/HiSilicon-Firmware (Port 34567).
         # Viele XM-Kameras erlauben PTZ nur über das XM-Protokoll, nicht ONVIF.
-        if not self._xm and self._last_ptz_fault:
+        if self.protocol == PROTOCOL_ONVIF and not self._xm:
             code = ptz_map[cmd]
-            xm_tmp = XMClient(self.host, 34567, self.username or "", self.password or "")
+            xm_tmp = XMClient(self.host, self.xm_port, self.username or "", self.password or "")
             try:
+                _LOGGER.warning(
+                    "PTZ XM-SDK-Fallback gestartet (Port %s): cmd=%s speed=%s",
+                    self.xm_port,
+                    cmd,
+                    speed,
+                )
                 ok = await self.hass.async_add_executor_job(
                     self._xm_ptz_one_shot, xm_tmp, code, speed
                 )
                 if ok:
                     self._last_ptz_fault = ""
                     _LOGGER.warning(
-                        "PTZ über XM-SDK-Fallback (Port 34567) erfolgreich: cmd=%s", cmd
+                        "PTZ ueber XM-SDK-Fallback erfolgreich: cmd=%s",
+                        cmd,
                     )
                     return True
-                _LOGGER.debug("XM-SDK-Fallback (Port 34567) fehlgeschlagen: cmd=%s", cmd)
+                self._last_ptz_fault = (
+                    f"PTZ XM-SDK-Fallback fehlgeschlagen (Port {self.xm_port})"
+                )
+                _LOGGER.warning("XM-SDK-Fallback fehlgeschlagen: cmd=%s", cmd)
             except Exception as xm_exc:
-                _LOGGER.debug("XM-SDK-Fallback Fehler: %s", xm_exc)
+                self._last_ptz_fault = f"PTZ XM-SDK-Fallback Fehler: {xm_exc}"
+                _LOGGER.warning("XM-SDK-Fallback Fehler: %s", xm_exc)
 
         # HTTP-Fallback (mehrere CGI-Varianten fuer XM/HiSilicon/Gattungsmodelle)
         if self._session:
