@@ -763,6 +763,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             await self.hass.async_add_executor_job(self._setup_xm)
 
         if self.protocol == PROTOCOL_ONVIF:
+            _LOGGER.info(
+                "ONVIF WSSE aktiv: %s (Host=%s Port=%s)",
+                self._onvif_wsse_enabled,
+                self.host,
+                self.onvif_port,
+            )
             await self.hass.async_add_executor_job(self._setup_onvif)
             try:
                 await self._async_bootstrap_onvif_service_paths()
