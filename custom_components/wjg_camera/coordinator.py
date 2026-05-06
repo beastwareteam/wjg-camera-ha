@@ -841,7 +841,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.warning(
-                "WJG PTZ Build 2.2.1: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
+                "WJG PTZ Build 2.2.2: ONVIF WSSE aktiv=%s content_type=%s (Host=%s Port=%s)",
                 self._onvif_wsse_enabled,
                 self._onvif_content_type,
                 self.host,
@@ -1674,9 +1674,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             if legacy_response:
                 last_response = legacy_response
 
-        # XM/HiSilicon-Fallback: WSSE PasswordText statt PasswordDigest probieren.
-        # Viele XM-Kameras akzeptieren keinen Digest, sondern erwarten Klartext-Passwort.
-        if self._looks_like_onvif_auth_fault(last_response):
+# WSSE PasswordText-Fallback wird nur noch versucht, wenn WSSE explizit
+# aktiviert ist. Da _onvif_wsse_enabled für XM-Kameras (wsse=off) immer
+# False bleibt, wird dieser Pfad übersprungen und der echte Fehler bleibt
+# erhalten – er wird nicht mehr durch einen wsse:Security-Fehler überschrieben.
+        if self._looks_like_onvif_auth_fault(last_response) and self._onvif_wsse_enabled:
             password_variants = [self.password or ""]
             if self.password:
                 password_variants.append("")  # leeres Passwort als letzten Versuch

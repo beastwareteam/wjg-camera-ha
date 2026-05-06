@@ -19,5 +19,9 @@
   "python.analysis.autoSearchPaths": true,
   "python.analysis.diagnosticMode": "workspace",
   "python.analysis.typeCheckingMode": "basic",
-  "python.terminal.activateEnvironment": true
+  "python.terminal.activateEnvironment": true,
+  "telemetry.editStats.details.enabled": false,
+  "telemetry.editStats.enabled": false,
+  "chat.experimental.incrementalRendering.animationStyle": "none",
+  "chat.experimental.incrementalRendering.enabled": true
 }
