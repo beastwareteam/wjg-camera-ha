@@ -1208,7 +1208,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     if self._ptz_response_ok(resp, "ContinuousMove"):
                         self._onvif_profile_tokens[self._active_stream] = profile_token
                         self._last_ptz_fault = ""
-                        self._schedule_ptz_autostop()
                         return True
 
                 for profile_token in tried_tokens:
@@ -1217,13 +1216,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         f"<tptz:ContinuousMove>"
                         f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
                         f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
-                        f"<tptz:Timeout>PT0.40S</tptz:Timeout>"
+                        f"<tptz:Timeout>PT0.50S</tptz:Timeout>"
                         f"</tptz:ContinuousMove>",
                     )
                     if self._ptz_response_ok(resp, "ContinuousMove"):
                         self._onvif_profile_tokens[self._active_stream] = profile_token
                         self._last_ptz_fault = ""
-                        self._schedule_ptz_autostop()
                         return True
 
                 for profile_token in tried_tokens:
@@ -1276,24 +1274,15 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             for url in self._candidate_http_ptz_urls(cmd, speed):
                 data = await self._async_http_get_data(url, timeout_seconds=3)
                 ok = isinstance(data, (bytes, bytearray)) and self._ptz_http_payload_looks_ok(bytes(data))
-                _LOGGER.debug("PTZ HTTP-Fallback %s → ok=%s data=%r", url, ok, data[:80] if isinstance(data, (bytes, bytearray)) else data)
                 if ok:
                     self._last_ptz_fault = ""
-                    if cmd != "stop":
-                        self._schedule_ptz_autostop()
                     return True
-            self._last_ptz_fault = "PTZ HTTP-Fallback fehlgeschlagen"
+            if not self._last_ptz_fault:
+                self._last_ptz_fault = "PTZ HTTP-Fallback fehlgeschlagen"
             return False
         if not self._last_ptz_fault:
             self._last_ptz_fault = "PTZ fehlgeschlagen"
         return False
-
-    def _schedule_ptz_autostop(self, delay: float = 0.4) -> None:
-        """Auto-Stop nach ContinuousMove — Kamera haelt nach delay Sekunden an."""
-        async def _stop() -> None:
-            await asyncio.sleep(delay)
-            await self.async_ptz_stop()
-        self.hass.async_create_task(_stop())
 
     # ── ONVIF Direct-SOAP helper ────────────────────────────────────────────
 
@@ -1594,28 +1583,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     @staticmethod
     def _ptz_response_ok(response_text: str, action_name: str) -> bool:
-        """PTZ-Erfolg robust für v20/v10 Prefix erkennen.
-
-        XM-Kameras antworten auf ContinuousMove oft mit leerem Body (HTTP 200,
-        kein Fault). Daher: jede nicht-leere, nicht-Fault-Antwort gilt als Erfolg,
-        genau wie xm-soap.py (result is not None).
-        """
+        """PTZ-Erfolg robust für v20/v10 Prefix erkennen."""
         if not response_text:
             return False
-        # Expliziter Response-Tag (Normalfall)
-        if (
+        return (
             f"{action_name}Response" in response_text
             or f"tptz:{action_name}Response" in response_text
             or f"tptz10:{action_name}Response" in response_text
-        ):
-            return True
-        # Kein SOAP-Fault und keine leere Antwort → XM-Kamera-Erfolg
-        lowered = response_text.lower()
-        is_fault = (
-            "<fault" in lowered or ":fault" in lowered
-            or "faultcode" in lowered or "faultstring" in lowered
         )
-        return not is_fault
 
     @staticmethod
     def _xml_all(text: str, tag: str) -> list[str]:
