@@ -1204,6 +1204,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             '</s:Envelope>'
         )
         url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
+        _LOGGER.warning("XM Direct PTZ starte: url=%s cmd=%s pan=%s tilt=%s zoom=%s", url, cmd, pan, tilt, zoom)
         try:
             async with async_timeout.timeout(6):
                 async with self._session.post(
@@ -1213,7 +1214,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 ) as resp:
                     text = await resp.text()
             if resp.status == 200 and "fault" not in text.lower():
-                _LOGGER.debug("XM Direct PTZ '%s' OK (HTTP 200)", cmd)
+                _LOGGER.warning("XM Direct PTZ '%s' OK: url=%s", cmd, url)
                 self._last_ptz_fault = ""
                 # Auto-Stop nach 0.8s wie xm-soap.py
                 async def _autostop() -> None:
@@ -1222,10 +1223,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 self.hass.async_create_task(_autostop())
                 return True
             self._last_ptz_fault = f"XM Direct PTZ HTTP {resp.status}"
-            _LOGGER.debug("XM Direct PTZ '%s' fehlgeschlagen: %s", cmd, text[:200])
+            _LOGGER.warning("XM Direct PTZ '%s' fehlgeschlagen HTTP %s: %s", cmd, resp.status, text[:200])
         except Exception as exc:
             self._last_ptz_fault = f"XM Direct PTZ Fehler: {exc}"
-            _LOGGER.debug("XM Direct PTZ Ausnahme: %s", exc)
+            _LOGGER.warning("XM Direct PTZ '%s' Ausnahme (url=%s): %s", cmd, url, exc)
         return False
 
     async def _xm_direct_ptz_stop(self) -> bool:
