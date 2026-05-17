@@ -1160,6 +1160,110 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 deduped.append(candidate)
         return deduped
 
+    async def _xm_direct_ptz(self, cmd: str, speed: int = 5) -> bool:
+        """
+        Direkt-SOAP exakt wie xm-soap.py: application/soap+xml, WSSE, kein Basic Auth.
+        Akzeptiert jede HTTP-200-Antwort als Erfolg (XM gibt oft leere Body zurueck).
+        """
+        if not self._session:
+            return False
+        if cmd == "stop":
+            return await self._xm_direct_ptz_stop()
+        spd = min(speed, 8) / 8
+        vel_map = {
+            "up":       (0.0,  spd,  0.0),
+            "down":     (0.0, -spd,  0.0),
+            "left":     (-spd, 0.0,  0.0),
+            "right":    (spd,  0.0,  0.0),
+            "zoom_in":  (0.0,  0.0,  spd),
+            "zoom_out": (0.0,  0.0, -spd),
+        }
+        if cmd not in vel_map:
+            return False
+        pan, tilt, zoom = vel_map[cmd]
+        token = "000"
+        body = (
+            f'<tptz:ContinuousMove>'
+            f'<tptz:ProfileToken>{token}</tptz:ProfileToken>'
+            f'<tptz:Velocity>'
+            f'<tt:PanTilt x="{pan:.2f}" y="{tilt:.2f}"/>'
+            f'<tt:Zoom x="{zoom:.2f}"/>'
+            f'</tptz:Velocity>'
+            f'</tptz:ContinuousMove>'
+        )
+        wsse = self._wsse_header()
+        envelope = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
+            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
+            ' xmlns:tt="http://www.onvif.org/ver10/schema"'
+            ' xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"'
+            ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
+            f'<s:Header>{wsse}</s:Header>'
+            f'<s:Body>{body}</s:Body>'
+            '</s:Envelope>'
+        )
+        url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
+        try:
+            async with async_timeout.timeout(6):
+                async with self._session.post(
+                    url,
+                    data=envelope.encode("utf-8"),
+                    headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+                ) as resp:
+                    text = await resp.text()
+            if resp.status == 200 and "fault" not in text.lower():
+                _LOGGER.debug("XM Direct PTZ '%s' OK (HTTP 200)", cmd)
+                self._last_ptz_fault = ""
+                # Auto-Stop nach 0.8s wie xm-soap.py
+                async def _autostop() -> None:
+                    await asyncio.sleep(0.8)
+                    await self._xm_direct_ptz_stop()
+                self.hass.async_create_task(_autostop())
+                return True
+            self._last_ptz_fault = f"XM Direct PTZ HTTP {resp.status}"
+            _LOGGER.debug("XM Direct PTZ '%s' fehlgeschlagen: %s", cmd, text[:200])
+        except Exception as exc:
+            self._last_ptz_fault = f"XM Direct PTZ Fehler: {exc}"
+            _LOGGER.debug("XM Direct PTZ Ausnahme: %s", exc)
+        return False
+
+    async def _xm_direct_ptz_stop(self) -> bool:
+        """PTZ Stop direkt per SOAP (wie xm-soap.py ptz_stop)."""
+        if not self._session:
+            return False
+        token = "000"
+        body = (
+            f'<tptz:Stop>'
+            f'<tptz:ProfileToken>{token}</tptz:ProfileToken>'
+            f'<tptz:PanTilt>true</tptz:PanTilt>'
+            f'<tptz:Zoom>true</tptz:Zoom>'
+            f'</tptz:Stop>'
+        )
+        wsse = self._wsse_header()
+        envelope = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
+            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
+            ' xmlns:tt="http://www.onvif.org/ver10/schema"'
+            ' xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"'
+            ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
+            f'<s:Header>{wsse}</s:Header>'
+            f'<s:Body>{body}</s:Body>'
+            '</s:Envelope>'
+        )
+        url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
+        try:
+            async with async_timeout.timeout(4):
+                async with self._session.post(
+                    url,
+                    data=envelope.encode("utf-8"),
+                    headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+                ) as resp:
+                    return resp.status == 200
+        except Exception:
+            return False
+
     async def async_ptz_command(self, cmd: str, speed: int = 5) -> bool:
         """PTZ-Steuerbefehl senden (Start/Stop Up/Down/Left/Right/Zoom)."""
         self._last_ptz_fault = ""
@@ -1172,6 +1276,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             self._last_ptz_fault = f"Unbekannter PTZ-Befehl: {cmd}"
             _LOGGER.warning("Unbekannter PTZ-Befehl: %s", cmd)
             return False
+
+        # Direkt-SOAP nach xm-soap.py (einfachster Weg, akzeptiert jede Antwort)
+        if self.protocol == PROTOCOL_ONVIF and self._session:
+            ok = await self._xm_direct_ptz(cmd, speed)
+            if ok:
+                return True
 
         # ONVIF: Direct-SOAP ContinuousMove als primärer Weg
         if self.protocol == PROTOCOL_ONVIF:
