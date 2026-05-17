@@ -1204,26 +1204,24 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             '</s:Envelope>'
         )
         url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
-        _LOGGER.warning("XM Direct PTZ starte: url=%s cmd=%s pan=%s tilt=%s zoom=%s", url, cmd, pan, tilt, zoom)
+        _LOGGER.warning("XM Direct PTZ starte: url=%s cmd=%s", url, cmd)
         try:
-            async with async_timeout.timeout(6):
-                async with self._session.post(
-                    url,
-                    data=envelope.encode("utf-8"),
-                    headers={"Content-Type": "application/soap+xml; charset=utf-8"},
-                ) as resp:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=8),
+                headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+            ) as fresh_session:
+                async with fresh_session.post(url, data=envelope.encode("utf-8")) as resp:
                     text = await resp.text()
             if resp.status == 200 and "fault" not in text.lower():
-                _LOGGER.warning("XM Direct PTZ '%s' OK: url=%s", cmd, url)
+                _LOGGER.warning("XM Direct PTZ '%s' OK", cmd)
                 self._last_ptz_fault = ""
-                # Auto-Stop nach 0.8s wie xm-soap.py
                 async def _autostop() -> None:
                     await asyncio.sleep(0.8)
                     await self._xm_direct_ptz_stop()
                 self.hass.async_create_task(_autostop())
                 return True
             self._last_ptz_fault = f"XM Direct PTZ HTTP {resp.status}"
-            _LOGGER.warning("XM Direct PTZ '%s' fehlgeschlagen HTTP %s: %s", cmd, resp.status, text[:200])
+            _LOGGER.warning("XM Direct PTZ '%s' fehlgeschlagen HTTP %s: %s", cmd, resp.status, text[:400])
         except Exception as exc:
             self._last_ptz_fault = f"XM Direct PTZ Fehler: {exc}"
             _LOGGER.warning("XM Direct PTZ '%s' Ausnahme (url=%s): %s", cmd, url, exc)
@@ -1231,8 +1229,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def _xm_direct_ptz_stop(self) -> bool:
         """PTZ Stop direkt per SOAP (wie xm-soap.py ptz_stop)."""
-        if not self._session:
-            return False
         token = "000"
         body = (
             f'<tptz:Stop>'
@@ -1255,12 +1251,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         )
         url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
         try:
-            async with async_timeout.timeout(4):
-                async with self._session.post(
-                    url,
-                    data=envelope.encode("utf-8"),
-                    headers={"Content-Type": "application/soap+xml; charset=utf-8"},
-                ) as resp:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=6),
+                headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+            ) as fresh_session:
+                async with fresh_session.post(url, data=envelope.encode("utf-8")) as resp:
                     return resp.status == 200
         except Exception:
             return False
