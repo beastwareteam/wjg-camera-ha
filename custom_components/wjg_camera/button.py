@@ -85,10 +85,7 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
 
     async def async_press(self) -> None:
         """PTZ-Befehl an den Coordinator weiterreichen."""
-        ok = await self.coordinator.async_ptz_command(
-            self._direction,
-            speed=self.coordinator.ptz_speed,
-            )
+        ok = await self.coordinator.async_ptz_command(self._direction)
         if ok:
             _LOGGER.info(
                 "PTZ-Befehl '%s' gesendet an %s",
@@ -99,9 +96,9 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
             _LOGGER.warning("PTZ-Befehl '%s' fehlgeschlagen", self._direction)
             detail = str(getattr(self.coordinator, "last_ptz_fault", "") or "").strip()
             wsse_state = getattr(self.coordinator, "onvif_wsse_enabled", None)
-            suffix = "build=2.2.9"
+            suffix = "build=2.2.2"
             if wsse_state is not None:
-                suffix = f"build=2.2.9 wsse={'on' if wsse_state else 'off'}"
+                suffix = f"build=2.2.2 wsse={'on' if wsse_state else 'off'}"
             combined_detail = f"{detail}; {suffix}" if detail else suffix
             _raise_action_failed(f"PTZ {self._direction}", combined_detail)
 

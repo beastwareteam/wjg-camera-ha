@@ -2,7 +2,7 @@
 WJG Camera Coordinator
 ======================
 Verwaltet Verbindung, State und Datenabruf zur Kamera.
-UnterstÃ¼tzt: RTSP, HTTP Snapshot, XM SDK (Port 34567), ONVIF.
+Unterstützt: RTSP, HTTP Snapshot, XM SDK (Port 34567), ONVIF.
 """
 # pylint: disable=broad-exception-caught
 
@@ -35,7 +35,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 
-# Konstanten lokal definieren, um zirkulÃ¤ren Import zu vermeiden
+# Konstanten lokal definieren, um zirkulären Import zu vermeiden
 CONF_PROTOCOL = "protocol"
 CONF_HTTP_RETRIES = "http_retries"
 CONF_RTSP_PATH = "rtsp_path"
@@ -87,10 +87,10 @@ ONVIF_SERVICE_PATH_CANDIDATES: dict[str, tuple[str, ...]] = {
     ONVIF_SERVICE_EVENTS: ("/onvif/Events", "/onvif/events_service"),
 }
 
-# XM-3820 benoetigt application/soap+xml (SOAP 1.2). text/xml als Fallback.
+# Reihenfolge ist wichtig: XM-Derivate akzeptieren haeufig nur text/xml.
 ONVIF_CONTENT_TYPE_CANDIDATES = (
-    "application/soap+xml; charset=utf-8",
     "text/xml; charset=utf-8",
+    "application/soap+xml; charset=utf-8",
 )
 
 ONVIF_EVENT_RULES: dict[str, dict[str, Any]] = {
@@ -157,7 +157,7 @@ async def _await_if_needed(value: Any) -> Any:
     return value
 
 def xm_packet(session_id: int, seq: int, msg_id: int, data: dict) -> bytes:
-    """Erstellt ein XM SDK BinÃ¤rpaket."""
+    """Erstellt ein XM SDK Binärpaket."""
     payload = json.dumps(data, separators=(",", ":")).encode()
     # FF 01 00 00 | SessionID(4) | Sequence(4) | 00 00 | MsgID(2) | DataLen(4)
     header = struct.pack(
@@ -170,7 +170,7 @@ def xm_packet(session_id: int, seq: int, msg_id: int, data: dict) -> bytes:
     return header + payload
 
 def xm_parse(data: bytes) -> tuple[int, dict]:
-    """Parst ein XM SDK Antwortpaket. Gibt (msg_id, body_dict) zurÃ¼ck."""
+    """Parst ein XM SDK Antwortpaket. Gibt (msg_id, body_dict) zurück."""
     if len(data) < 20:
         return 0, {}
     _, _, _, _, _, _, _, msg_id, data_len = struct.unpack("<BBHIIBBHI", data[:20])
@@ -183,7 +183,7 @@ def xm_parse(data: bytes) -> tuple[int, dict]:
 
 
 class XMClient:
-    """Synchroner XM SDK TCP-Client (lÃ¤uft in executor)."""
+    """Synchroner XM SDK TCP-Client (läuft in executor)."""
 
     def __init__(self, host: str, port: int, username: str, password: str):
         self.host = host
@@ -291,7 +291,7 @@ class XMClient:
 
 
 class WJGCameraCoordinator(DataUpdateCoordinator):
-    """Haupt-Koordinator fÃ¼r die WJG Kamera."""
+    """Haupt-Koordinator für die WJG Kamera."""
 
     @staticmethod
     def _normalize_http_retries(value: Any) -> int:
@@ -332,7 +332,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     @staticmethod
     def _parse_csv_option(value: Any) -> tuple[str, ...]:
-        """CSV-/Listenoptionen robust in eine normalisierte Tupelstruktur Ã¼berfÃ¼hren."""
+        """CSV-/Listenoptionen robust in eine normalisierte Tupelstruktur überführen."""
         if value is None:
             return ()
         if isinstance(value, (list, tuple, set)):
@@ -346,7 +346,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return tuple(seen)
 
     def _apply_onvif_option_overrides(self, options: dict[str, Any]) -> None:
-        """GerÃ¤tespezifische ONVIF-Servicepfade und Event-Aliase aus Optionen anwenden."""
+        """Gerätespezifische ONVIF-Servicepfade und Event-Aliase aus Optionen anwenden."""
         for service_key, option_key in ONVIF_SERVICE_OPTION_MAP.items():
             service_path = self._normalize_onvif_path(options.get(option_key))
             if service_path:
@@ -377,7 +377,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         )
 
     async def async_adb_proxy_check(self) -> bool:
-        """PrÃ¼ft, ob ADB-Proxy-Port erreichbar ist."""
+        """Prüft, ob ADB-Proxy-Port erreichbar ist."""
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get("http://127.0.0.1:8081/") as resp:
@@ -385,7 +385,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         except Exception:
             return False
 
-    # Beispiel fÃ¼r automatisches Umschalten auf ADB-Proxy, falls Ports erkannt werden
+    # Beispiel für automatisches Umschalten auf ADB-Proxy, falls Ports erkannt werden
     async def async_prepare_connection(self) -> None:
         """ADB-Proxy-Erreichbarkeit bei lokalem Tunnel pruefen."""
         if self.is_adb_proxy():
@@ -471,9 +471,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._onvif_profile_tokens: dict[str, str] = {}
         self._onvif_video_source_token: str = "000"
         self._last_ptz_fault: str = ""
-        # â”€â”€ FIX: WSSE immer aktiviert fÃ¼r XM-3820 (PasswordDigest, leeres PW) â”€â”€
+        # ── FIX: WSSE immer aktiviert für XM-3820 (PasswordDigest, leeres PW) ──
         # Die Kamera akzeptiert GetCapabilities ohne Auth, alle anderen Calls
-        # (GetProfiles, PTZ, etc.) benÃ¶tigen WSSE PasswordDigest mit leerem Passwort.
+        # (GetProfiles, PTZ, etc.) benötigen WSSE PasswordDigest mit leerem Passwort.
         self._onvif_wsse_enabled: bool = True
         self._onvif_content_type: str = ONVIF_CONTENT_TYPE_CANDIDATES[0]
         self._onvif_service_paths: dict[str, str] = {
@@ -525,19 +525,19 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         """
         ONVIF-Initialisierung.
 
-        FIX: python-onvif-zeep wird NICHT mehr verwendet â€” die Library erzwingt
+        FIX: python-onvif-zeep wird NICHT mehr verwendet — die Library erzwingt
         WSSE-Formate die XM/Xiongmai-Firmware ablehnt. Stattdessen nutzt der
         Coordinator seinen eigenen _onvif_soap / _wsse_header direkt.
 
         Verifiziert via Reverse Engineering (05/2026):
-        - GetCapabilities: kein Auth nÃ¶tig (HTTP 200)
+        - GetCapabilities: kein Auth nötig (HTTP 200)
         - GetProfiles/PTZ/etc.: WSSE PasswordDigest mit leerem Passwort (SHA1)
-        - Port 34567 (XM SDK) auf dieser Kamera geschlossen â†’ kein Fallback mÃ¶glich
+        - Port 34567 (XM SDK) auf dieser Kamera geschlossen → kein Fallback möglich
         """
         self._onvif = None  # python-onvif-zeep nicht initialisieren
         _LOGGER.info(
             "WJG XM-3820: ONVIF Direct-SOAP aktiv (kein python-onvif-zeep) "
-            "â€“ WSSE PasswordDigest, Host=%s Port=%s",
+            "– WSSE PasswordDigest, Host=%s Port=%s",
             self.host,
             self.onvif_port,
         )
@@ -545,7 +545,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_onvif_ptz(self, cmd: str, speed: float = 0.5) -> bool:
         """ONVIF PTZ-Befehl senden (up/down/left/right/zoom_in/zoom_out/stop)."""
         # python-onvif-zeep wird nicht mehr verwendet (self._onvif ist immer None)
-        # Direkt Ã¼ber _onvif_soap_for senden â€” gleiche Logik wie async_ptz_command
+        # Direkt über _onvif_soap_for senden — gleiche Logik wie async_ptz_command
         profile_token = await self._async_active_onvif_profile_token()
         spd = f"{speed:.2f}"
         soap_velocity_map: dict[str, str] = {
@@ -586,7 +586,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         normalized_uri = self._normalize_onvif_rtsp_url(raw_uri)
         if normalized_uri:
             _LOGGER.debug(
-                "ONVIF Stream-URL per Direct-SOAP aufgelÃ¶st: profile=%s raw=%s normalized=%s",
+                "ONVIF Stream-URL per Direct-SOAP aufgelöst: profile=%s raw=%s normalized=%s",
                 profile_token,
                 raw_uri,
                 normalized_uri,
@@ -595,7 +595,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return None
 
     def _normalize_onvif_rtsp_url(self, raw_url: str | None) -> str | None:
-        """ONVIF-RTSP-URLs auf Host, Port und optionale Auth vervollstÃ¤ndigen."""
+        """ONVIF-RTSP-URLs auf Host, Port und optionale Auth vervollständigen."""
         if not raw_url:
             return None
         parsed = urlparse(raw_url)
@@ -629,7 +629,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         )
 
     def _credential_authorities(self) -> list[str]:
-        """MÃ¶gliche Auth-Varianten fÃ¼r RTSP-URLs erzeugen."""
+        """Mögliche Auth-Varianten für RTSP-URLs erzeugen."""
         username = quote(self.username or "admin", safe="")
         password = quote(self.password or "", safe="")
 
@@ -649,12 +649,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return deduped
 
     def _build_rtsp_url(self, path: str, authority: str | None = None) -> str:
-        """VollstÃ¤ndige RTSP-URL fÃ¼r einen Pfad erzeugen."""
+        """Vollständige RTSP-URL für einen Pfad erzeugen."""
         credentials = authority if authority is not None else self._credential_authorities()[0]
         return f"rtsp://{credentials}{self.host}:{self.rtsp_port}{path}"
 
     def _candidate_rtsp_paths(self) -> list[str]:
-        """Konfigurierten Pfad plus bekannte Fallbacks in PrioritÃ¤tsreihenfolge."""
+        """Konfigurierten Pfad plus bekannte Fallbacks in Prioritätsreihenfolge."""
         configured_path = self._render_rtsp_path()
         paths = [configured_path]
         for path in COMMON_RTSP_PATHS:
@@ -677,7 +677,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return urls
 
     def _rtsp_url_has_video(self, rtsp_url: str, timeout: float = 4.0) -> bool:
-        """Per RTSP DESCRIBE prÃ¼fen, ob die URL einen Video-Track liefert."""
+        """Per RTSP DESCRIBE prüfen, ob die URL einen Video-Track liefert."""
         describe = (
             f"DESCRIBE {rtsp_url} RTSP/1.0\r\n"
             "CSeq: 1\r\n"
@@ -691,7 +691,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             response = sock.recv(4096).decode("utf-8", errors="ignore")
             return "m=video" in response.lower()
         except Exception as e:
-            _LOGGER.debug("RTSP DESCRIBE fehlgeschlagen fÃ¼r %s: %s", rtsp_url, e)
+            _LOGGER.debug("RTSP DESCRIBE fehlgeschlagen für %s: %s", rtsp_url, e)
             return False
         finally:
             try:
@@ -704,8 +704,22 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol not in (PROTOCOL_RTSP, PROTOCOL_ONVIF):
             return
 
-        # Konfigurierten Pfad zuerst prüfen – ONVIF GetStreamUri liefert für XM-Kameras
-        # oft fehlerhafte URLs (/streamtype=0), daher immer RTSP-Kandidaten bevorzugen.
+        if self.protocol == PROTOCOL_ONVIF:
+            onvif_url = await self.async_onvif_stream_url()
+            if onvif_url:
+                has_video = await self.hass.async_add_executor_job(
+                    self._rtsp_url_has_video,
+                    onvif_url,
+                    4.0,
+                )
+                if has_video:
+                    self._resolved_rtsp_url = onvif_url
+                    return
+                _LOGGER.warning(
+                    "ONVIF Stream-URL ohne Video-Track erkannt, suche RTSP-Fallback: %s",
+                    onvif_url,
+                )
+
         for rtsp_url in self._candidate_rtsp_urls():
             has_video = await self.hass.async_add_executor_job(
                 self._rtsp_url_has_video,
@@ -717,23 +731,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 if rtsp_url != self._build_rtsp_url(self._render_rtsp_path()):
                     _LOGGER.info("RTSP-Fallback mit Video erkannt: %s", rtsp_url)
                 return
-
-        if self.protocol == PROTOCOL_ONVIF:
-            onvif_url = await self.async_onvif_stream_url()
-            if onvif_url:
-                has_video = await self.hass.async_add_executor_job(
-                    self._rtsp_url_has_video,
-                    onvif_url,
-                    4.0,
-                )
-                if has_video:
-                    self._resolved_rtsp_url = onvif_url
-                    _LOGGER.info("ONVIF Stream-URL als Fallback genutzt: %s", onvif_url)
-                    return
-                _LOGGER.warning(
-                    "ONVIF Stream-URL ohne Video-Track erkannt: %s",
-                    onvif_url,
-                )
 
         self._resolved_rtsp_url = self._build_rtsp_url(self._render_rtsp_path())
 
@@ -794,7 +791,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         assert session is not None
 
         if self.protocol != PROTOCOL_ONVIF:
-            # HTTP-Erreichbarkeit prÃ¼fen
+            # HTTP-Erreichbarkeit prüfen
             try:
                 async with async_timeout.timeout(5):
                     async with session.get(
@@ -805,7 +802,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                             "Kamera HTTP erreichbar, Status: %s", resp.status
                         )
             except Exception as e:
-                _LOGGER.warning("HTTP nicht erreichbar: %s â€” versuche RTSP-only", e)
+                _LOGGER.warning("HTTP nicht erreichbar: %s — versuche RTSP-only", e)
 
         # XM SDK verbinden (in executor, da synchron)
         if self.protocol == PROTOCOL_XM:
@@ -814,12 +811,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol == PROTOCOL_ONVIF:
             _LOGGER.info(
                 "WJG PTZ Build 2.2.2: ONVIF Direct-SOAP aktiv, WSSE=%s, "
-                "Host=%s Port=%s â€“ python-onvif-zeep deaktiviert",
+                "Host=%s Port=%s – python-onvif-zeep deaktiviert",
                 self._onvif_wsse_enabled,
                 self.host,
                 self.onvif_port,
             )
-            # LÃ¤uft synchron, kein Executor nÃ¶tig (setzt nur self._onvif = None)
+            # Läuft synchron, kein Executor nötig (setzt nur self._onvif = None)
             self._setup_onvif()
             try:
                 await self._async_bootstrap_onvif_service_paths()
@@ -828,11 +825,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         await self.async_resolve_rtsp_path()
 
-        # Einmalig GerÃ¤te-Infos und Bildeinstellungen laden
+        # Einmalig Geräte-Infos und Bildeinstellungen laden
         try:
             await self.async_fetch_device_info()
         except Exception as exc:
-            _LOGGER.debug("GerÃ¤te-Info nicht abrufbar: %s", exc)
+            _LOGGER.debug("Geräte-Info nicht abrufbar: %s", exc)
         try:
             await self.async_fetch_imaging_settings()
         except Exception as exc:
@@ -863,10 +860,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 self.xm_port,
             )
         else:
-            _LOGGER.warning("XM SDK nicht verfÃ¼gbar â€” Fallback auf HTTP")
+            _LOGGER.warning("XM SDK nicht verfügbar — Fallback auf HTTP")
 
     async def _tcp_port_reachable(self, port: int, timeout: float = 3.0) -> bool:
-        """PrÃ¼ft per TCP-Connect ob ein Port erreichbar ist (Fallback-Ping)."""
+        """Prüft per TCP-Connect ob ein Port erreichbar ist (Fallback-Ping)."""
         try:
             _, writer = await asyncio.wait_for(
                 asyncio.open_connection(self.host, port),
@@ -891,7 +888,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             "files": [],
         }
 
-        # Snapshot abrufen um Erreichbarkeit zu prÃ¼fen
+        # Snapshot abrufen um Erreichbarkeit zu prüfen
         session = self._session
         if session is not None:
             try:
@@ -905,7 +902,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         auth=auth,
                     ) as resp:
                         # 200 = OK, 401/403 = Kamera antwortet (Auth fehlt oder
-                        # nicht nÃ¶tig), trotzdem erreichbar
+                        # nicht nötig), trotzdem erreichbar
                         if resp.status in (200, 401, 403):
                             data["available"] = True
                         if resp.status == 200:
@@ -915,13 +912,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             except Exception as e:
                 _LOGGER.debug("Snapshot fehlgeschlagen: %s", e)
 
-        # Fallback: TCP-Erreichbarkeit prÃ¼fen (RTSP-Port oder HTTP-Port)
+        # Fallback: TCP-Erreichbarkeit prüfen (RTSP-Port oder HTTP-Port)
         if not data["available"]:
             for port in {self.rtsp_port, self.http_port, self.xm_port}:
                 if port and await self._tcp_port_reachable(port):
                     data["available"] = True
                     _LOGGER.debug(
-                        "Kamera via TCP-Port %s erreichbar (Snapshot nicht verfÃ¼gbar)",
+                        "Kamera via TCP-Port %s erreichbar (Snapshot nicht verfügbar)",
                         port,
                     )
                     break
@@ -933,7 +930,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 if ok:
                     data["available"] = True
             except Exception as e:
-                _LOGGER.debug("XM Keepalive fehlgeschlagen: %s â€” reconnect", e)
+                _LOGGER.debug("XM Keepalive fehlgeschlagen: %s — reconnect", e)
                 await self.hass.async_add_executor_job(self._setup_xm)
 
         # Alle 60 Sekunden: Kamerazeit + Imaging refresh
@@ -957,7 +954,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         retries: int | None = None,
         as_json: bool = False,
     ) -> bytes | dict[str, Any] | None:
-        """HTTP GET mit kleinem Retry fÃ¼r transiente Fehler."""
+        """HTTP GET mit kleinem Retry für transiente Fehler."""
         if not self._session:
             return None
 
@@ -1177,7 +1174,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Unbekannter PTZ-Befehl: %s", cmd)
             return False
 
-        # ONVIF: Direct-SOAP ContinuousMove als primÃ¤rer Weg
+        # ONVIF: Direct-SOAP ContinuousMove als primärer Weg
         if self.protocol == PROTOCOL_ONVIF:
             if cmd == "stop":
                 return await self.async_ptz_stop()
@@ -1254,8 +1251,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 self._last_ptz_fault = str(e)
                 _LOGGER.error("PTZ-Befehl fehlgeschlagen: %s", e)
 
-        # XM-SDK-Fallback (Port 34567 auf XM-3820 geschlossen, aber Code bleibt fÃ¼r
-        # andere GerÃ¤te erhalten)
+        # XM-SDK-Fallback (Port 34567 auf XM-3820 geschlossen, aber Code bleibt für
+        # andere Geräte erhalten)
         if self.protocol == PROTOCOL_ONVIF and not self._xm:
             code = ptz_map[cmd]
             xm_tmp = XMClient(self.host, self.xm_port, self.username or "", self.password or "")
@@ -1287,13 +1284,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             self._last_ptz_fault = "PTZ fehlgeschlagen"
         return False
 
-    # â”€â”€ ONVIF Direct-SOAP helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── ONVIF Direct-SOAP helper ────────────────────────────────────────────
 
     def _wsse_header(self) -> str:
         """
         WSSE PasswordDigest Header.
 
-        FIX: Millisekunden im Timestamp (.%f â†’ [:3]) â€” XM-Firmware akzeptiert
+        FIX: Millisekunden im Timestamp (.%f → [:3]) — XM-Firmware akzeptiert
         ISO 8601 mit Millisekunden, aber nicht mit Mikrosekunden.
         Verifiziert: SHA1(nonce_raw + created_utf8 + password_utf8), leeres PW.
         """
@@ -1382,10 +1379,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         ]
         last_result = ""
         for content_type in content_types_to_try:
-            # WSSE im Header übernimmt Auth — kein HTTP Basic Auth nötig (wie xm-soap.py).
-            auth_candidates: list[aiohttp.BasicAuth | None] = [None]
+            auth_candidates: list[aiohttp.BasicAuth | None] = [http_auth] if http_auth is not None else [None]
             if http_auth is not None:
-                auth_candidates.append(http_auth)
+                auth_candidates.append(None)
             for auth_candidate in auth_candidates:
                 try:
                     async with async_timeout.timeout(timeout_seconds):
@@ -1418,7 +1414,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         soap_action: str,
         timeout_seconds: int = 5,
     ) -> str:
-        """ONVIF SOAP 1.1 Anfrage mit text/xml und SOAPAction fÃ¼r Legacy-GerÃ¤te."""
+        """ONVIF SOAP 1.1 Anfrage mit text/xml und SOAPAction für Legacy-Geräte."""
         if not self._session:
             return ""
         http_auth = None
@@ -1528,7 +1524,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return last
 
     async def _async_ptz_soap_request(self, action_name: str, body: str) -> str:
-        """PTZ-Request Ã¼ber SOAP 1.2/1.1 sowie v20/v10 Namespace probieren."""
+        """PTZ-Request über SOAP 1.2/1.1 sowie v20/v10 Namespace probieren."""
         variants = (
             (body, f"http://www.onvif.org/ver20/ptz/wsdl/{action_name}"),
             (self._ptz_body_ver10(body), f"http://www.onvif.org/ver10/ptz/wsdl/{action_name}"),
@@ -1587,7 +1583,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     @staticmethod
     def _ptz_response_ok(response_text: str, action_name: str) -> bool:
-        """PTZ-Erfolg robust fÃ¼r v20/v10 Prefix erkennen."""
+        """PTZ-Erfolg robust für v20/v10 Prefix erkennen."""
         if not response_text:
             return False
         return (
@@ -1695,7 +1691,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 seen_service_keys.add(service_key)
 
     async def _async_bootstrap_onvif_service_paths(self) -> None:
-        """Direkt per GetServices die vom GerÃ¤t gemeldeten XAddrs laden."""
+        """Direkt per GetServices die vom Gerät gemeldeten XAddrs laden."""
         body = "<tds:GetServices><tds:IncludeCapability>true</tds:IncludeCapability></tds:GetServices>"
         for service_path in self._candidate_onvif_service_paths(ONVIF_SERVICE_DEVICE):
             response_text = await self._onvif_soap(service_path, body, use_auth=False)
@@ -1734,7 +1730,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 # Auth-Fault: NICHT dauerhaft deaktivieren (XM braucht WSSE)
                 # Stattdessen: ohne HTTP BasicAuth nochmal versuchen
                 _LOGGER.debug(
-                    "ONVIF Auth-Fault bei %s â€“ versuche ohne HTTP-BasicAuth",
+                    "ONVIF Auth-Fault bei %s – versuche ohne HTTP-BasicAuth",
                     service_path,
                 )
                 response_text = await self._onvif_soap(
@@ -1819,7 +1815,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             _add(token)
         return candidates
 
-    # â”€â”€ PTZ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── PTZ ─────────────────────────────────────────────────────────────────
 
     @property
     def ptz_speed(self) -> int:
@@ -1931,7 +1927,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             self._ptz_presets.pop(token, None)
         return ok
 
-    # â”€â”€ Imaging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Imaging ─────────────────────────────────────────────────────────────
 
     @property
     def imaging(self) -> dict[str, Any]:
@@ -2087,7 +2083,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         resp = await self._onvif_soap_for(ONVIF_SERVICE_IMAGING, body)
         return "SetImagingSettingsResponse" in resp
 
-    # â”€â”€ Sensoren â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Sensoren ─────────────────────────────────────────────────────────────
 
     @staticmethod
     def _parse_event_bool(value: str | None) -> bool | None:
@@ -2234,7 +2230,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     def signal_loss(self) -> bool:
         return self._signal_loss
 
-    # â”€â”€ Stream-Profil â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Stream-Profil ────────────────────────────────────────────────────────
 
     @property
     def active_stream(self) -> str:
@@ -2260,7 +2256,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             )
         self.async_update_listeners()
 
-    # â”€â”€ Audio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Audio ────────────────────────────────────────────────────────────────
 
     @property
     def microphone_enabled(self) -> bool:
@@ -2328,7 +2324,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             self.async_update_listeners()
         return ok
 
-    # â”€â”€ System â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── System ───────────────────────────────────────────────────────────────
 
     @property
     def firmware_version(self) -> str:
@@ -2380,7 +2376,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return bool(resp)
 
     async def async_shutdown(self) -> None:
-        """Verbindungen schlieÃŸen."""
+        """Verbindungen schließen."""
         if self._event_task:
             self._event_task.cancel()
             try:
