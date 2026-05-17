@@ -87,10 +87,10 @@ ONVIF_SERVICE_PATH_CANDIDATES: dict[str, tuple[str, ...]] = {
     ONVIF_SERVICE_EVENTS: ("/onvif/Events", "/onvif/events_service"),
 }
 
-# Reihenfolge ist wichtig: XM-Derivate akzeptieren haeufig nur text/xml.
+# XM-3820 benoetigt application/soap+xml (SOAP 1.2). text/xml als Fallback.
 ONVIF_CONTENT_TYPE_CANDIDATES = (
-    "text/xml; charset=utf-8",
     "application/soap+xml; charset=utf-8",
+    "text/xml; charset=utf-8",
 )
 
 ONVIF_EVENT_RULES: dict[str, dict[str, Any]] = {
@@ -1379,9 +1379,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         ]
         last_result = ""
         for content_type in content_types_to_try:
-            auth_candidates: list[aiohttp.BasicAuth | None] = [http_auth] if http_auth is not None else [None]
+            # WSSE im Header übernimmt Auth — kein HTTP Basic Auth nötig (wie xm-soap.py).
+            auth_candidates: list[aiohttp.BasicAuth | None] = [None]
             if http_auth is not None:
-                auth_candidates.append(None)
+                auth_candidates.append(http_auth)
             for auth_candidate in auth_candidates:
                 try:
                     async with async_timeout.timeout(timeout_seconds):

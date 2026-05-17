@@ -99,9 +99,9 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
             _LOGGER.warning("PTZ-Befehl '%s' fehlgeschlagen", self._direction)
             detail = str(getattr(self.coordinator, "last_ptz_fault", "") or "").strip()
             wsse_state = getattr(self.coordinator, "onvif_wsse_enabled", None)
-            suffix = "build=2.2.7"
+            suffix = "build=2.2.8"
             if wsse_state is not None:
-                suffix = f"build=2.2.7 wsse={'on' if wsse_state else 'off'}"
+                suffix = f"build=2.2.8 wsse={'on' if wsse_state else 'off'}"
             combined_detail = f"{detail}; {suffix}" if detail else suffix
             _raise_action_failed(f"PTZ {self._direction}", combined_detail)
 
