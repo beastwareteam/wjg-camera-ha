@@ -1180,20 +1180,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 return await self.async_ptz_stop()
             spd = f"{min(speed, 8) / 8:.2f}"
             soap_velocity_map: dict[str, str] = {
-                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/>',
-                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/>',
-                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/>',
-                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/>',
-                "zoom_in":  f'<tt:Zoom x="{spd}"/>',
-                "zoom_out": f'<tt:Zoom x="-{spd}"/>',
+                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
+                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
+                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
+                "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
             }
             soap_translation_map: dict[str, str] = {
-                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/>',
-                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/>',
-                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/>',
-                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/>',
-                "zoom_in":  f'<tt:Zoom x="{spd}"/>',
-                "zoom_out": f'<tt:Zoom x="-{spd}"/>',
+                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
+                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
+                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
+                "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
             }
             if cmd in soap_velocity_map:
                 tried_tokens = await self._async_candidate_ptz_profile_tokens()
