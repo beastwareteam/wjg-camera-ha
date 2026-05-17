@@ -1276,13 +1276,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             for url in self._candidate_http_ptz_urls(cmd, speed):
                 data = await self._async_http_get_data(url, timeout_seconds=3)
                 ok = isinstance(data, (bytes, bytearray)) and self._ptz_http_payload_looks_ok(bytes(data))
+                _LOGGER.debug("PTZ HTTP-Fallback %s → ok=%s data=%r", url, ok, data[:80] if isinstance(data, (bytes, bytearray)) else data)
                 if ok:
                     self._last_ptz_fault = ""
                     if cmd != "stop":
                         self._schedule_ptz_autostop()
                     return True
-            if not self._last_ptz_fault:
-                self._last_ptz_fault = "PTZ HTTP-Fallback fehlgeschlagen"
+            self._last_ptz_fault = "PTZ HTTP-Fallback fehlgeschlagen"
             return False
         if not self._last_ptz_fault:
             self._last_ptz_fault = "PTZ fehlgeschlagen"
@@ -1594,14 +1594,28 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     @staticmethod
     def _ptz_response_ok(response_text: str, action_name: str) -> bool:
-        """PTZ-Erfolg robust für v20/v10 Prefix erkennen."""
+        """PTZ-Erfolg robust für v20/v10 Prefix erkennen.
+
+        XM-Kameras antworten auf ContinuousMove oft mit leerem Body (HTTP 200,
+        kein Fault). Daher: jede nicht-leere, nicht-Fault-Antwort gilt als Erfolg,
+        genau wie xm-soap.py (result is not None).
+        """
         if not response_text:
             return False
-        return (
+        # Expliziter Response-Tag (Normalfall)
+        if (
             f"{action_name}Response" in response_text
             or f"tptz:{action_name}Response" in response_text
             or f"tptz10:{action_name}Response" in response_text
+        ):
+            return True
+        # Kein SOAP-Fault und keine leere Antwort → XM-Kamera-Erfolg
+        lowered = response_text.lower()
+        is_fault = (
+            "<fault" in lowered or ":fault" in lowered
+            or "faultcode" in lowered or "faultstring" in lowered
         )
+        return not is_fault
 
     @staticmethod
     def _xml_all(text: str, tag: str) -> list[str]:
