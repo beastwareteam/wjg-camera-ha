@@ -87,10 +87,10 @@ ONVIF_SERVICE_PATH_CANDIDATES: dict[str, tuple[str, ...]] = {
     ONVIF_SERVICE_EVENTS: ("/onvif/Events", "/onvif/events_service"),
 }
 
-# Reihenfolge ist wichtig: XM-Derivate akzeptieren haeufig nur text/xml.
+# XM-3820 benoetigt application/soap+xml (SOAP 1.2). text/xml als Fallback.
 ONVIF_CONTENT_TYPE_CANDIDATES = (
-    "text/xml; charset=utf-8",
     "application/soap+xml; charset=utf-8",
+    "text/xml; charset=utf-8",
 )
 
 ONVIF_EVENT_RULES: dict[str, dict[str, Any]] = {
@@ -704,22 +704,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol not in (PROTOCOL_RTSP, PROTOCOL_ONVIF):
             return
 
-        if self.protocol == PROTOCOL_ONVIF:
-            onvif_url = await self.async_onvif_stream_url()
-            if onvif_url:
-                has_video = await self.hass.async_add_executor_job(
-                    self._rtsp_url_has_video,
-                    onvif_url,
-                    4.0,
-                )
-                if has_video:
-                    self._resolved_rtsp_url = onvif_url
-                    return
-                _LOGGER.warning(
-                    "ONVIF Stream-URL ohne Video-Track erkannt, suche RTSP-Fallback: %s",
-                    onvif_url,
-                )
-
+        # Konfigurierten Pfad zuerst pruefen — ONVIF GetStreamUri liefert fuer
+        # XM-Kameras oft fehlerhafte URLs (/streamtype=0).
         for rtsp_url in self._candidate_rtsp_urls():
             has_video = await self.hass.async_add_executor_job(
                 self._rtsp_url_has_video,
@@ -731,6 +717,19 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 if rtsp_url != self._build_rtsp_url(self._render_rtsp_path()):
                     _LOGGER.info("RTSP-Fallback mit Video erkannt: %s", rtsp_url)
                 return
+
+        if self.protocol == PROTOCOL_ONVIF:
+            onvif_url = await self.async_onvif_stream_url()
+            if onvif_url:
+                has_video = await self.hass.async_add_executor_job(
+                    self._rtsp_url_has_video,
+                    onvif_url,
+                    4.0,
+                )
+                if has_video:
+                    self._resolved_rtsp_url = onvif_url
+                    _LOGGER.info("ONVIF Stream-URL als Fallback genutzt: %s", onvif_url)
+                    return
 
         self._resolved_rtsp_url = self._build_rtsp_url(self._render_rtsp_path())
 
@@ -1379,9 +1378,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         ]
         last_result = ""
         for content_type in content_types_to_try:
-            auth_candidates: list[aiohttp.BasicAuth | None] = [http_auth] if http_auth is not None else [None]
+            # WSSE im Header genuegt — kein HTTP Basic Auth noetig (wie xm-soap.py).
+            auth_candidates: list[aiohttp.BasicAuth | None] = [None]
             if http_auth is not None:
-                auth_candidates.append(None)
+                auth_candidates.append(http_auth)
             for auth_candidate in auth_candidates:
                 try:
                     async with async_timeout.timeout(timeout_seconds):
