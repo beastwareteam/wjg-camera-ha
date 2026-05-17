@@ -1162,11 +1162,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def _xm_direct_ptz(self, cmd: str, speed: int = 5) -> bool:
         """
-        Direkt-SOAP exakt wie xm-soap.py: application/soap+xml, WSSE, kein Basic Auth.
-        Akzeptiert jede HTTP-200-Antwort als Erfolg (XM gibt oft leere Body zurueck).
+        Direkt-SOAP fuer XM: versucht zuerst ohne Auth, dann mit WSSE.
+        Behebt 'security token could not be authenticated' wenn HA-Uhrzeit abweicht.
         """
-        if not self._session:
-            return False
         if cmd == "stop":
             return await self._xm_direct_ptz_stop()
         spd = min(speed, 8) / 8
@@ -1182,7 +1180,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             return False
         pan, tilt, zoom = vel_map[cmd]
         token = "000"
-        body = (
+        soap_body = (
             f'<tptz:ContinuousMove>'
             f'<tptz:ProfileToken>{token}</tptz:ProfileToken>'
             f'<tptz:Velocity>'
@@ -1191,40 +1189,54 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             f'</tptz:Velocity>'
             f'</tptz:ContinuousMove>'
         )
-        wsse = self._wsse_header()
-        envelope = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
+        ns = (
             ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
             ' xmlns:tt="http://www.onvif.org/ver10/schema"'
             ' xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"'
-            ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
+            ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"'
+        )
+        envelope_noauth = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"{ns}>'
+            f'<s:Body>{soap_body}</s:Body>'
+            '</s:Envelope>'
+        )
+        wsse = self._wsse_header()
+        envelope_wsse = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"{ns}>'
             f'<s:Header>{wsse}</s:Header>'
-            f'<s:Body>{body}</s:Body>'
+            f'<s:Body>{soap_body}</s:Body>'
             '</s:Envelope>'
         )
         url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
-        _LOGGER.warning("XM Direct PTZ starte: url=%s cmd=%s", url, cmd)
-        try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=8),
-                headers={"Content-Type": "application/soap+xml; charset=utf-8"},
-            ) as fresh_session:
-                async with fresh_session.post(url, data=envelope.encode("utf-8")) as resp:
-                    text = await resp.text()
-            if resp.status == 200 and "fault" not in text.lower():
-                _LOGGER.warning("XM Direct PTZ '%s' OK", cmd)
-                self._last_ptz_fault = ""
-                async def _autostop() -> None:
-                    await asyncio.sleep(0.8)
-                    await self._xm_direct_ptz_stop()
-                self.hass.async_create_task(_autostop())
-                return True
-            self._last_ptz_fault = f"XM Direct PTZ HTTP {resp.status}"
-            _LOGGER.warning("XM Direct PTZ '%s' fehlgeschlagen HTTP %s: %s", cmd, resp.status, text[:400])
-        except Exception as exc:
-            self._last_ptz_fault = f"XM Direct PTZ Fehler: {exc}"
-            _LOGGER.warning("XM Direct PTZ '%s' Ausnahme (url=%s): %s", cmd, url, exc)
+        _LOGGER.warning(
+            "XM Direct PTZ: url=%s cmd=%s user=%s pass_len=%d",
+            url, cmd, self.username, len(self.password or ""),
+        )
+        for label, envelope in (("noauth", envelope_noauth), ("wsse", envelope_wsse)):
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=8),
+                    headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+                ) as sess:
+                    async with sess.post(url, data=envelope.encode("utf-8")) as resp:
+                        text = await resp.text()
+                if resp.status == 200 and "fault" not in text.lower():
+                    _LOGGER.warning("XM Direct PTZ '%s' OK (%s)", cmd, label)
+                    self._last_ptz_fault = ""
+                    async def _autostop() -> None:
+                        await asyncio.sleep(0.8)
+                        await self._xm_direct_ptz_stop()
+                    self.hass.async_create_task(_autostop())
+                    return True
+                _LOGGER.warning(
+                    "XM Direct PTZ '%s' [%s] HTTP %s: %s",
+                    cmd, label, resp.status, text[:300],
+                )
+            except Exception as exc:
+                _LOGGER.warning("XM Direct PTZ '%s' [%s] Ausnahme: %s", cmd, label, exc)
+        self._last_ptz_fault = "XM Direct PTZ beide Versuche fehlgeschlagen"
         return False
 
     async def _xm_direct_ptz_stop(self) -> bool:
