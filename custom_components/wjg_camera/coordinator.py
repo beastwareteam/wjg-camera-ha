@@ -1208,6 +1208,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     if self._ptz_response_ok(resp, "ContinuousMove"):
                         self._onvif_profile_tokens[self._active_stream] = profile_token
                         self._last_ptz_fault = ""
+                        self._schedule_ptz_autostop()
                         return True
 
                 for profile_token in tried_tokens:
@@ -1216,12 +1217,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         f"<tptz:ContinuousMove>"
                         f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
                         f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
-                        f"<tptz:Timeout>PT0.50S</tptz:Timeout>"
+                        f"<tptz:Timeout>PT0.40S</tptz:Timeout>"
                         f"</tptz:ContinuousMove>",
                     )
                     if self._ptz_response_ok(resp, "ContinuousMove"):
                         self._onvif_profile_tokens[self._active_stream] = profile_token
                         self._last_ptz_fault = ""
+                        self._schedule_ptz_autostop()
                         return True
 
                 for profile_token in tried_tokens:
@@ -1276,6 +1278,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 ok = isinstance(data, (bytes, bytearray)) and self._ptz_http_payload_looks_ok(bytes(data))
                 if ok:
                     self._last_ptz_fault = ""
+                    if cmd != "stop":
+                        self._schedule_ptz_autostop()
                     return True
             if not self._last_ptz_fault:
                 self._last_ptz_fault = "PTZ HTTP-Fallback fehlgeschlagen"
@@ -1283,6 +1287,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if not self._last_ptz_fault:
             self._last_ptz_fault = "PTZ fehlgeschlagen"
         return False
+
+    def _schedule_ptz_autostop(self, delay: float = 0.4) -> None:
+        """Auto-Stop nach ContinuousMove — Kamera haelt nach delay Sekunden an."""
+        async def _stop() -> None:
+            await asyncio.sleep(delay)
+            await self.async_ptz_stop()
+        self.hass.async_create_task(_stop())
 
     # ── ONVIF Direct-SOAP helper ────────────────────────────────────────────
 
