@@ -22,9 +22,12 @@ import struct
 import time
 from datetime import timedelta
 from typing import Any
+from urllib.error import HTTPError as _UrllibHTTPError
 from urllib.parse import quote
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
+from urllib.request import Request as _UrllibRequest
+from urllib.request import urlopen as _urlopen
 
 import aiohttp
 import async_timeout
@@ -1160,11 +1163,24 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 deduped.append(candidate)
         return deduped
 
+    def _xm_soap_send(self, url: str, xml_bytes: bytes) -> tuple[int, str]:
+        """Sendet SOAP-Request via urllib (kein aiohttp, keine Versionsabhaengigkeit)."""
+        req = _UrllibRequest(
+            url,
+            data=xml_bytes,
+            headers={"Content-Type": "application/soap+xml; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with _urlopen(req, timeout=6) as r:
+                return r.status, r.read().decode("utf-8", errors="replace")
+        except _UrllibHTTPError as e:
+            return e.code, e.read().decode("utf-8", errors="replace")
+        except Exception as exc:
+            return 0, str(exc)
+
     async def _xm_direct_ptz(self, cmd: str, speed: int = 5) -> bool:
-        """
-        Direkt-SOAP fuer XM: versucht zuerst ohne Auth, dann mit WSSE.
-        Behebt 'security token could not be authenticated' wenn HA-Uhrzeit abweicht.
-        """
+        """Direkt-SOAP via urllib (stdlib) – kein aiohttp, funktioniert auf jedem HA-System."""
         if cmd == "stop":
             return await self._xm_direct_ptz_stop()
         spd = min(speed, 8) / 8
@@ -1179,98 +1195,66 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if cmd not in vel_map:
             return False
         pan, tilt, zoom = vel_map[cmd]
-        token = "000"
-        soap_body = (
-            f'<tptz:ContinuousMove>'
-            f'<tptz:ProfileToken>{token}</tptz:ProfileToken>'
-            f'<tptz:Velocity>'
-            f'<tt:PanTilt x="{pan:.2f}" y="{tilt:.2f}"/>'
-            f'<tt:Zoom x="{zoom:.2f}"/>'
-            f'</tptz:Velocity>'
-            f'</tptz:ContinuousMove>'
-        )
         ns = (
             ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
             ' xmlns:tt="http://www.onvif.org/ver10/schema"'
             ' xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"'
             ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"'
         )
-        envelope_noauth = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"{ns}>'
-            f'<s:Body>{soap_body}</s:Body>'
-            '</s:Envelope>'
-        )
         wsse = self._wsse_header()
-        envelope_wsse = (
+        xml_bytes = (
             '<?xml version="1.0" encoding="UTF-8"?>'
             f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"{ns}>'
             f'<s:Header>{wsse}</s:Header>'
-            f'<s:Body>{soap_body}</s:Body>'
+            f'<s:Body>'
+            f'<tptz:ContinuousMove>'
+            f'<tptz:ProfileToken>000</tptz:ProfileToken>'
+            f'<tptz:Velocity>'
+            f'<tt:PanTilt x="{pan:.2f}" y="{tilt:.2f}"/>'
+            f'<tt:Zoom x="{zoom:.2f}"/>'
+            f'</tptz:Velocity>'
+            f'</tptz:ContinuousMove>'
+            f'</s:Body>'
             '</s:Envelope>'
-        )
+        ).encode("utf-8")
         url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
-        _LOGGER.warning(
-            "XM Direct PTZ: url=%s cmd=%s user=%s pass_len=%d",
-            url, cmd, self.username, len(self.password or ""),
-        )
-        for label, envelope in (("noauth", envelope_noauth), ("wsse", envelope_wsse)):
-            try:
-                async with aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=8),
-                    headers={"Content-Type": "application/soap+xml; charset=utf-8"},
-                ) as sess:
-                    async with sess.post(url, data=envelope.encode("utf-8")) as resp:
-                        text = await resp.text()
-                if resp.status == 200 and "fault" not in text.lower():
-                    _LOGGER.warning("XM Direct PTZ '%s' OK (%s)", cmd, label)
-                    self._last_ptz_fault = ""
-                    async def _autostop() -> None:
-                        await asyncio.sleep(0.8)
-                        await self._xm_direct_ptz_stop()
-                    self.hass.async_create_task(_autostop())
-                    return True
-                _LOGGER.warning(
-                    "XM Direct PTZ '%s' [%s] HTTP %s: %s",
-                    cmd, label, resp.status, text[:300],
-                )
-            except Exception as exc:
-                _LOGGER.warning("XM Direct PTZ '%s' [%s] Ausnahme: %s", cmd, label, exc)
-        self._last_ptz_fault = "XM Direct PTZ beide Versuche fehlgeschlagen"
+        _LOGGER.warning("XM Direct PTZ (urllib): url=%s cmd=%s", url, cmd)
+        loop = asyncio.get_running_loop()
+        status, text = await loop.run_in_executor(None, self._xm_soap_send, url, xml_bytes)
+        if status == 200 and "fault" not in text.lower():
+            _LOGGER.warning("XM Direct PTZ '%s' OK", cmd)
+            self._last_ptz_fault = ""
+            async def _autostop() -> None:
+                await asyncio.sleep(0.8)
+                await self._xm_direct_ptz_stop()
+            self.hass.async_create_task(_autostop())
+            return True
+        self._last_ptz_fault = f"XM Direct PTZ HTTP {status}"
+        _LOGGER.warning("XM Direct PTZ '%s' fehlgeschlagen HTTP %s: %s", cmd, status, text[:300])
         return False
 
     async def _xm_direct_ptz_stop(self) -> bool:
-        """PTZ Stop direkt per SOAP (wie xm-soap.py ptz_stop)."""
-        token = "000"
-        body = (
-            f'<tptz:Stop>'
-            f'<tptz:ProfileToken>{token}</tptz:ProfileToken>'
-            f'<tptz:PanTilt>true</tptz:PanTilt>'
-            f'<tptz:Zoom>true</tptz:Zoom>'
-            f'</tptz:Stop>'
+        """PTZ Stop via urllib."""
+        ns = (
+            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
+            ' xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"'
+            ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"'
         )
         wsse = self._wsse_header()
-        envelope = (
+        xml_bytes = (
             '<?xml version="1.0" encoding="UTF-8"?>'
-            '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
-            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
-            ' xmlns:tt="http://www.onvif.org/ver10/schema"'
-            ' xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"'
-            ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">'
+            f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"{ns}>'
             f'<s:Header>{wsse}</s:Header>'
-            f'<s:Body>{body}</s:Body>'
+            f'<s:Body>'
+            f'<tptz:Stop><tptz:ProfileToken>000</tptz:ProfileToken>'
+            f'<tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>'
+            f'</s:Body>'
             '</s:Envelope>'
-        )
+        ).encode("utf-8")
         url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
-        try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=6),
-                headers={"Content-Type": "application/soap+xml; charset=utf-8"},
-            ) as fresh_session:
-                async with fresh_session.post(url, data=envelope.encode("utf-8")) as resp:
-                    return resp.status == 200
-        except Exception:
-            return False
+        loop = asyncio.get_running_loop()
+        status, _ = await loop.run_in_executor(None, self._xm_soap_send, url, xml_bytes)
+        return status == 200
 
     async def async_ptz_command(self, cmd: str, speed: int = 5) -> bool:
         """PTZ-Steuerbefehl senden (Start/Stop Up/Down/Left/Right/Zoom)."""
