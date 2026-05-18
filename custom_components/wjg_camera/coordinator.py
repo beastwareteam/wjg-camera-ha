@@ -1284,13 +1284,22 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
         loop = asyncio.get_running_loop()
 
-        # --- Versuch 1: kein Auth ("einfach nur Body hinschicken") ---
+        def _fault(resp: str) -> str:
+            """Extrahiert Fault-Text aus SOAP-Response fuer lesbare Logs."""
+            m = re.search(r"<[^>:]+:?Text[^>]*>([^<]+)", resp)
+            if m:
+                return m.group(1).strip()
+            m2 = re.search(r"<[^>:]+:?faultstring[^>]*>([^<]+)", resp)
+            if m2:
+                return m2.group(1).strip()
+            return resp[300:700] if len(resp) > 300 else resp
+
+        # --- Versuch 1: kein Auth ---
         xml_no_auth = self._xm_ptz_envelope(move_body, with_wsse=False)
-        _LOGGER.warning("XM PTZ [1/3] no-auth: %s cmd=%s", url, cmd)
         status, text = await loop.run_in_executor(
             None, lambda: self._xm_soap_send(url, xml_no_auth)
         )
-        _LOGGER.warning("XM PTZ [1/3] no-auth: HTTP %s | %s", status, text[:400])
+        _LOGGER.warning("XM PTZ [1/3] no-auth: HTTP %s | fault: %s", status, _fault(text))
         if status == 200 and "fault" not in text.lower():
             _LOGGER.warning("XM PTZ '%s' OK via no-auth", cmd)
             self._last_ptz_fault = ""
@@ -1303,11 +1312,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # --- Versuch 2: WSSE PasswordDigest (mit Kamera-Zeit gegen Clock-Skew) ---
         cam_time = await loop.run_in_executor(None, self._xm_camera_utcnow_sync)
         xml_wsse = self._xm_ptz_envelope(move_body, with_wsse=True, utc_now=cam_time)
-        _LOGGER.warning("XM PTZ [2/3] wsse (cam_time=%s): %s cmd=%s", cam_time.isoformat(), url, cmd)
         status, text = await loop.run_in_executor(
             None, lambda: self._xm_soap_send(url, xml_wsse)
         )
-        _LOGGER.warning("XM PTZ [2/3] wsse: HTTP %s | %s", status, text[:400])
+        _LOGGER.warning(
+            "XM PTZ [2/3] wsse (cam_time=%s): HTTP %s | fault: %s",
+            cam_time.strftime("%H:%M:%S"), status, _fault(text),
+        )
         if status == 200 and "fault" not in text.lower():
             _LOGGER.warning("XM PTZ '%s' OK via wsse", cmd)
             self._last_ptz_fault = ""
@@ -1323,11 +1334,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         ).decode()
         xml_basic = self._xm_ptz_envelope(move_body, with_wsse=False)
         basic_hdrs = {"Authorization": f"Basic {basic}"}
-        _LOGGER.warning("XM PTZ [3/3] basic-auth: %s cmd=%s", url, cmd)
         status, text = await loop.run_in_executor(
             None, lambda: self._xm_soap_send(url, xml_basic, basic_hdrs)
         )
-        _LOGGER.warning("XM PTZ [3/3] basic-auth: HTTP %s | %s", status, text[:400])
+        _LOGGER.warning("XM PTZ [3/3] basic-auth: HTTP %s | fault: %s", status, _fault(text))
         if status == 200 and "fault" not in text.lower():
             _LOGGER.warning("XM PTZ '%s' OK via basic-auth", cmd)
             self._last_ptz_fault = ""
