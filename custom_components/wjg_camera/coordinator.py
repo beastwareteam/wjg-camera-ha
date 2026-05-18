@@ -37,6 +37,7 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNA
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from .xm_soap import XMSoapClient as _XMSoapClient
 
 # Konstanten lokal definieren, um zirkulären Import zu vermeiden
 CONF_PROTOCOL = "protocol"
@@ -1383,11 +1384,21 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Unbekannter PTZ-Befehl: %s", cmd)
             return False
 
-        # Direkt-SOAP nach xm-soap.py (einfachster Weg, akzeptiert jede Antwort)
-        if self.protocol == PROTOCOL_ONVIF and self._session:
-            ok = await self._xm_direct_ptz(cmd, speed)
-            if ok:
-                return True
+        # Primärweg: XMSoapClient mit eigener frischer Session (verifiziert 13.05)
+        if self.protocol == PROTOCOL_ONVIF:
+            spd = min(speed, 8) / 8
+            try:
+                async with _XMSoapClient() as soap:
+                    ok = await soap.ptz_command(cmd, speed=spd)
+                if ok:
+                    self._last_ptz_fault = ""
+                    _LOGGER.info("PTZ '%s' OK via XMSoapClient", cmd)
+                    return True
+                self._last_ptz_fault = f"XMSoapClient PTZ fehlgeschlagen: {cmd}"
+                _LOGGER.warning("XMSoapClient PTZ '%s' nicht erfolgreich", cmd)
+            except Exception as soap_exc:
+                self._last_ptz_fault = f"XMSoapClient Fehler: {soap_exc}"
+                _LOGGER.warning("XMSoapClient PTZ '%s' Exception: %s", cmd, soap_exc)
 
         # ONVIF: Direct-SOAP ContinuousMove als primärer Weg
         if self.protocol == PROTOCOL_ONVIF:
