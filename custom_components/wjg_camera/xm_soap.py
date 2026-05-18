@@ -284,6 +284,85 @@ class XMSoapClient:
             await self.ptz_stop()
         return ok
 
+    async def ptz_goto_home(self, speed: float = PTZ_SPEED, token: str = PROFILE_TOKEN) -> bool:
+        """Fährt zur gespeicherten Home-Position."""
+        body = (
+            f"<tptz:GotoHomePosition>"
+            f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
+            f'<tptz:Speed><tt:PanTilt x="{speed:.2f}" y="{speed:.2f}"/></tptz:Speed>'
+            f"</tptz:GotoHomePosition>"
+        )
+        result = await self._post(ENDPOINT_PTZ, body)
+        return result is not None
+
+    async def ptz_set_home(self, token: str = PROFILE_TOKEN) -> bool:
+        """Speichert aktuelle Position als Home."""
+        body = (
+            f"<tptz:SetHomePosition>"
+            f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
+            f"</tptz:SetHomePosition>"
+        )
+        result = await self._post(ENDPOINT_PTZ, body)
+        return result is not None
+
+    async def ptz_goto_preset(
+        self, preset_token: str, speed: float = PTZ_SPEED, token: str = PROFILE_TOKEN
+    ) -> bool:
+        """Fährt zu einem gespeicherten Preset."""
+        body = (
+            f"<tptz:GotoPreset>"
+            f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
+            f"<tptz:PresetToken>{preset_token}</tptz:PresetToken>"
+            f'<tptz:Speed><tt:PanTilt x="{speed:.2f}" y="{speed:.2f}"/>'
+            f'<tt:Zoom x="{speed:.2f}"/></tptz:Speed>'
+            f"</tptz:GotoPreset>"
+        )
+        result = await self._post(ENDPOINT_PTZ, body)
+        return result is not None
+
+    async def ptz_set_preset(
+        self, name: str, preset_token: str | None = None, token: str = PROFILE_TOKEN
+    ) -> str | None:
+        """Speichert aktuelle Position als Preset. Gibt PresetToken zurück."""
+        tok_xml = f"<tptz:PresetToken>{preset_token}</tptz:PresetToken>" if preset_token else ""
+        body = (
+            f"<tptz:SetPreset>"
+            f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
+            f"<tptz:PresetName>{name}</tptz:PresetName>"
+            f"{tok_xml}"
+            f"</tptz:SetPreset>"
+        )
+        root = await self._post(ENDPOINT_PTZ, body)
+        if root is None:
+            return None
+        for el in root.iter():
+            if el.tag.split("}")[-1] == "PresetToken" and el.text:
+                return el.text.strip()
+        return None
+
+    async def ptz_get_presets(self, token: str = PROFILE_TOKEN) -> dict[str, str]:
+        """Gibt alle gespeicherten Presets zurück: {preset_token: name}."""
+        body = (
+            f"<tptz:GetPresets>"
+            f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
+            f"</tptz:GetPresets>"
+        )
+        root = await self._post(ENDPOINT_PTZ, body)
+        presets: dict[str, str] = {}
+        if root is None:
+            return presets
+        for el in root.iter():
+            local = el.tag.split("}")[-1]
+            if local == "Preset":
+                ptok = el.get("token", "")
+                pname = ""
+                for child in el:
+                    if child.tag.split("}")[-1] == "Name":
+                        pname = child.text or ""
+                if ptok:
+                    presets[ptok] = pname or f"Preset {ptok}"
+        return presets
+
     # ── Events (Pull-Point) ───────────────────────────────────────────────────
 
     async def create_pull_point_subscription(self) -> str | None:

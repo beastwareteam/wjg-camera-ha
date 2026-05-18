@@ -85,7 +85,7 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
 
     async def async_press(self) -> None:
         """PTZ-Befehl an den Coordinator weiterreichen."""
-        ok = await self.coordinator.async_ptz_command(self._direction)
+        ok = await self.coordinator.async_ptz_command(self._direction, self.coordinator._ptz_speed)
         if ok:
             _LOGGER.info(
                 "PTZ-Befehl '%s' gesendet an %s",

@@ -2055,41 +2055,29 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return dict(self._ptz_presets)
 
     async def async_ptz_home(self) -> bool:
-        spd = f"{self._ptz_speed / 8:.2f}"
-        profile_token = await self._async_active_onvif_profile_token()
-        resp = await self._onvif_soap_for(
-            ONVIF_SERVICE_PTZ,
-            f"<tptz:GotoHomePosition>"
-            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-            f'<tptz:Speed><tt:PanTilt x="{spd}" y="{spd}"/></tptz:Speed>'
-            f"</tptz:GotoHomePosition>",
-        )
-        return "GotoHomePositionResponse" in resp
+        spd = self._ptz_speed / 8
+        try:
+            async with _XMSoapClient() as soap:
+                return await soap.ptz_goto_home(speed=spd)
+        except Exception as exc:
+            _LOGGER.warning("ptz_home Fehler: %s", exc)
+            return False
 
     async def async_ptz_set_home(self) -> bool:
-        profile_token = await self._async_active_onvif_profile_token()
-        resp = await self._onvif_soap_for(
-            ONVIF_SERVICE_PTZ,
-            f"<tptz:SetHomePosition>"
-            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-            f"</tptz:SetHomePosition>",
-        )
-        return "SetHomePositionResponse" in resp
+        try:
+            async with _XMSoapClient() as soap:
+                return await soap.ptz_set_home()
+        except Exception as exc:
+            _LOGGER.warning("ptz_set_home Fehler: %s", exc)
+            return False
 
     async def async_ptz_stop(self) -> bool:
-        for profile_token in await self._async_candidate_ptz_profile_tokens():
-            resp = await self._onvif_soap_for(
-                ONVIF_SERVICE_PTZ,
-                f"<tptz:Stop>"
-                f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-                f"<tptz:PanTilt>true</tptz:PanTilt>"
-                f"<tptz:Zoom>true</tptz:Zoom>"
-                f"</tptz:Stop>",
-            )
-            if "StopResponse" in resp:
-                self._onvif_profile_tokens[self._active_stream] = profile_token
-                return True
-        return False
+        try:
+            async with _XMSoapClient() as soap:
+                return await soap.ptz_stop()
+        except Exception as exc:
+            _LOGGER.warning("ptz_stop Fehler: %s", exc)
+            return False
 
     async def async_ptz_get_presets(self) -> dict[str, str]:
         profile_token = await self._async_active_onvif_profile_token()
@@ -2109,35 +2097,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return presets
 
     async def async_ptz_goto_preset(self, token: str) -> bool:
-        spd = f"{self._ptz_speed / 8:.2f}"
-        profile_token = await self._async_active_onvif_profile_token()
-        resp = await self._onvif_soap_for(
-            ONVIF_SERVICE_PTZ,
-            f"<tptz:GotoPreset>"
-            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-            f"<tptz:PresetToken>{token}</tptz:PresetToken>"
-            f'<tptz:Speed><tt:PanTilt x="{spd}" y="{spd}"/>'
-            f'<tt:Zoom x="{spd}"/></tptz:Speed>'
-            f"</tptz:GotoPreset>",
-        )
-        return "GotoPresetResponse" in resp
+        spd = self._ptz_speed / 8
+        try:
+            async with _XMSoapClient() as soap:
+                return await soap.ptz_goto_preset(preset_token=token, speed=spd)
+        except Exception as exc:
+            _LOGGER.warning("ptz_goto_preset Fehler: %s", exc)
+            return False
 
     async def async_ptz_set_preset(self, name: str, token: str | None = None) -> str | None:
-        tok_xml = f"<tptz:PresetToken>{token}</tptz:PresetToken>" if token else ""
-        profile_token = await self._async_active_onvif_profile_token()
-        resp = await self._onvif_soap_for(
-            ONVIF_SERVICE_PTZ,
-            f"<tptz:SetPreset>"
-            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-            f"<tptz:PresetName>{name}</tptz:PresetName>"
-            f"{tok_xml}"
-            f"</tptz:SetPreset>",
-        )
-        new_token = self._xml_text(resp, "PresetToken")
-        if new_token:
-            self._ptz_presets[new_token] = name
-            return new_token
-        return None
+        try:
+            async with _XMSoapClient() as soap:
+                new_token = await soap.ptz_set_preset(name=name, preset_token=token)
+            if new_token:
+                self._ptz_presets[new_token] = name
+                return new_token
+            return None
+        except Exception as exc:
+            _LOGGER.warning("ptz_set_preset Fehler: %s", exc)
+            return None
 
     async def async_ptz_delete_preset(self, token: str) -> bool:
         profile_token = await self._async_active_onvif_profile_token()
