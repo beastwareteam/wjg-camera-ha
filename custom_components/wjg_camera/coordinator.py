@@ -1163,14 +1163,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 deduped.append(candidate)
         return deduped
 
-    def _xm_soap_send(self, url: str, xml_bytes: bytes) -> tuple[int, str]:
+    def _xm_soap_send(
+        self, url: str, xml_bytes: bytes, extra_headers: dict | None = None
+    ) -> tuple[int, str]:
         """Sendet SOAP-Request via urllib (kein aiohttp, keine Versionsabhaengigkeit)."""
-        req = _UrllibRequest(
-            url,
-            data=xml_bytes,
-            headers={"Content-Type": "application/soap+xml; charset=utf-8"},
-            method="POST",
-        )
+        hdrs: dict[str, str] = {"Content-Type": "application/soap+xml; charset=utf-8"}
+        if extra_headers:
+            hdrs.update(extra_headers)
+        req = _UrllibRequest(url, data=xml_bytes, headers=hdrs, method="POST")
         try:
             with _urlopen(req, timeout=6) as r:
                 return r.status, r.read().decode("utf-8", errors="replace")
@@ -1179,8 +1179,85 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         except Exception as exc:
             return 0, str(exc)
 
+    def _xm_camera_utcnow_sync(self) -> datetime.datetime:
+        """Liest Kamera-UTC-Zeit via GetSystemDateAndTime (kein Auth noetig).
+
+        Prueft ob Systemzeit von Kamera-Zeit abweicht – relevant fuer WSSE-Timestamps
+        auf Proxmox-VMs mit Clock-Drift.
+        """
+        body = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
+            ' xmlns:tds="http://www.onvif.org/ver10/device/wsdl">'
+            '<s:Body><tds:GetSystemDateAndTime/></s:Body>'
+            '</s:Envelope>'
+        ).encode("utf-8")
+        url = f"http://{self.host}:{self.onvif_port}/onvif/device_service"
+        try:
+            status, text = self._xm_soap_send(url, body)
+            if status == 200:
+                def _int(tag: str) -> int:
+                    m = re.search(rf"<(?:[^:>]+:)?{tag}[^>]*>(\d+)<", text)
+                    return int(m.group(1)) if m else 0
+                year = _int("Year")
+                month = _int("Month") or 1
+                day = _int("Day") or 1
+                hour = _int("Hour")
+                minute = _int("Minute")
+                second = _int("Second")
+                if year > 2000:
+                    cam_dt = datetime.datetime(
+                        year, month, day, hour, minute, second,
+                        tzinfo=datetime.timezone.utc,
+                    )
+                    skew = abs(
+                        (cam_dt - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+                    )
+                    _LOGGER.warning(
+                        "XM Kamera-Zeit: %s  HA-Zeit: %s  Abweichung: %.1fs",
+                        cam_dt.isoformat(), datetime.datetime.now(datetime.timezone.utc).isoformat(), skew,
+                    )
+                    return cam_dt
+        except Exception as exc:
+            _LOGGER.debug("GetSystemDateAndTime fehlgeschlagen: %s", exc)
+        return datetime.datetime.now(datetime.timezone.utc)
+
+    def _xm_ptz_envelope(
+        self,
+        body: str,
+        with_wsse: bool = True,
+        utc_now: datetime.datetime | None = None,
+    ) -> bytes:
+        """Baut SOAP-Envelope fuer PTZ-Befehle.
+
+        utc_now: Kamera-Zeit fuer clock-korrektes WSSE (verhindert Ablehnung bei
+        Proxmox VM Clock-Drift).
+        """
+        ns = (
+            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
+            ' xmlns:tt="http://www.onvif.org/ver10/schema"'
+        )
+        if with_wsse:
+            ns += (
+                ' xmlns:wsse="http://docs.oasis-open.org/wss/2004/01'
+                '/oasis-200401-wss-wssecurity-secext-1.0.xsd"'
+                ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01'
+                '/oasis-200401-wss-wssecurity-utility-1.0.xsd"'
+            )
+        header = (
+            f"<s:Header>{self._wsse_header(utc_now=utc_now)}</s:Header>"
+            if with_wsse else ""
+        )
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"{ns}>'
+            f"{header}"
+            f"<s:Body>{body}</s:Body>"
+            "</s:Envelope>"
+        ).encode("utf-8")
+
     async def _xm_direct_ptz(self, cmd: str, speed: int = 5) -> bool:
-        """Direkt-SOAP via urllib (stdlib) – kein aiohttp, funktioniert auf jedem HA-System."""
+        """Direkt-SOAP via urllib – versucht kein-Auth, WSSE und Basic-Auth."""
         if cmd == "stop":
             return await self._xm_direct_ptz_stop()
         spd = min(speed, 8) / 8
@@ -1195,66 +1272,93 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if cmd not in vel_map:
             return False
         pan, tilt, zoom = vel_map[cmd]
-        ns = (
-            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
-            ' xmlns:tt="http://www.onvif.org/ver10/schema"'
-            ' xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"'
-            ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"'
-        )
-        wsse = self._wsse_header()
-        xml_bytes = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"{ns}>'
-            f'<s:Header>{wsse}</s:Header>'
-            f'<s:Body>'
-            f'<tptz:ContinuousMove>'
-            f'<tptz:ProfileToken>000</tptz:ProfileToken>'
-            f'<tptz:Velocity>'
+        move_body = (
+            f"<tptz:ContinuousMove>"
+            f"<tptz:ProfileToken>000</tptz:ProfileToken>"
+            f"<tptz:Velocity>"
             f'<tt:PanTilt x="{pan:.2f}" y="{tilt:.2f}"/>'
             f'<tt:Zoom x="{zoom:.2f}"/>'
-            f'</tptz:Velocity>'
-            f'</tptz:ContinuousMove>'
-            f'</s:Body>'
-            '</s:Envelope>'
-        ).encode("utf-8")
+            f"</tptz:Velocity>"
+            f"</tptz:ContinuousMove>"
+        )
         url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
-        _LOGGER.warning("XM Direct PTZ (urllib): url=%s cmd=%s", url, cmd)
         loop = asyncio.get_running_loop()
-        status, text = await loop.run_in_executor(None, self._xm_soap_send, url, xml_bytes)
+
+        # --- Versuch 1: kein Auth ("einfach nur Body hinschicken") ---
+        xml_no_auth = self._xm_ptz_envelope(move_body, with_wsse=False)
+        _LOGGER.warning("XM PTZ [1/3] no-auth: %s cmd=%s", url, cmd)
+        status, text = await loop.run_in_executor(
+            None, lambda: self._xm_soap_send(url, xml_no_auth)
+        )
+        _LOGGER.warning("XM PTZ [1/3] no-auth: HTTP %s | %s", status, text[:400])
         if status == 200 and "fault" not in text.lower():
-            _LOGGER.warning("XM Direct PTZ '%s' OK", cmd)
+            _LOGGER.warning("XM PTZ '%s' OK via no-auth", cmd)
             self._last_ptz_fault = ""
-            async def _autostop() -> None:
+            async def _stop1() -> None:
                 await asyncio.sleep(0.8)
                 await self._xm_direct_ptz_stop()
-            self.hass.async_create_task(_autostop())
+            self.hass.async_create_task(_stop1())
             return True
-        self._last_ptz_fault = f"XM Direct PTZ HTTP {status}"
-        _LOGGER.warning("XM Direct PTZ '%s' fehlgeschlagen HTTP %s: %s", cmd, status, text[:300])
+
+        # --- Versuch 2: WSSE PasswordDigest (mit Kamera-Zeit gegen Clock-Skew) ---
+        cam_time = await loop.run_in_executor(None, self._xm_camera_utcnow_sync)
+        xml_wsse = self._xm_ptz_envelope(move_body, with_wsse=True, utc_now=cam_time)
+        _LOGGER.warning("XM PTZ [2/3] wsse (cam_time=%s): %s cmd=%s", cam_time.isoformat(), url, cmd)
+        status, text = await loop.run_in_executor(
+            None, lambda: self._xm_soap_send(url, xml_wsse)
+        )
+        _LOGGER.warning("XM PTZ [2/3] wsse: HTTP %s | %s", status, text[:400])
+        if status == 200 and "fault" not in text.lower():
+            _LOGGER.warning("XM PTZ '%s' OK via wsse", cmd)
+            self._last_ptz_fault = ""
+            async def _stop2() -> None:
+                await asyncio.sleep(0.8)
+                await self._xm_direct_ptz_stop()
+            self.hass.async_create_task(_stop2())
+            return True
+
+        # --- Versuch 3: HTTP Basic Auth (kein WSSE) ---
+        basic = base64.b64encode(
+            f"{self.username}:{self.password or ''}".encode()
+        ).decode()
+        xml_basic = self._xm_ptz_envelope(move_body, with_wsse=False)
+        basic_hdrs = {"Authorization": f"Basic {basic}"}
+        _LOGGER.warning("XM PTZ [3/3] basic-auth: %s cmd=%s", url, cmd)
+        status, text = await loop.run_in_executor(
+            None, lambda: self._xm_soap_send(url, xml_basic, basic_hdrs)
+        )
+        _LOGGER.warning("XM PTZ [3/3] basic-auth: HTTP %s | %s", status, text[:400])
+        if status == 200 and "fault" not in text.lower():
+            _LOGGER.warning("XM PTZ '%s' OK via basic-auth", cmd)
+            self._last_ptz_fault = ""
+            async def _stop3() -> None:
+                await asyncio.sleep(0.8)
+                await self._xm_direct_ptz_stop()
+            self.hass.async_create_task(_stop3())
+            return True
+
+        self._last_ptz_fault = f"XM PTZ alle 3 Varianten HTTP {status}"
+        _LOGGER.warning(
+            "XM PTZ '%s' fehlgeschlagen (no-auth/wsse/basic alle HTTP %s)", cmd, status
+        )
         return False
 
     async def _xm_direct_ptz_stop(self) -> bool:
-        """PTZ Stop via urllib."""
-        ns = (
-            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
-            ' xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"'
-            ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"'
+        """PTZ Stop via urllib – versucht kein-Auth, dann WSSE."""
+        stop_body = (
+            "<tptz:Stop><tptz:ProfileToken>000</tptz:ProfileToken>"
+            "<tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>"
         )
-        wsse = self._wsse_header()
-        xml_bytes = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"{ns}>'
-            f'<s:Header>{wsse}</s:Header>'
-            f'<s:Body>'
-            f'<tptz:Stop><tptz:ProfileToken>000</tptz:ProfileToken>'
-            f'<tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>'
-            f'</s:Body>'
-            '</s:Envelope>'
-        ).encode("utf-8")
         url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
         loop = asyncio.get_running_loop()
-        status, _ = await loop.run_in_executor(None, self._xm_soap_send, url, xml_bytes)
-        return status == 200
+        for with_wsse in (False, True):
+            _stop_xml = self._xm_ptz_envelope(stop_body, with_wsse=with_wsse)
+            status, _ = await loop.run_in_executor(
+                None, lambda: self._xm_soap_send(url, _stop_xml)
+            )
+            if status == 200:
+                return True
+        return False
 
     async def async_ptz_command(self, cmd: str, speed: int = 5) -> bool:
         """PTZ-Steuerbefehl senden (Start/Stop Up/Down/Left/Right/Zoom)."""
@@ -1389,17 +1493,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     # ── ONVIF Direct-SOAP helper ────────────────────────────────────────────
 
-    def _wsse_header(self) -> str:
-        """
-        WSSE PasswordDigest Header.
+    def _wsse_header(self, utc_now: datetime.datetime | None = None) -> str:
+        """WSSE PasswordDigest Header.
 
-        FIX: Millisekunden im Timestamp (.%f → [:3]) — XM-Firmware akzeptiert
-        ISO 8601 mit Millisekunden, aber nicht mit Mikrosekunden.
-        Verifiziert: SHA1(nonce_raw + created_utf8 + password_utf8), leeres PW.
+        utc_now: optionale Referenzzeit (z.B. Kamera-Zeit) um Clock-Skew
+        bei Proxmox-VMs zu vermeiden.
         """
         nonce = os.urandom(16)
-        # Millisekunden-Timestamp (XM-Firmware-kompatibel)
-        now = datetime.datetime.utcnow()
+        now = (utc_now or datetime.datetime.now(datetime.timezone.utc)).replace(tzinfo=None)
         created = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
         pwd = (self.password or "").encode("utf-8")
         digest = base64.b64encode(
