@@ -260,6 +260,11 @@ class XMSoapClient:
         """
         Einheitlicher PTZ-Aufruf für HA-Buttons.
         direction: right | left | up | down | zoom_in | zoom_out | stop
+        speed: 0.0–1.0 (normalisiert aus HA-Stufe 1–8)
+
+        XM-Firmware ignoriert Velocity häufig — Bewegungsdistanz wird daher
+        ZUSÄTZLICH über den Stop-Delay gesteuert (0.15s–1.5s linear zu speed).
+        So funktioniert die Geschwindigkeitsstufe auch ohne Velocity-Support.
         """
         dispatch = {
             "right":    (speed,   0.0,   0.0),
@@ -277,10 +282,18 @@ class XMSoapClient:
             _LOGGER.error("Unbekannte PTZ-Richtung: %s", direction)
             return False
         pan, tilt, zoom = coords
+
+        # Stop-Delay proportional zu speed: bei speed=PTZ_SPEED bleibt das
+        # bisherige PTZ_STOP_DELAY erhalten; bei kleinen Werten kurzer Delay,
+        # bei speed=1.0 maximal 1.5s. XM-Kameras ignorieren oft Velocity →
+        # dieser Delay ist die primäre Geschwindigkeitsregelung.
+        stop_delay = max(0.15, min(1.5, PTZ_STOP_DELAY * speed / PTZ_SPEED))
+
+        _LOGGER.debug("PTZ '%s': velocity=%.2f stop_delay=%.2fs", direction, speed, stop_delay)
+
         ok = await self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom)
         if ok:
-            # Auto-Stop nach PTZ_STOP_DELAY
-            await asyncio.sleep(PTZ_STOP_DELAY)
+            await asyncio.sleep(stop_delay)
             await self.ptz_stop()
         return ok
 

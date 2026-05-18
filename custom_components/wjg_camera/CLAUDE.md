@@ -59,10 +59,17 @@ WSSE funktioniert trotzdem — die Kamera akzeptiert diese Zeitdifferenz.
 - `async_ptz_goto_preset` — Preset anfahren
 - `async_ptz_set_preset` — Preset speichern
 
-### Geschwindigkeitsregelung
+### Geschwindigkeitsregelung (doppelter Ansatz — seit v2.2.21)
 - `self._ptz_speed` in coordinator: int 1–8 (von Number-Entity gesetzt)
 - Normalisierung: `spd = self._ptz_speed / 8` → float 0.125–1.0 für XMSoapClient
 - `button.py` → `WJGPTZButton.async_press` übergibt `self.coordinator._ptz_speed` explizit
+- **XM ignoriert Velocity-Wert**: XM-Firmware akzeptiert ContinuousMove-SOAP, ignoriert aber
+  häufig die Velocity-Werte (bewegt sich immer mit Maximalgeschwindigkeit)
+- **Fix**: `ptz_command` in `xm_soap.py` variiert ZUSÄTZLICH den Stop-Delay proportional zur speed:
+  `stop_delay = max(0.15, min(1.5, PTZ_STOP_DELAY * speed / PTZ_SPEED))`
+  → speed=0.125 → ~0.15s; speed=0.4 → 0.8s; speed=1.0 → 1.5s
+  → Bewegungsdistanz ist proportional, egal ob Velocity honoriert wird oder nicht
+- Debug-Log zeigt velocity und stop_delay für jeden PTZ-Befehl
 
 ---
 
