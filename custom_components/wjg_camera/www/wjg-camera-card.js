@@ -1,5 +1,5 @@
 /**
- * wjg-camera-card.js  v2.0
+ * wjg-camera-card.js  v2.1
  * Einzel-Stream Kamera-Karte mit Zoom, Badges und Resize für WJG XM-3820
  *
  * Ersetzt picture-glance vollständig → NUR EINE Stream-Instanz im Dashboard.
@@ -28,6 +28,7 @@ _tpl.innerHTML = `
 <style>
   :host {
     display: block;
+    width: 100%;
     background: var(--ha-card-background, #1c1c1e);
     border-radius: var(--ha-card-border-radius, 12px);
     overflow: hidden;
@@ -231,6 +232,12 @@ class WjgCameraCard extends HTMLElement {
     this._mup   = () => this._onWinMouseUp();
     this._bindZoomEvents();
     this._bindResizeEvents();
+  }
+
+  /* ── Breite sicherstellen sobald Element im DOM ist ─────────────────────── */
+
+  connectedCallback() {
+    this.style.width = '100%';
   }
 
   /* ── Lovelace API ───────────────────────────────────────────────────────── */
@@ -587,7 +594,7 @@ class WjgCameraCard extends HTMLElement {
 if (!customElements.get('wjg-camera-card')) {
   customElements.define('wjg-camera-card', WjgCameraCard);
   console.info(
-    '%c WJG Camera Card v2.0 %c bereit – 1 Stream, Zoom, Badges, Resize',
+    '%c WJG Camera Card v2.1 %c bereit – 1 Stream, Zoom, Badges, Resize, Breiten-Fix',
     'color:#fff;background:#03a9f4;padding:2px 6px;border-radius:3px;font-weight:bold', ''
   );
 }
