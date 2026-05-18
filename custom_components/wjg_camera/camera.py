@@ -92,7 +92,7 @@ class WJGCamera(  # pyright: ignore[reportArgumentType]
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
     ) -> bytes | None:
-        """Aktuelles Standbild laden."""
+        """Aktuelles Standbild laden, optional mit Digital-Zoom-Crop."""
         _ = width
         _ = height
         # Bevorzuge gecachten Snapshot aus Coordinator
@@ -100,19 +100,50 @@ class WJGCamera(  # pyright: ignore[reportArgumentType]
         if self.coordinator.data and "snapshot_bytes" in self.coordinator.data:
             cached_snapshot = self.coordinator.data["snapshot_bytes"]
         if isinstance(cached_snapshot, (bytes, bytearray)) and cached_snapshot:
-            self._last_camera_image = bytes(cached_snapshot)
-            return self._last_camera_image
+            image_bytes: bytes = bytes(cached_snapshot)
+        else:
+            live_snapshot = await self.coordinator.async_snapshot()
+            if isinstance(live_snapshot, (bytes, bytearray)) and live_snapshot:
+                image_bytes = bytes(live_snapshot)
+            elif self._last_camera_image:
+                return self._last_camera_image
+            else:
+                _LOGGER.debug("Snapshot nicht verfügbar, liefere Fallback-Bild")
+                return _FALLBACK_IMAGE_BYTES
 
-        live_snapshot = await self.coordinator.async_snapshot()
-        if isinstance(live_snapshot, (bytes, bytearray)) and live_snapshot:
-            self._last_camera_image = bytes(live_snapshot)
-            return self._last_camera_image
+        # Digital Zoom: Pillow-Crop wenn Zoom > 1
+        zoom = self.coordinator.digital_zoom
+        if zoom > 1.0:
+            try:
+                image_bytes = await self.hass.async_add_executor_job(
+                    self._crop_for_zoom, image_bytes, zoom
+                )
+            except Exception as exc:
+                _LOGGER.warning("Digital-Zoom-Crop fehlgeschlagen: %s", exc)
 
-        if self._last_camera_image:
-            return self._last_camera_image
+        self._last_camera_image = image_bytes
+        return image_bytes
 
-        _LOGGER.debug("Snapshot nicht verfügbar, liefere Fallback-Bild")
-        return _FALLBACK_IMAGE_BYTES
+    def _crop_for_zoom(self, image_bytes: bytes, zoom: float) -> bytes:
+        """Schneidet den Bildausschnitt per Pillow zu und skaliert auf Originalgröße."""
+        try:
+            from PIL import Image  # pylint: disable=import-outside-toplevel
+        except ImportError:
+            _LOGGER.warning("Pillow nicht verfügbar – kein serverseitiger Zoom")
+            return image_bytes
+        import io  # pylint: disable=import-outside-toplevel
+        img = Image.open(io.BytesIO(image_bytes))
+        w, h = img.size
+        cx, cy = self.coordinator.digital_zoom_center
+        cw = max(1, int(w / zoom))
+        ch = max(1, int(h / zoom))
+        x1 = max(0, min(w - cw, int(cx * w - cw / 2)))
+        y1 = max(0, min(h - ch, int(cy * h - ch / 2)))
+        cropped = img.crop((x1, y1, x1 + cw, y1 + ch))
+        resized = cropped.resize((w, h), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        resized.save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
 
     async def async_enable_motion_detection(self) -> None:
         """Bewegungserkennung aktivieren."""

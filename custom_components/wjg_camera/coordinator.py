@@ -446,6 +446,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # PTZ
         self._ptz_speed: int = 5
         self._ptz_presets: dict[str, str] = {}  # token -> name
+        # Digital Zoom (Pillow-Crop für Snapshots, CSS-Sync über Lovelace-Karte)
+        self._digital_zoom: float = 1.0
+        self._digital_zoom_cx: float = 0.5   # Bildmittelpunkt X (0–1)
+        self._digital_zoom_cy: float = 0.5   # Bildmittelpunkt Y (0–1)
         # Imaging
         self._imaging: dict[str, Any] = {}
         # Sensoren
@@ -1374,10 +1378,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_ptz_command(self, cmd: str, speed: int = 5) -> bool:
         """PTZ-Steuerbefehl senden (Start/Stop Up/Down/Left/Right/Zoom)."""
         self._last_ptz_fault = ""
+
+        # XM-3820 hat kein optisches Zoom → Buttons steuern Digital-Zoom
+        if cmd == "zoom_in":
+            await self.async_digital_zoom_in()
+            _LOGGER.info("Digital Zoom IN → %.1f×", self._digital_zoom)
+            return True
+        if cmd == "zoom_out":
+            await self.async_digital_zoom_out()
+            _LOGGER.info("Digital Zoom OUT → %.1f×", self._digital_zoom)
+            return True
+
         ptz_map = {
             "up": 0x10, "down": 0x11, "left": 0x12, "right": 0x13,
-            "zoom_in": 0x01, "zoom_out": 0x02, "focus_in": 0x03,
-            "focus_out": 0x04, "stop": 0xFF
+            "focus_in": 0x03, "focus_out": 0x04, "stop": 0xFF
         }
         if cmd not in ptz_map:
             self._last_ptz_fault = f"Unbekannter PTZ-Befehl: {cmd}"
@@ -2049,6 +2063,34 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_set_ptz_speed(self, speed: int) -> None:
         self._ptz_speed = max(1, min(8, speed))
+
+    # ── Digital Zoom ────────────────────────────────────────────────────────
+
+    @property
+    def digital_zoom(self) -> float:
+        return self._digital_zoom
+
+    @property
+    def digital_zoom_center(self) -> tuple[float, float]:
+        return (self._digital_zoom_cx, self._digital_zoom_cy)
+
+    async def async_digital_zoom_in(self) -> None:
+        self._digital_zoom = min(8.0, round(self._digital_zoom * 1.5, 1))
+
+    async def async_digital_zoom_out(self) -> None:
+        self._digital_zoom = max(1.0, round(self._digital_zoom / 1.5, 1))
+
+    async def async_digital_zoom_reset(self) -> None:
+        self._digital_zoom = 1.0
+        self._digital_zoom_cx = 0.5
+        self._digital_zoom_cy = 0.5
+
+    async def async_digital_zoom_set(
+        self, zoom: float, cx: float = 0.5, cy: float = 0.5
+    ) -> None:
+        self._digital_zoom = max(1.0, min(8.0, float(zoom)))
+        self._digital_zoom_cx = max(0.0, min(1.0, float(cx)))
+        self._digital_zoom_cy = max(0.0, min(1.0, float(cy)))
 
     @property
     def ptz_presets(self) -> dict[str, str]:

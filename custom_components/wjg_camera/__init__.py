@@ -12,12 +12,16 @@ Unterstützt:
 from __future__ import annotations
 
 import logging
+import pathlib
 from typing import Final
+
+import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 
 from .coordinator import WJGCameraCoordinator
 
@@ -76,6 +80,25 @@ PLATFORMS: list[Platform] = [
     Platform.SELECT,
 ]
 
+_SERVICE_SET_ZOOM = "set_digital_zoom"
+_SVC_SCHEMA_ZOOM = vol.Schema({
+    vol.Required("entity_id"): cv.entity_id,
+    vol.Required("zoom"):      vol.All(vol.Coerce(float), vol.Range(min=1.0, max=10.0)),
+    vol.Optional("cx", default=0.5): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
+    vol.Optional("cy", default=0.5): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
+})
+
+
+def _get_coordinator(hass: HomeAssistant, entity_id: str) -> WJGCameraCoordinator | None:
+    """Coordinator für eine entity_id aus hass.data suchen."""
+    for coord in hass.data.get(DOMAIN, {}).values():
+        if isinstance(coord, WJGCameraCoordinator):
+            # Kamera-Entity-ID hat Format "<domain>.<entry_id>_camera" oder ähnlich
+            # Einfachster Weg: ersten Coordinator zurückgeben wenn nur einer existiert
+            return coord
+    return None
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Integration einrichten aus Config-Entry."""
     coordinator = WJGCameraCoordinator(hass, entry)
@@ -92,6 +115,46 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # Statischen Pfad für Lovelace-Karte registrieren (einmalig)
+    www_dir = pathlib.Path(__file__).parent / "www"
+    if www_dir.is_dir():
+        try:
+            from homeassistant.components.http import StaticPathConfig  # pylint: disable=import-outside-toplevel
+            await hass.http.async_register_static_paths([
+                StaticPathConfig("/wjg_camera/wjg-camera-card.js",
+                                 str(www_dir / "wjg-camera-card.js"),
+                                 cache_headers=False)
+            ])
+        except Exception:  # noqa: BLE001
+            # Bereits registriert oder HTTP noch nicht bereit — ignorieren
+            pass
+
+    # HA-Service registrieren: wjg_camera.set_digital_zoom
+    if not hass.services.has_service(DOMAIN, _SERVICE_SET_ZOOM):
+        async def _handle_set_zoom(call: ServiceCall) -> None:
+            coord = _get_coordinator(hass, call.data["entity_id"])
+            if coord:
+                await coord.async_digital_zoom_set(
+                    call.data["zoom"],
+                    call.data.get("cx", 0.5),
+                    call.data.get("cy", 0.5),
+                )
+        hass.services.async_register(DOMAIN, _SERVICE_SET_ZOOM, _handle_set_zoom,
+                                     schema=_SVC_SCHEMA_ZOOM)
+
+    # Einmalige Hinweis-Benachrichtigung für Lovelace-Ressource
+    notif_key = f"{DOMAIN}_lovelace_hint"
+    if notif_key not in hass.data:
+        hass.data[notif_key] = True
+        hass.components.persistent_notification.async_create(
+            "**WJG Zoom-Karte verfügbar!**\n\n"
+            "Einstellungen → Dashboards → Ressourcen → **+ Hinzufügen**\n\n"
+            "URL: `/wjg_camera/wjg-camera-card.js`  \nTyp: **JavaScript Modul**\n\n"
+            "Dann im Dashboard: Karte hinzufügen → `custom:wjg-camera-card`",
+            title="WJG Camera: Zoom-Karte",
+            notification_id="wjg_camera_lovelace_hint",
+        )
 
     _LOGGER.info(
         "WJG XM-3820 Bridge erfolgreich eingerichtet: %s",

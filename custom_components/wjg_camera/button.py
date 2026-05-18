@@ -52,6 +52,7 @@ async def async_setup_entry(
         WJGPTZPresetGotoButton(coordinator, entry, "3"),
         WJGPTZPresetGotoButton(coordinator, entry, "4"),
         # System
+        WJGDigitalZoomResetButton(coordinator, entry),
         WJGSnapshotButton(coordinator, entry),
         WJGRebootButton(coordinator, entry),
         WJGNTPSyncButton(coordinator, entry),
@@ -247,6 +248,29 @@ class WJGPTZPresetGotoButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEnti
         ok = await self.coordinator.async_ptz_goto_preset(self._slot)
         if not ok:
             _raise_action_failed(f"PTZ Preset {self._slot} anfahren")
+
+    def press(self) -> None:
+        raise NotImplementedError
+
+
+class WJGDigitalZoomResetButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
+    """Digital-Zoom zurücksetzen."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Digital Zoom Reset"
+    _attr_icon = "mdi:magnify-remove-outline"
+
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_digital_zoom_reset"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_digital_zoom_reset()
 
     def press(self) -> None:
         raise NotImplementedError
