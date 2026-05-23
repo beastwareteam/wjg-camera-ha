@@ -49,8 +49,13 @@ class WJGFileListSensor(CoordinatorEntity[WJGCameraCoordinator], SensorEntity):
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
     @property
+    def available(self) -> bool:
+        """Sensor bleibt verfügbar, auch wenn Dateiliste leer/nicht abrufbar."""
+        return True
+
+    @property
     def native_value(self) -> int:
-        """Anzahl Dateien aus dem Coordinator-State."""
+        """Anzahl Dateien aus dem Coordinator-State. Bei Fehler: 0."""
         files = self.coordinator.data.get("files", []) if self.coordinator.data else []
         return len(files)
 
@@ -58,7 +63,11 @@ class WJGFileListSensor(CoordinatorEntity[WJGCameraCoordinator], SensorEntity):
     def extra_state_attributes(self) -> dict:
         """Vollstaendige Dateiliste als Attribut."""
         files = self.coordinator.data.get("files", []) if self.coordinator.data else []
-        return {"files": files}
+        return {
+            "files": files,
+            "count": len(files),
+            "note": "SMB/FTP erforderlich für echten Videozugriff"
+        }
 
 
 class _WJGStaticSensor(CoordinatorEntity[WJGCameraCoordinator], SensorEntity):
