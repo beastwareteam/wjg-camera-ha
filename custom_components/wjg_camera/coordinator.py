@@ -479,10 +479,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._onvif_profile_tokens: dict[str, str] = {}
         self._onvif_video_source_token: str = "000"
         self._last_ptz_fault: str = ""
-        # ── FIX: WSSE immer aktiviert für XM-3820 (PasswordDigest, leeres PW) ──
-        # Die Kamera akzeptiert GetCapabilities ohne Auth, alle anderen Calls
-        # (GetProfiles, PTZ, etc.) benötigen WSSE PasswordDigest mit leerem Passwort.
-        self._onvif_wsse_enabled: bool = True
+        # Start konservativ ohne WSSE. Bei Bedarf kann es spaeter je nach Fault umgeschaltet werden.
+        self._onvif_wsse_enabled: bool = False
         self._onvif_content_type: str = ONVIF_CONTENT_TYPE_CANDIDATES[0]
         self._onvif_service_paths: dict[str, str] = {
             key: paths[0] for key, paths in ONVIF_SERVICE_PATH_CANDIDATES.items()
@@ -712,8 +710,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol not in (PROTOCOL_RTSP, PROTOCOL_ONVIF):
             return
 
-        # Konfigurierten Pfad zuerst pruefen — ONVIF GetStreamUri liefert fuer
-        # XM-Kameras oft fehlerhafte URLs (/streamtype=0).
+        if self.protocol == PROTOCOL_ONVIF:
+            onvif_url = await self.async_onvif_stream_url()
+            if onvif_url:
+                has_video = await self.hass.async_add_executor_job(
+                    self._rtsp_url_has_video,
+                    onvif_url,
+                    4.0,
+                )
+                if has_video:
+                    self._resolved_rtsp_url = onvif_url
+                    _LOGGER.info("ONVIF Stream-URL genutzt: %s", onvif_url)
+                    return
+
+        # Danach konfigurierten Pfad plus bekannte Fallbacks pruefen.
         for rtsp_url in self._candidate_rtsp_urls():
             has_video = await self.hass.async_add_executor_job(
                 self._rtsp_url_has_video,
@@ -725,19 +735,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 if rtsp_url != self._build_rtsp_url(self._render_rtsp_path()):
                     _LOGGER.info("RTSP-Fallback mit Video erkannt: %s", rtsp_url)
                 return
-
-        if self.protocol == PROTOCOL_ONVIF:
-            onvif_url = await self.async_onvif_stream_url()
-            if onvif_url:
-                has_video = await self.hass.async_add_executor_job(
-                    self._rtsp_url_has_video,
-                    onvif_url,
-                    4.0,
-                )
-                if has_video:
-                    self._resolved_rtsp_url = onvif_url
-                    _LOGGER.info("ONVIF Stream-URL als Fallback genutzt: %s", onvif_url)
-                    return
 
         self._resolved_rtsp_url = self._build_rtsp_url(self._render_rtsp_path())
 
@@ -1399,11 +1396,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             "<tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>"
         )
         url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
-        loop = asyncio.get_running_loop()
         for with_wsse in (False, True):
-            _stop_xml = self._xm_ptz_envelope(stop_body, with_wsse=with_wsse)
-            status, _ = await loop.run_in_executor(
-                None, lambda: self._xm_soap_send(url, _stop_xml)
+            stop_xml = self._xm_ptz_envelope(stop_body, with_wsse=with_wsse)
+            status, _ = await self.hass.async_add_executor_job(
+                self._xm_soap_send,
+                url,
+                stop_xml,
+                None,
             )
             if status == 200:
                 return True
@@ -1652,10 +1651,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         ]
         last_result = ""
         for content_type in content_types_to_try:
-            # WSSE im Header genuegt — kein HTTP Basic Auth noetig (wie xm-soap.py).
-            auth_candidates: list[aiohttp.BasicAuth | None] = [None]
+            # Zuerst mit HTTP Basic versuchen, danach ohne HTTP Auth.
+            auth_candidates: list[aiohttp.BasicAuth | None] = []
             if http_auth is not None:
                 auth_candidates.append(http_auth)
+            auth_candidates.append(None)
             for auth_candidate in auth_candidates:
                 try:
                     async with async_timeout.timeout(timeout_seconds):
@@ -2001,14 +2001,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 service_path, body, use_auth=effective_use_auth, timeout_seconds=timeout_seconds,
             )
             if effective_use_auth and self._looks_like_onvif_auth_fault(response_text):
-                # Auth-Fault: NICHT dauerhaft deaktivieren (XM braucht WSSE)
-                # Stattdessen: ohne HTTP BasicAuth nochmal versuchen
                 _LOGGER.debug(
-                    "ONVIF Auth-Fault bei %s – versuche ohne HTTP-BasicAuth",
+                    "ONVIF Auth-Fault bei %s – deaktiviere WSSE und retry ohne WSSE",
                     service_path,
                 )
+                self._onvif_wsse_enabled = False
                 response_text = await self._onvif_soap(
-                    service_path, body, use_auth=effective_use_auth, timeout_seconds=timeout_seconds,
+                    service_path, body, use_auth=False, timeout_seconds=timeout_seconds,
                 )
             if self._looks_like_onvif_fault(response_text):
                 last_response = response_text
