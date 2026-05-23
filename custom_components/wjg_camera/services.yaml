@@ -19,7 +19,7 @@ set_digital_zoom:
       selector:
         number:
           min: 1.0
-          max: 8.0
+          max: 10.0
           step: 0.5
           mode: slider
     cx:
