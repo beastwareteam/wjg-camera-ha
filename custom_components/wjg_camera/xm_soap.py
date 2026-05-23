@@ -293,8 +293,6 @@ class XMSoapClient:
 
         ok = await self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom)
         if ok:
-            # Auto-Stop nach PTZ_STOP_DELAY
-            await asyncio.sleep(PTZ_STOP_DELAY)
             await asyncio.sleep(stop_delay)
             await self.ptz_stop()
         return ok
@@ -463,3 +461,4 @@ async def _test() -> None:
 
 
 if __name__ == "__main__":
+    asyncio.run(_test())
