@@ -142,7 +142,7 @@ ONVIF_EVENT_OPTION_MAP: dict[str, dict[str, str]] = {
 }
 
 _LOGGER = logging.getLogger(__name__)
-SCAN_INTERVAL = timedelta(seconds=30)  # FIX: war 10s → Gerät wurde geflutet
+SCAN_INTERVAL = timedelta(seconds=10)
 
 # XM SDK Message IDs
 XM_LOGIN_REQ       = 0x03E8  # 1000
@@ -919,18 +919,16 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             except Exception as e:
                 _LOGGER.debug("Snapshot fehlgeschlagen: %s", e)
 
-        # Fallback: TCP-Erreichbarkeit prüfen (nur primären Port, nicht alle 3)
-        # FIX Bug 3: war {rtsp_port, http_port, xm_port} → 3 TCP-Connects pro Poll-Zyklus
+        # Fallback: TCP-Erreichbarkeit prüfen (RTSP-Port oder HTTP-Port)
         if not data["available"]:
-            primary_port = (
-                self.rtsp_port if self.protocol == PROTOCOL_RTSP else self.http_port
-            )
-            if primary_port and await self._tcp_port_reachable(primary_port):
-                data["available"] = True
-                _LOGGER.debug(
-                    "Kamera via TCP-Port %s erreichbar (Snapshot nicht verfügbar)",
-                    primary_port,
-                )
+            for port in {self.rtsp_port, self.http_port, self.xm_port}:
+                if port and await self._tcp_port_reachable(port):
+                    data["available"] = True
+                    _LOGGER.debug(
+                        "Kamera via TCP-Port %s erreichbar (Snapshot nicht verfügbar)",
+                        port,
+                    )
+                    break
 
         # XM Keepalive + Status
         if self._xm:
@@ -942,7 +940,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 _LOGGER.debug("XM Keepalive fehlgeschlagen: %s — reconnect", e)
                 await self.hass.async_add_executor_job(self._setup_xm)
 
-        # Alle 180 Sekunden (6 × 30s): Kamerazeit; alle 900s (30 × 30s): Imaging refresh
+        # Alle 60 Sekunden: Kamerazeit + Imaging refresh
         if self._update_count % 6 == 0:
             try:
                 await self.async_fetch_camera_time()
@@ -1220,21 +1218,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     skew = abs(
                         (cam_dt - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
                     )
-                    # FIX Bug 2: war immer WARNING → spam bei jedem PTZ-Aufruf.
-                    # Nur warnen wenn Abweichung groß genug ist um WSSE zu brechen (>5s).
-                    if skew > 5:
-                        _LOGGER.warning(
-                            "XM Kamera-Zeit weicht %.1fs ab – WSSE könnte fehlschlagen! "
-                            "Kamera: %s  HA: %s",
-                            skew,
-                            cam_dt.isoformat(),
-                            datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                        )
-                    else:
-                        _LOGGER.debug(
-                            "XM Kamera-Zeit: %s  Abweichung: %.1fs",
-                            cam_dt.isoformat(), skew,
-                        )
+                    _LOGGER.warning(
+                        "XM Kamera-Zeit: %s  HA-Zeit: %s  Abweichung: %.1fs",
+                        cam_dt.isoformat(), datetime.datetime.now(datetime.timezone.utc).isoformat(), skew,
+                    )
                     return cam_dt
         except Exception as exc:
             _LOGGER.debug("GetSystemDateAndTime fehlgeschlagen: %s", exc)
@@ -1317,10 +1304,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         status, text = await loop.run_in_executor(
             None, lambda: self._xm_soap_send(url, xml_no_auth)
         )
-        # FIX Bug 1: war WARNING → spam auch bei Erfolg. Nur Fehler als warning.
-        _LOGGER.debug("XM PTZ [1/3] no-auth: HTTP %s | fault: %s", status, _fault(text))
+        _LOGGER.warning("XM PTZ [1/3] no-auth: HTTP %s | fault: %s", status, _fault(text))
         if status == 200 and "fault" not in text.lower():
-            _LOGGER.info("XM PTZ '%s' OK via no-auth", cmd)
+            _LOGGER.warning("XM PTZ '%s' OK via no-auth", cmd)
             self._last_ptz_fault = ""
             async def _stop1() -> None:
                 await asyncio.sleep(0.8)
@@ -1334,13 +1320,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         status, text = await loop.run_in_executor(
             None, lambda: self._xm_soap_send(url, xml_wsse)
         )
-        # FIX Bug 1: war WARNING → debug reicht für Diagnose
-        _LOGGER.debug(
+        _LOGGER.warning(
             "XM PTZ [2/3] wsse (cam_time=%s): HTTP %s | fault: %s",
             cam_time.strftime("%H:%M:%S"), status, _fault(text),
         )
         if status == 200 and "fault" not in text.lower():
-            _LOGGER.info("XM PTZ '%s' OK via wsse", cmd)
+            _LOGGER.warning("XM PTZ '%s' OK via wsse", cmd)
             self._last_ptz_fault = ""
             async def _stop2() -> None:
                 await asyncio.sleep(0.8)
@@ -1357,10 +1342,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         status, text = await loop.run_in_executor(
             None, lambda: self._xm_soap_send(url, xml_basic, basic_hdrs)
         )
-        # FIX Bug 1: war WARNING → debug reicht für Diagnose
-        _LOGGER.debug("XM PTZ [3/3] basic-auth: HTTP %s | fault: %s", status, _fault(text))
+        _LOGGER.warning("XM PTZ [3/3] basic-auth: HTTP %s | fault: %s", status, _fault(text))
         if status == 200 and "fault" not in text.lower():
-            _LOGGER.info("XM PTZ '%s' OK via basic-auth", cmd)
+            _LOGGER.warning("XM PTZ '%s' OK via basic-auth", cmd)
             self._last_ptz_fault = ""
             async def _stop3() -> None:
                 await asyncio.sleep(0.8)
@@ -1418,12 +1402,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol == PROTOCOL_ONVIF:
             spd = min(speed, 8) / 8
             try:
-                async with _XMSoapClient(
-                    host=self.host,
-                    onvif_port=self.onvif_port,
-                    username=self.username,
-                    password=self.password,
-                ) as soap:
+                async with _XMSoapClient() as soap:
                     ok = await soap.ptz_command(cmd, speed=spd)
                 if ok:
                     self._last_ptz_fault = ""
@@ -1442,15 +1421,22 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             spd = f"{min(speed, 8) / 8:.2f}"
             # xm-soap.py bestaetigt: Velocity braucht IMMER beide Elemente.
             # Kamera gibt SOAP-Fault wenn PanTilt oder Zoom fehlt.
-            # Hinweis: zoom_in/zoom_out werden bereits oben als Digital-Zoom
-            # behandelt und kehren früh zurück – sie kommen hier nie an.
             soap_velocity_map: dict[str, str] = {
-                "up":    f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
-                "down":  f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
-                "left":  f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "right": f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
+                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
+                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
+                "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
             }
-            # FIX Bug 4: soap_translation_map war eine 1:1-Kopie von soap_velocity_map → entfernt
+            soap_translation_map: dict[str, str] = {
+                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
+                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
+                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
+                "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
+            }
             if cmd in soap_velocity_map:
                 tried_tokens = await self._async_candidate_ptz_profile_tokens()
                 for profile_token in tried_tokens:
@@ -1485,7 +1471,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         "RelativeMove",
                         f"<tptz:RelativeMove>"
                         f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-                        f"<tptz:Translation>{soap_velocity_map[cmd]}</tptz:Translation>"
+                        f"<tptz:Translation>{soap_translation_map[cmd]}</tptz:Translation>"
                         f"</tptz:RelativeMove>",
                     )
                     if self._ptz_response_ok(resp, "RelativeMove"):
@@ -2113,12 +2099,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_ptz_home(self) -> bool:
         spd = self._ptz_speed / 8
         try:
-            async with _XMSoapClient(
-                host=self.host,
-                onvif_port=self.onvif_port,
-                username=self.username,
-                password=self.password,
-            ) as soap:
+            async with _XMSoapClient() as soap:
                 return await soap.ptz_goto_home(speed=spd)
         except Exception as exc:
             _LOGGER.warning("ptz_home Fehler: %s", exc)
@@ -2126,12 +2107,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_ptz_set_home(self) -> bool:
         try:
-            async with _XMSoapClient(
-                host=self.host,
-                onvif_port=self.onvif_port,
-                username=self.username,
-                password=self.password,
-            ) as soap:
+            async with _XMSoapClient() as soap:
                 return await soap.ptz_set_home()
         except Exception as exc:
             _LOGGER.warning("ptz_set_home Fehler: %s", exc)
@@ -2139,12 +2115,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_ptz_stop(self) -> bool:
         try:
-            async with _XMSoapClient(
-                host=self.host,
-                onvif_port=self.onvif_port,
-                username=self.username,
-                password=self.password,
-            ) as soap:
+            async with _XMSoapClient() as soap:
                 return await soap.ptz_stop()
         except Exception as exc:
             _LOGGER.warning("ptz_stop Fehler: %s", exc)
@@ -2170,12 +2141,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_ptz_goto_preset(self, token: str) -> bool:
         spd = self._ptz_speed / 8
         try:
-            async with _XMSoapClient(
-                host=self.host,
-                onvif_port=self.onvif_port,
-                username=self.username,
-                password=self.password,
-            ) as soap:
+            async with _XMSoapClient() as soap:
                 return await soap.ptz_goto_preset(preset_token=token, speed=spd)
         except Exception as exc:
             _LOGGER.warning("ptz_goto_preset Fehler: %s", exc)
@@ -2183,12 +2149,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_ptz_set_preset(self, name: str, token: str | None = None) -> str | None:
         try:
-            async with _XMSoapClient(
-                host=self.host,
-                onvif_port=self.onvif_port,
-                username=self.username,
-                password=self.password,
-            ) as soap:
+            async with _XMSoapClient() as soap:
                 new_token = await soap.ptz_set_preset(name=name, preset_token=token)
             if new_token:
                 self._ptz_presets[new_token] = name
