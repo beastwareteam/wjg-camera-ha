@@ -30,14 +30,6 @@ async def async_setup_entry(
 ) -> None:
     """PTZ-Buttons fuer einen Config-Entry registrieren."""
     coordinator: WJGCameraCoordinator = hass.data[DOMAIN][entry.entry_id]
-
-    # WJGFileListSensor-Referenz aus hass.data holen (wird von sensor.py dort abgelegt).
-    # Ist None wenn sensor.py noch nicht geladen wurde (sollte nicht vorkommen).
-    from .sensor import WJGFileListSensor  # noqa: PLC0415  (lokaler Import vermeidet Zirkel)
-    file_sensor_entity: "WJGFileListSensor | None" = (
-        hass.data.get(DOMAIN, {}).get(f"{entry.entry_id}_file_sensor")
-    )
-
     entities: list[ButtonEntity] = [
         WJGPTZButton(coordinator, entry, "up"),
         WJGPTZButton(coordinator, entry, "down"),
@@ -64,8 +56,6 @@ async def async_setup_entry(
         WJGSnapshotButton(coordinator, entry),
         WJGRebootButton(coordinator, entry),
         WJGNTPSyncButton(coordinator, entry),
-        # Dateiliste manuell abrufen
-        WJGFetchFileListButton(coordinator, entry, file_sensor_entity),
     ]
     async_add_entities(entities)
 
@@ -96,7 +86,7 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
 
     async def async_press(self) -> None:
         """PTZ-Befehl an den Coordinator weiterreichen."""
-        ok = await self.coordinator.async_ptz_command(self._direction, self.coordinator.ptz_speed)
+        ok = await self.coordinator.async_ptz_command(self._direction, self.coordinator._ptz_speed)
         if ok:
             _LOGGER.info(
                 "PTZ-Befehl '%s' gesendet an %s",
@@ -356,56 +346,6 @@ class WJGNTPSyncButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
         ok = await self.coordinator.async_ntp_sync()
         if not ok:
             _raise_action_failed("NTP synchronisieren")
-
-    def press(self) -> None:
-        raise NotImplementedError
-
-
-class WJGFetchFileListButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
-    """Dateiliste manuell von der Kamera abrufen.
-
-    Loest async_refresh_file_list() am WJGFileListSensor aus.
-    Kein automatischer Abruf – nur auf expliziten Tastendruck.
-    """
-
-    _attr_has_entity_name = True
-    _attr_name = "Dateiliste aktualisieren"
-    _attr_icon = "mdi:folder-refresh"
-
-    def __init__(
-        self,
-        coordinator: WJGCameraCoordinator,
-        entry: ConfigEntry,
-        file_sensor: "object | None",
-    ) -> None:
-        super().__init__(coordinator)
-        self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_fetch_file_list"
-        self._file_sensor = file_sensor
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
-
-    async def async_press(self) -> None:
-        """Dateiliste vom Sensor laden."""
-        sensor = self._file_sensor
-        if sensor is None:
-            # Fallback: Sensor noch nicht verfuegbar, direkt aus hass.data nachladen
-            sensor = self.hass.data.get(DOMAIN, {}).get(
-                f"{self._entry.entry_id}_file_sensor"
-            )
-        if sensor is None:
-            _raise_action_failed(
-                "Dateiliste aktualisieren",
-                "Sensor nicht verfuegbar – Integration neu laden",
-            )
-            return
-        await sensor.async_refresh_file_list()
-        _LOGGER.info(
-            "Dateiliste manuell abgerufen: %d Datei(en)",
-            sensor.native_value,
-        )
 
     def press(self) -> None:
         raise NotImplementedError
