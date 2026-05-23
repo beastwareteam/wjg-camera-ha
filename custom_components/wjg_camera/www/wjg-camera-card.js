@@ -1245,12 +1245,12 @@ class WjgCameraCard extends HTMLElement {
     //     home:      button.wjg_xm_3820_ptz_home
     //     zoom_in:   button.wjg_xm_3820_ptz_zoom_in   # optional
     //     zoom_out:  button.wjg_xm_3820_ptz_zoom_out  # optional
-    if (this._config.ptz_entities) {
-      const entityId = this._config.ptz_entities[direction];
+    const ptzEntities = this._config.ptz_entities;
+    if (ptzEntities && typeof ptzEntities === 'object') {
+      const entityId = ptzEntities[direction];
       if (!entityId) return; // Richtung nicht konfiguriert → ignorieren
-      this._hass.callService('button', 'press', {
-        entity_id: entityId,
-      }).catch(() => {});
+      // Nur entity_id übergeben – button.press erlaubt keinen move-Parameter!
+      this._hass.callService('button', 'press', { entity_id: entityId }).catch(() => {});
       return;
     }
 
@@ -1451,7 +1451,7 @@ class WjgCameraCard extends HTMLElement {
 if (!customElements.get('wjg-camera-card')) {
   customElements.define('wjg-camera-card', WjgCameraCard);
   console.info(
-    '%c WJG Camera Card v3.1 %c Stufenloser Zoom (0.25×–64×) · Video-Download · Minimap-Toggle · Kbd-Hilfe-Panel · Overlay-Label · Alle Features im UI sichtbar',
+    '%c WJG Camera Card v3.2 %c Fix: button.press ohne move-Parameter · ptz_entities robuste Typ-Prüfung · Legacy ptz_service weiterhin unterstützt',
     'color:#fff;background:#03a9f4;padding:2px 8px;border-radius:3px;font-weight:bold', ''
   );
 }
