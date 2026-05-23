@@ -376,4 +376,3 @@ class WJGFileListRefreshButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEn
 
     def press(self) -> None:
         raise NotImplementedError
-
