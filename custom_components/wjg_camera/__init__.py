@@ -117,7 +117,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Statischen Pfad für Lovelace-Karte registrieren (einmalig)
+    # Statische Pfade für Lovelace-Karten registrieren (einmalig)
     www_dir = pathlib.Path(__file__).parent / "www"
     if www_dir.is_dir():
         try:
@@ -125,7 +125,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await hass.http.async_register_static_paths([
                 StaticPathConfig("/wjg_camera/wjg-camera-card.js",
                                  str(www_dir / "wjg-camera-card.js"),
-                                 cache_headers=False)
+                                 cache_headers=False),
+                StaticPathConfig("/wjg_camera/wjg-camera-card2.js",
+                                 str(www_dir / "wjg-camera-card2.js"),
+                                 cache_headers=False),
             ])
         except Exception:  # noqa: BLE001
             # Bereits registriert oder HTTP noch nicht bereit — ignorieren
