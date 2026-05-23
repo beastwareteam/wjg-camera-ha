@@ -1231,40 +1231,21 @@ class WjgCameraCard extends HTMLElement {
   _callPTZ(direction) {
     if (!this._hass || !this._config) return;
 
-    // Modus 1: ptz_entities Map → ruft button.press auf der jeweiligen Entity auf
-    // Konfiguration in YAML:
-    //   ptz_entities:
-    //     up:        button.wjg_xm_3820_ptz_up
-    //     down:      button.wjg_xm_3820_ptz_down
-    //     left:      button.wjg_xm_3820_ptz_left
-    //     right:     button.wjg_xm_3820_ptz_right
-    //     up_left:   button.wjg_xm_3820_ptz_up        # optional Diagonalen
-    //     up_right:  button.wjg_xm_3820_ptz_up
-    //     down_left: button.wjg_xm_3820_ptz_down
-    //     down_right:button.wjg_xm_3820_ptz_down
-    //     home:      button.wjg_xm_3820_ptz_home
-    //     zoom_in:   button.wjg_xm_3820_ptz_zoom_in   # optional
-    //     zoom_out:  button.wjg_xm_3820_ptz_zoom_out  # optional
-    // Debug: zeigt im Browser-Konsole was HA tatsaechlich uebergibt
-    console.debug('[wjg-camera-card] _callPTZ direction=' + direction +
-      ' ptz_entities=' + JSON.stringify(this._config.ptz_entities));
+    // Immer loggen — sichtbar in Konsole (F12)
+    console.log('[WJG-PTZ] direction=' + direction + ' | ptz_entities=' + JSON.stringify(this._config.ptz_entities) + ' | config keys=' + Object.keys(this._config).join(','));
 
-    // Modus 1: ptz_entities Map → button.press, OHNE move-Parameter
-    const _ptz = this._config.ptz_entities;
-    const _hasPtz = _ptz !== null &&
-                    _ptz !== undefined &&
-                    typeof _ptz === 'object' &&
-                    !Array.isArray(_ptz) &&
-                    Object.keys(_ptz).length > 0;
-    if (_hasPtz) {
-      const entityId = String(_ptz[direction] || '').trim();
-      if (!entityId) return; // Richtung nicht konfiguriert → ignorieren
-      // Nur entity_id! button.press erlaubt keinen move-Parameter.
-      this._hass.callService('button', 'press', { entity_id: entityId }).catch(() => {});
+    // Modus 1: ptz_entities Map → button.press OHNE move-Parameter
+    const _e = this._config['ptz_entities'];
+    if (_e && typeof _e === 'object' && !Array.isArray(_e)) {
+      const entityId = (_e[direction] || '').toString().trim();
+      console.log('[WJG-PTZ] ptz_entities-Modus → entity=' + entityId);
+      if (!entityId) { console.warn('[WJG-PTZ] Keine Entity für direction=' + direction); return; }
+      this._hass.callService('button', 'press', { entity_id: entityId }).catch(err => console.error('[WJG-PTZ] button.press Fehler:', err));
       return;
     }
 
-    // Modus 2: ptz_service (Legacy) → ruft einen einzelnen Service mit move-Parameter auf
+    // Modus 2: ptz_service (Legacy) — nur wenn KEIN ptz_entities gesetzt
+    console.warn('[WJG-PTZ] FALLBACK auf ptz_service (Legacy). ptz_entities war:', _e);
     const service = this._config.ptz_service || 'wjg_camera.ptz';
     const [domain, svc] = service.split('.');
     this._hass.callService(domain, svc, {
