@@ -270,7 +270,7 @@ _tpl.innerHTML = `
 
   /* ── PTZ Overlay ───────────────────────────────────────────── */
   #ptz {
-    position: absolute; bottom: 44px; right: 8px; z-index: 15;
+    position: absolute; bottom: 10px; right: 28px; z-index: 15;
     display: none; flex-direction: column; align-items: center; gap: 2px;
   }
   #ptz.visible { display: flex; }
@@ -285,6 +285,60 @@ _tpl.innerHTML = `
   }
   .ptz-btn:hover  { background: rgba(255,255,255,.22); }
   .ptz-btn:active { transform: scale(.86); background: rgba(255,255,255,.38); }
+
+  /* ── PTZ Speed Bar ─────────────────────────────────────────── */
+  #ptz-speed-bar {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: rgba(0,0,0,.28);
+    border-top: 1px solid rgba(255,255,255,.06);
+  }
+  #ptz-speed-bar.visible { display: flex; }
+  #ptz-speed-label {
+    font-size: 11px;
+    font-family: monospace;
+    color: rgba(255,255,255,.55);
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: 70px;
+  }
+  #ptz-speed-wrap { flex: 1; display: flex; align-items: center; }
+  #ptz-speed-slider {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 3px;
+    background: rgba(255,255,255,.18);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  #ptz-speed-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: var(--primary-color, #03a9f4);
+    cursor: pointer;
+    transition: transform .1s;
+    box-shadow: 0 1px 4px rgba(0,0,0,.5);
+  }
+  #ptz-speed-slider::-webkit-slider-thumb:hover { transform: scale(1.4); }
+  #ptz-speed-slider::-moz-range-thumb {
+    width: 13px; height: 13px;
+    border-radius: 50%; border: none;
+    background: var(--primary-color, #03a9f4);
+    cursor: pointer;
+  }
+  #ptz-speed-val {
+    font-size: 11px;
+    font-family: monospace;
+    color: var(--primary-color, #03a9f4);
+    flex-shrink: 0;
+    min-width: 18px;
+    text-align: right;
+  }
 
   /* ── Resize Handles ────────────────────────────────────────── */
   .rh { position: absolute; z-index: 20; background: transparent; transition: background .15s; }
@@ -474,6 +528,15 @@ _tpl.innerHTML = `
   <div id="rh-corner" class="rh"></div>
 </div>
 
+<!-- ── PTZ Speed Bar ─────────────────────────────────────────────── -->
+<div id="ptz-speed-bar">
+  <span id="ptz-speed-label">PTZ Geschw.</span>
+  <div id="ptz-speed-wrap">
+    <input id="ptz-speed-slider" type="range" min="1" max="8" value="4" step="1">
+  </div>
+  <span id="ptz-speed-val">4</span>
+</div>
+
 <!-- ── Zoom Bar + Toolbar ─────────────────────────────────────────── -->
 <div id="zoom-bar">
   <!-- Zoom out -->
@@ -555,6 +618,7 @@ class WjgCameraCard extends HTMLElement {
     // ── Feature state ─────────────────────────────────────────────
     this._overlayMode   = 'none';
     this._ptzVisible    = false;
+    this._ptzSpeed      = 4;
     this._minimapForced = null;   // null=auto, true=force on, false=force off
     this._kbdTimer      = null;
     this._syncTimer     = null;
@@ -638,6 +702,7 @@ class WjgCameraCard extends HTMLElement {
     }
     this._updateBadges();
     this._updateStatusDot();
+    this._syncSpeedFromEntity();
   }
 
   getCardSize() { return 5; }
@@ -821,6 +886,19 @@ class WjgCameraCard extends HTMLElement {
     this._$('tb-fs')      .addEventListener('click', () => this._toggleFullscreen());
     this._$('tb-help')    .addEventListener('click', () => this._toggleKbdPanel());
     this._$('kbd-close')  .addEventListener('click', () => this._toggleKbdPanel(false));
+
+    // PTZ Speed Slider
+    const speedSlider = this._$('ptz-speed-slider');
+    const speedVal    = this._$('ptz-speed-val');
+    speedSlider.addEventListener('change', () => {
+      const v = parseInt(speedSlider.value, 10);
+      this._ptzSpeed   = v;
+      speedVal.textContent = v;
+      this._setSpeedEntity(v);
+    });
+    speedSlider.addEventListener('input', () => {
+      speedVal.textContent = speedSlider.value;
+    });
 
     // PTZ buttons
     this.shadowRoot.querySelectorAll('[data-ptz]').forEach(b =>
@@ -1214,10 +1292,38 @@ class WjgCameraCard extends HTMLElement {
   }
 
   // ── PTZ ────────────────────────────────────────────────────────────────────
+  _speedEntity() {
+    return this._config?.ptz_speed_entity || 'number.wjg_xm_3820_ptz_geschwindigkeit';
+  }
+
+  _syncSpeedFromEntity() {
+    if (!this._hass) return;
+    const st  = this._hass.states[this._speedEntity()];
+    if (!st)  return;
+    const val = Math.round(parseFloat(st.state));
+    if (isNaN(val)) return;
+    const clamped = Math.max(1, Math.min(8, val));
+    if (clamped === this._ptzSpeed) return;
+    this._ptzSpeed = clamped;
+    const slider = this._$('ptz-speed-slider');
+    const label  = this._$('ptz-speed-val');
+    if (slider) slider.value = clamped;
+    if (label)  label.textContent = clamped;
+  }
+
+  _setSpeedEntity(value) {
+    if (!this._hass) return;
+    this._hass.callService('number', 'set_value', {
+      entity_id: this._speedEntity(),
+      value: String(value),
+    }).catch(() => {});
+  }
+
   _setPTZ(show) {
     this._ptzVisible = show;
-    this._$('ptz')   ?.classList.toggle('visible', show);
-    this._$('tb-ptz')?.classList.toggle('active',  show);
+    this._$('ptz')          ?.classList.toggle('visible', show);
+    this._$('tb-ptz')       ?.classList.toggle('active',  show);
+    this._$('ptz-speed-bar')?.classList.toggle('visible', show);
   }
 
   _togglePTZ() {
@@ -1257,6 +1363,7 @@ class WjgCameraCard extends HTMLElement {
     this._hass.callService(domain, svc, {
       entity_id: this._config.entity,
       move: direction,
+      speed: this._ptzSpeed,
     }).catch(() => {});
   }
 
