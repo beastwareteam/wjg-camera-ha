@@ -1245,11 +1245,21 @@ class WjgCameraCard extends HTMLElement {
     //     home:      button.wjg_xm_3820_ptz_home
     //     zoom_in:   button.wjg_xm_3820_ptz_zoom_in   # optional
     //     zoom_out:  button.wjg_xm_3820_ptz_zoom_out  # optional
-    const ptzEntities = this._config.ptz_entities;
-    if (ptzEntities && typeof ptzEntities === 'object') {
-      const entityId = ptzEntities[direction];
+    // Debug: zeigt im Browser-Konsole was HA tatsaechlich uebergibt
+    console.debug('[wjg-camera-card] _callPTZ direction=' + direction +
+      ' ptz_entities=' + JSON.stringify(this._config.ptz_entities));
+
+    // Modus 1: ptz_entities Map → button.press, OHNE move-Parameter
+    const _ptz = this._config.ptz_entities;
+    const _hasPtz = _ptz !== null &&
+                    _ptz !== undefined &&
+                    typeof _ptz === 'object' &&
+                    !Array.isArray(_ptz) &&
+                    Object.keys(_ptz).length > 0;
+    if (_hasPtz) {
+      const entityId = String(_ptz[direction] || '').trim();
       if (!entityId) return; // Richtung nicht konfiguriert → ignorieren
-      // Nur entity_id übergeben – button.press erlaubt keinen move-Parameter!
+      // Nur entity_id! button.press erlaubt keinen move-Parameter.
       this._hass.callService('button', 'press', { entity_id: entityId }).catch(() => {});
       return;
     }
@@ -1451,7 +1461,7 @@ class WjgCameraCard extends HTMLElement {
 if (!customElements.get('wjg-camera-card')) {
   customElements.define('wjg-camera-card', WjgCameraCard);
   console.info(
-    '%c WJG Camera Card v3.2 %c Fix: button.press ohne move-Parameter · ptz_entities robuste Typ-Prüfung · Legacy ptz_service weiterhin unterstützt',
+    '%c WJG Camera Card v3.1 %c Stufenloser Zoom (0.25×–64×) · Video-Download · Minimap-Toggle · Kbd-Hilfe-Panel · Overlay-Label · Alle Features im UI sichtbar',
     'color:#fff;background:#03a9f4;padding:2px 8px;border-radius:3px;font-weight:bold', ''
   );
 }
