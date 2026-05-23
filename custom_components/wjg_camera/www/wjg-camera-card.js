@@ -1,18 +1,33 @@
 /**
- * wjg-camera-card.js  v2.2
- * Einzel-Stream Kamera-Karte mit Zoom, Badges und Resize (Höhe + Breite) für WJG XM-3820
+ * wjg-camera-card.js  v2.0
+ * Einzel-Stream Kamera-Karte mit Zoom, Badges und Resize für WJG XM-3820
  *
- * v2.2 Fix: Breite ist jetzt ebenfalls per Drag-Handle anpassbar und wird in
- *           localStorage persistiert. connectedCallback überschreibt keine
- *           gespeicherte Breite mehr.
+ * Ersetzt picture-glance vollständig → NUR EINE Stream-Instanz im Dashboard.
+ *
+ * Lovelace-Ressource (einmalig):
+ *   Einstellungen → Dashboards → Ressourcen → + Hinzufügen
+ *   URL : /wjg_camera/wjg-camera-card.js   Typ: JavaScript Modul
+ *
+ * Karten-YAML:
+ *   type: custom:wjg-camera-card
+ *   entity: camera.wjg_xm_3820
+ *   title: WJG XM-3820 Live       # optional
+ *   show_zoom_bar: true            # default true
+ *   badges:                        # optional Overlay-Badges
+ *     - entity: binary_sensor.wjg_xm_3820_bewegung
+ *       icon: mdi:motion-sensor
+ *     - entity: binary_sensor.wjg_xm_3820_manipulation
+ *       icon: mdi:shield-alert
+ *     - entity: switch.wjg_xm_3820_aufnahme
+ *       icon: mdi:record-circle
  */
 
+/* ── Shadow-DOM Template ─────────────────────────────────────────────────── */
 const _tpl = document.createElement('template');
 _tpl.innerHTML = `
 <style>
   :host {
     display: block;
-    width: 100%;
     background: var(--ha-card-background, #1c1c1e);
     border-radius: var(--ha-card-border-radius, 12px);
     overflow: hidden;
@@ -21,6 +36,7 @@ _tpl.innerHTML = `
     user-select: none;
   }
 
+  /* ── Titelzeile ── */
   #title-bar {
     display: none;
     align-items: center;
@@ -32,6 +48,7 @@ _tpl.innerHTML = `
   }
   #title-bar.visible { display: flex; }
 
+  /* ── Viewport (Kamerabild + Zoom-Transform) ── */
   #vp {
     position: relative;
     overflow: hidden;
@@ -42,8 +59,11 @@ _tpl.innerHTML = `
     background: #000;
   }
   #vp.drag { cursor: grabbing; }
+
+  /* Durch Resize-Handle kann die Höhe überschrieben werden */
   #vp.custom-height { aspect-ratio: unset; }
 
+  /* ── Zoom-Transform-Layer ── */
   #inner {
     position: absolute;
     inset: 0;
@@ -64,6 +84,7 @@ _tpl.innerHTML = `
     pointer-events: none;
   }
 
+  /* ── Overlay Badges (oben rechts) ── */
   #badges {
     position: absolute;
     top: 6px;
@@ -95,6 +116,7 @@ _tpl.innerHTML = `
   .badge.record  { background: rgba(220,50,50,.85); }
   .badge.record  ha-icon { color: #fff; }
 
+  /* ── Resize-Handles ── */
   .rh {
     position: absolute;
     z-index: 20;
@@ -112,6 +134,7 @@ _tpl.innerHTML = `
     bottom: 0; right: 0; width: 18px; height: 18px;
     cursor: nwse-resize;
   }
+  /* Sichtbarer Grip-Indikator */
   #rh-corner::after {
     content: '';
     position: absolute;
@@ -121,6 +144,7 @@ _tpl.innerHTML = `
     border-bottom: 2px solid rgba(255,255,255,.35);
   }
 
+  /* ── Zoom-Leiste (unten) ── */
   #zoom-bar {
     display: flex;
     align-items: center;
@@ -174,37 +198,42 @@ _tpl.innerHTML = `
   <span id="zlbl">1.0×</span>
 </div>`;
 
+/* ── Karten-Klasse ───────────────────────────────────────────────────────── */
 class WjgCameraCard extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({ mode: 'open' });
     this.shadowRoot.appendChild(_tpl.content.cloneNode(true));
 
+    // Zoom/Pan
     this._z = 1; this._px = 0; this._py = 0;
+
+    // Drag-Zoom
     this._drag = false; this._dx = 0; this._dy = 0;
+
+    // Pinch
     this._pd = 0; this._pmx = 0; this._pmy = 0;
-    this._resizing = null;
+
+    // Resize
+    this._resizing = null; // 'v' | 'h' | 'both'
     this._rsX = 0; this._rsY = 0;
     this._rsW = 0; this._rsH = 0;
+
+    // State
     this._config  = null;
     this._hass    = null;
     this._ready   = false;
     this._snapTimer = null;
     this._storageKey = '';
 
+    // Bound handlers
     this._mmove = e => this._onWinMouseMove(e);
     this._mup   = () => this._onWinMouseUp();
     this._bindZoomEvents();
     this._bindResizeEvents();
   }
 
-  connectedCallback() {
-    // Nur auf 100% setzen wenn noch keine gespeicherte Breite existiert
-    const savedW = this._storageKey
-      ? localStorage.getItem(this._storageKey + '_w')
-      : null;
-    if (!savedW) this.style.width = '100%';
-  }
+  /* ── Lovelace API ───────────────────────────────────────────────────────── */
 
   setConfig(config) {
     if (!config.entity) throw new Error('wjg-camera-card: "entity" ist erforderlich');
@@ -217,6 +246,7 @@ class WjgCameraCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     this._ensureStream();
+    // ha-camera-stream benötigt aktuelle hass + stateObj bei jedem Update
     const s = this.shadowRoot.querySelector('ha-camera-stream');
     if (s) {
       s.hass = hass;
@@ -229,8 +259,12 @@ class WjgCameraCard extends HTMLElement {
   getCardSize() { return 5; }
   static getStubConfig() { return { entity: 'camera.wjg_xm_3820' }; }
 
+  /* ── Konfiguration anwenden ─────────────────────────────────────────────── */
+
   _applyConfig() {
     const cfg = this._config;
+
+    // Titelzeile
     const titleBar = this.shadowRoot.getElementById('title-bar');
     if (cfg.title) {
       titleBar.textContent = cfg.title;
@@ -238,18 +272,26 @@ class WjgCameraCard extends HTMLElement {
     } else {
       titleBar.classList.remove('visible');
     }
+
+    // Zoom-Leiste
     const zb = this.shadowRoot.getElementById('zoom-bar');
     if (cfg.show_zoom_bar === false) zb.classList.add('hidden');
     else zb.classList.remove('hidden');
+
+    // Gespeicherte Größe wiederherstellen
     this._restoreSize();
   }
+
+  /* ── Stream Injektion (einmalig) ─────────────────────────────────────────── */
 
   _ensureStream() {
     if (this._ready || !this._hass || !this._config) return;
     const stateObj = this._hass.states[this._config.entity];
     if (!stateObj) return;
+
     const inner = this.shadowRoot.getElementById('inner');
     if (!inner) return;
+
     if (window.customElements.get('ha-camera-stream')) {
       const el = document.createElement('ha-camera-stream');
       el.hass     = this._hass;
@@ -258,6 +300,7 @@ class WjgCameraCard extends HTMLElement {
       el.muted    = true;
       inner.appendChild(el);
     } else {
+      // Fallback: periodischer Snapshot
       const img = document.createElement('img');
       img.id = 'snap'; img.alt = 'Kamera';
       inner.appendChild(img);
@@ -274,9 +317,13 @@ class WjgCameraCard extends HTMLElement {
       img.src = st.attributes.entity_picture + '&_t=' + Date.now();
   }
 
+  /* ── Badges (Overlay) ───────────────────────────────────────────────────── */
+
   _updateBadges() {
     if (!this._hass || !this._config?.badges?.length) return;
     const container = this.shadowRoot.getElementById('badges');
+
+    // Einmalig DOM aufbauen
     if (!container.children.length) {
       this._config.badges.forEach((b, i) => {
         const div  = document.createElement('div');
@@ -288,17 +335,22 @@ class WjgCameraCard extends HTMLElement {
         container.appendChild(div);
       });
     }
+
+    // Zustände aktualisieren
     this._config.badges.forEach((b, i) => {
-      const div      = container.children[i];
+      const div     = container.children[i];
       const stateObj = this._hass.states[b.entity];
-      const state    = stateObj?.state;
+      const state   = stateObj?.state;
       div.classList.remove('active', 'danger', 'record');
       if (state === 'on') {
+        // Aufnahme-Switch → rot, Sensoren → orange
         if (b.entity.startsWith('switch.')) div.classList.add('record');
         else div.classList.add('active');
       }
     });
   }
+
+  /* ── Zoom-Events ────────────────────────────────────────────────────────── */
 
   _bindZoomEvents() {
     const vp = this.shadowRoot.getElementById('vp');
@@ -362,6 +414,8 @@ class WjgCameraCard extends HTMLElement {
     this.shadowRoot.getElementById('zrb').addEventListener('click', () => this._reset());
   }
 
+  /* ── Resize-Events ──────────────────────────────────────────────────────── */
+
   _bindResizeEvents() {
     const starts = [
       { id: 'rh-bottom', mode: 'v'    },
@@ -370,6 +424,7 @@ class WjgCameraCard extends HTMLElement {
     ];
     starts.forEach(({ id, mode }) => {
       const el = this.shadowRoot.getElementById(id);
+      // Mouse
       el.addEventListener('mousedown', e => {
         e.stopPropagation(); e.preventDefault();
         const vp = this.shadowRoot.getElementById('vp');
@@ -380,6 +435,7 @@ class WjgCameraCard extends HTMLElement {
         window.addEventListener('mousemove', this._mmove);
         window.addEventListener('mouseup',   this._mup);
       });
+      // Touch
       el.addEventListener('touchstart', e => {
         e.stopPropagation();
         const vp = this.shadowRoot.getElementById('vp');
@@ -400,6 +456,8 @@ class WjgCameraCard extends HTMLElement {
       });
     });
   }
+
+  /* ── Globale Mouse-Handler (Zoom-Drag + Resize) ─────────────────────────── */
 
   _onWinMouseMove(e) {
     if (this._resizing) {
@@ -426,51 +484,36 @@ class WjgCameraCard extends HTMLElement {
     const vp = this.shadowRoot.getElementById('vp');
     const dx = x - this._rsX;
     const dy = y - this._rsY;
-
-    // ── Vertikale Größenänderung (unterer Handle) ──
-    if (this._resizing === 'v') {
+    if (this._resizing === 'v' || this._resizing === 'both') {
       const newH = Math.max(80, this._rsH + dy);
       vp.style.height = `${newH}px`;
       vp.classList.add('custom-height');
     }
-
-    // ── Horizontale Größenänderung (rechter Handle) ──
-    // Breite direkt am Host-Element setzen; Höhe proportional mitführen
-    if (this._resizing === 'h') {
-      const newW = Math.max(120, this._rsW + dx);
-      this.style.width = `${newW}px`;
-      // Höhe proportional zum ursprünglichen Seitenverhältnis anpassen
+    if (this._resizing === 'h' || this._resizing === 'both') {
+      // Breite wird vom Grid kontrolliert – Höhe anpassen damit Aspekt bleibt
       const aspect = this._rsH / this._rsW;
+      const newW   = Math.max(120, this._rsW + dx);
       const newH   = Math.max(80, newW * aspect);
       vp.style.height = `${newH}px`;
-      vp.classList.add('custom-height');
-    }
-
-    // ── Ecke: Breite UND Höhe frei änderbar ──
-    if (this._resizing === 'both') {
-      const newW = Math.max(120, this._rsW + dx);
-      const newH = Math.max(80,  this._rsH + dy);
-      this.style.width    = `${newW}px`;
-      vp.style.height     = `${newH}px`;
       vp.classList.add('custom-height');
     }
   }
 
   _saveSize() {
-    if (!this._storageKey) return;
     const vp = this.shadowRoot.getElementById('vp');
-    if (vp.style.height) localStorage.setItem(this._storageKey + '_h', vp.style.height);
-    if (this.style.width) localStorage.setItem(this._storageKey + '_w', this.style.width);
+    if (vp.style.height && this._storageKey)
+      localStorage.setItem(this._storageKey + '_h', vp.style.height);
   }
 
   _restoreSize() {
     if (!this._storageKey) return;
-    const savedH = localStorage.getItem(this._storageKey + '_h');
-    const savedW = localStorage.getItem(this._storageKey + '_w');
+    const saved = localStorage.getItem(this._storageKey + '_h');
+    if (!saved) return;
     const vp = this.shadowRoot.getElementById('vp');
-    if (savedH && vp) { vp.style.height = savedH; vp.classList.add('custom-height'); }
-    if (savedW)        { this.style.width = savedW; }
+    if (vp) { vp.style.height = saved; vp.classList.add('custom-height'); }
   }
+
+  /* ── Zoom-Mathematik ────────────────────────────────────────────────────── */
 
   _tdist(t) {
     const dx = t[0].clientX - t[1].clientX;
@@ -544,7 +587,7 @@ class WjgCameraCard extends HTMLElement {
 if (!customElements.get('wjg-camera-card')) {
   customElements.define('wjg-camera-card', WjgCameraCard);
   console.info(
-    '%c WJG Camera Card v2.2 %c Zoom, Badges, Resize (Höhe + Breite), Persistenz',
+    '%c WJG Camera Card v2.0 %c bereit – 1 Stream, Zoom, Badges, Resize',
     'color:#fff;background:#03a9f4;padding:2px 6px;border-radius:3px;font-weight:bold', ''
   );
 }
