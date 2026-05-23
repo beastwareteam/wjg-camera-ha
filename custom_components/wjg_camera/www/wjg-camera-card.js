@@ -465,10 +465,7 @@ _tpl.innerHTML = `
       <button class="ptz-btn" data-ptz="down"       title="Runter">↓</button>
       <button class="ptz-btn" data-ptz="down_right" title="Unten Rechts">↘</button>
     </div>
-    <div class="ptz-row" style="margin-top:4px">
-      <button class="ptz-btn" data-ptz="zoom_in"   title="Optischer Zoom +">+</button>
-      <button class="ptz-btn" data-ptz="zoom_out"  title="Optischer Zoom −">−</button>
-    </div>
+
   </div>
 
   <!-- Resize Handles -->
@@ -1231,21 +1228,30 @@ class WjgCameraCard extends HTMLElement {
   _callPTZ(direction) {
     if (!this._hass || !this._config) return;
 
-    // Immer loggen — sichtbar in Konsole (F12)
-    console.log('[WJG-PTZ] direction=' + direction + ' | ptz_entities=' + JSON.stringify(this._config.ptz_entities) + ' | config keys=' + Object.keys(this._config).join(','));
-
-    // Modus 1: ptz_entities Map → button.press OHNE move-Parameter
-    const _e = this._config['ptz_entities'];
-    if (_e && typeof _e === 'object' && !Array.isArray(_e)) {
-      const entityId = (_e[direction] || '').toString().trim();
-      console.log('[WJG-PTZ] ptz_entities-Modus → entity=' + entityId);
-      if (!entityId) { console.warn('[WJG-PTZ] Keine Entity für direction=' + direction); return; }
-      this._hass.callService('button', 'press', { entity_id: entityId }).catch(err => console.error('[WJG-PTZ] button.press Fehler:', err));
+    // Modus 1: ptz_entities Map → ruft button.press auf der jeweiligen Entity auf
+    // Konfiguration in YAML:
+    //   ptz_entities:
+    //     up:        button.wjg_xm_3820_ptz_up
+    //     down:      button.wjg_xm_3820_ptz_down
+    //     left:      button.wjg_xm_3820_ptz_left
+    //     right:     button.wjg_xm_3820_ptz_right
+    //     up_left:   button.wjg_xm_3820_ptz_up        # optional Diagonalen
+    //     up_right:  button.wjg_xm_3820_ptz_up
+    //     down_left: button.wjg_xm_3820_ptz_down
+    //     down_right:button.wjg_xm_3820_ptz_down
+    //     home:      button.wjg_xm_3820_ptz_home
+    //     zoom_in:   button.wjg_xm_3820_ptz_zoom_in   # optional
+    //     zoom_out:  button.wjg_xm_3820_ptz_zoom_out  # optional
+    if (this._config.ptz_entities) {
+      const entityId = this._config.ptz_entities[direction];
+      if (!entityId) return; // Richtung nicht konfiguriert → ignorieren
+      this._hass.callService('button', 'press', {
+        entity_id: entityId,
+      }).catch(() => {});
       return;
     }
 
-    // Modus 2: ptz_service (Legacy) — nur wenn KEIN ptz_entities gesetzt
-    console.warn('[WJG-PTZ] FALLBACK auf ptz_service (Legacy). ptz_entities war:', _e);
+    // Modus 2: ptz_service (Legacy) → ruft einen einzelnen Service mit move-Parameter auf
     const service = this._config.ptz_service || 'wjg_camera.ptz';
     const [domain, svc] = service.split('.');
     this._hass.callService(domain, svc, {
