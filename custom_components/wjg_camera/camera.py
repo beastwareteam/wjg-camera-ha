@@ -183,9 +183,13 @@ class WJGCamera(  # pyright: ignore[reportArgumentType]
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Zusätzliche Attribute für HA."""
+        cx, cy = self.coordinator.digital_zoom_center
         return {
             "rtsp_url": self.coordinator.rtsp_url,
             "snapshot_url": self.coordinator.snapshot_url,
             "host": self.coordinator.host,
             "protocol": self.coordinator.protocol,
+            "digital_zoom": self.coordinator.digital_zoom,
+            "digital_zoom_cx": cx,
+            "digital_zoom_cy": cy,
         }

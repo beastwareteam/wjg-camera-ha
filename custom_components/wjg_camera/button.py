@@ -56,6 +56,7 @@ async def async_setup_entry(
         WJGSnapshotButton(coordinator, entry),
         WJGRebootButton(coordinator, entry),
         WJGNTPSyncButton(coordinator, entry),
+        WJGFileListRefreshButton(coordinator, entry),
     ]
     async_add_entities(entities)
 
@@ -86,7 +87,8 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
 
     async def async_press(self) -> None:
         """PTZ-Befehl an den Coordinator weiterreichen."""
-        ok = await self.coordinator.async_ptz_command(self._direction, self.coordinator._ptz_speed)
+        speed = int(getattr(self.coordinator, "ptz_speed", getattr(self.coordinator, "_ptz_speed", 5)))
+        ok = await self.coordinator.async_ptz_command(self._direction, speed)
         if ok:
             _LOGGER.info(
                 "PTZ-Befehl '%s' gesendet an %s",
@@ -165,7 +167,9 @@ class WJGPTZSetHomeButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity)
     async def async_press(self) -> None:
         ok = await self.coordinator.async_ptz_set_home()
         if not ok:
-            _raise_action_failed("PTZ Home setzen")
+            _LOGGER.warning(
+                "PTZ Home setzen nicht unterstützt – XM-3820 ignoriert SetHomePosition (HTTP 500)"
+            )
 
     def press(self) -> None:
         raise NotImplementedError
@@ -346,6 +350,29 @@ class WJGNTPSyncButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
         ok = await self.coordinator.async_ntp_sync()
         if not ok:
             _raise_action_failed("NTP synchronisieren")
+
+    def press(self) -> None:
+        raise NotImplementedError
+
+
+class WJGFileListRefreshButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
+    """Dateiliste manuell aktualisieren."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Dateiliste aktualisieren"
+    _attr_icon = "mdi:folder-refresh"
+
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_filelist_refresh"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
+
+    async def async_press(self) -> None:
+        await self.coordinator.async_refresh_file_list()
 
     def press(self) -> None:
         raise NotImplementedError

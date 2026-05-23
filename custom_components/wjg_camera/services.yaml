@@ -1,0 +1,42 @@
+set_digital_zoom:
+  name: Digital Zoom setzen
+  description: Setzt den Digital-Zoom der WJG-Kamera auf einen definierten Wert.
+  fields:
+    entity_id:
+      name: Entity
+      description: Die Kamera-Entity-ID.
+      required: true
+      selector:
+        entity:
+          domain: camera
+    zoom:
+      name: Zoom-Faktor
+      description: Zoom-Stufe (1.0 = kein Zoom, 10.0 = maximaler Zoom).
+      required: true
+      default: 1.0
+      selector:
+        number:
+          min: 1.0
+          max: 10.0
+          step: 0.1
+          mode: slider
+    cx:
+      name: Mittelpunkt X
+      description: Horizontaler Mittelpunkt des Zooms (0.0 = links, 1.0 = rechts).
+      required: false
+      default: 0.5
+      selector:
+        number:
+          min: 0.0
+          max: 1.0
+          step: 0.01
+    cy:
+      name: Mittelpunkt Y
+      description: Vertikaler Mittelpunkt des Zooms (0.0 = oben, 1.0 = unten).
+      required: false
+      default: 0.5
+      selector:
+        number:
+          min: 0.0
+          max: 1.0
+          step: 0.01

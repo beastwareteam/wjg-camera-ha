@@ -17,6 +17,7 @@ from typing import Final
 
 import voluptuous as vol
 
+from homeassistant.components.persistent_notification import async_create as _pn_create
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -147,11 +148,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     notif_key = f"{DOMAIN}_lovelace_hint"
     if notif_key not in hass.data:
         hass.data[notif_key] = True
-        hass.components.persistent_notification.async_create(
-            "**WJG Zoom-Karte verfügbar!**\n\n"
-            "Einstellungen → Dashboards → Ressourcen → **+ Hinzufügen**\n\n"
-            "URL: `/wjg_camera/wjg-camera-card.js`  \nTyp: **JavaScript Modul**\n\n"
-            "Dann im Dashboard: Karte hinzufügen → `custom:wjg-camera-card`",
+        _pn_create(
+            hass,
+            message=(
+                "**WJG Zoom-Karte verfügbar!**\n\n"
+                "Einstellungen → Dashboards → Ressourcen → **+ Hinzufügen**\n\n"
+                "URL: `/wjg_camera/wjg-camera-card.js`  \nTyp: **JavaScript Modul**\n\n"
+                "Dann im Dashboard: Karte hinzufügen → `custom:wjg-camera-card`"
+            ),
             title="WJG Camera: Zoom-Karte",
             notification_id="wjg_camera_lovelace_hint",
         )

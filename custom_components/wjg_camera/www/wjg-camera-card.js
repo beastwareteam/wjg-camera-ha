@@ -1,5 +1,5 @@
 /**
- * wjg-camera-card.js  v2.0
+ * wjg-camera-card.js  v2.1
  * Einzel-Stream Kamera-Karte mit Zoom, Badges und Resize für WJG XM-3820
  *
  * Ersetzt picture-glance vollständig → NUR EINE Stream-Instanz im Dashboard.
@@ -207,6 +207,7 @@ class WjgCameraCard extends HTMLElement {
 
     // Zoom/Pan
     this._z = 1; this._px = 0; this._py = 0;
+    this._lastInteract = 0;
 
     // Drag-Zoom
     this._drag = false; this._dx = 0; this._dy = 0;
@@ -254,6 +255,7 @@ class WjgCameraCard extends HTMLElement {
       if (st) s.stateObj = st;
     }
     this._updateBadges();
+    this._syncZoomFromServer();
   }
 
   getCardSize() { return 5; }
@@ -348,6 +350,30 @@ class WjgCameraCard extends HTMLElement {
         else div.classList.add('active');
       }
     });
+  }
+
+  /* ── Server-Zoom-Sync ───────────────────────────────────────────────────── */
+
+  _syncZoomFromServer() {
+    if (!this._hass || !this._config) return;
+    const st = this._hass.states[this._config.entity];
+    if (!st?.attributes?.digital_zoom) return;
+    const serverZ = parseFloat(st.attributes.digital_zoom);
+    if (isNaN(serverZ) || Math.abs(serverZ - this._z) < 0.05) return;
+    // Don't override if user just interacted locally (2s grace period)
+    if (Date.now() - this._lastInteract < 2000) return;
+    const cx = parseFloat(st.attributes.digital_zoom_cx ?? 0.5);
+    const cy = parseFloat(st.attributes.digital_zoom_cy ?? 0.5);
+    const vp = this.shadowRoot.getElementById('vp');
+    if (!vp) return;
+    const vw = vp.offsetWidth, vh = vp.offsetHeight;
+    const nz = Math.max(1, Math.min(10, serverZ));
+    const s  = nz / this._z;
+    this._px = cx * vw * (1 - s) + s * this._px;
+    this._py = cy * vh * (1 - s) + s * this._py;
+    this._z  = nz;
+    this._clamp();
+    this._applyZoom();
   }
 
   /* ── Zoom-Events ────────────────────────────────────────────────────────── */
@@ -484,19 +510,19 @@ class WjgCameraCard extends HTMLElement {
     const vp = this.shadowRoot.getElementById('vp');
     const dx = x - this._rsX;
     const dy = y - this._rsY;
-    if (this._resizing === 'v' || this._resizing === 'both') {
-      const newH = Math.max(80, this._rsH + dy);
-      vp.style.height = `${newH}px`;
-      vp.classList.add('custom-height');
+    let newH;
+    if (this._resizing === 'v') {
+      // Bottom edge: drag down = taller
+      newH = Math.max(80, this._rsH + dy);
+    } else if (this._resizing === 'h') {
+      // Right edge: drag right = taller (Lovelace controls width, so we map dx→height)
+      newH = Math.max(80, this._rsH + dx);
+    } else {
+      // Corner: average of both axes for natural diagonal feel
+      newH = Math.max(80, this._rsH + (dx + dy) / 2);
     }
-    if (this._resizing === 'h' || this._resizing === 'both') {
-      // Breite wird vom Grid kontrolliert – Höhe anpassen damit Aspekt bleibt
-      const aspect = this._rsH / this._rsW;
-      const newW   = Math.max(120, this._rsW + dx);
-      const newH   = Math.max(80, newW * aspect);
-      vp.style.height = `${newH}px`;
-      vp.classList.add('custom-height');
-    }
+    vp.style.height = `${newH}px`;
+    vp.classList.add('custom-height');
   }
 
   _saveSize() {
@@ -522,6 +548,7 @@ class WjgCameraCard extends HTMLElement {
   }
 
   _zoomAt(cx, cy, nz) {
+    this._lastInteract = Date.now();
     nz = Math.max(1, Math.min(10, nz));
     const vp = this.shadowRoot.getElementById('vp');
     const vw = vp.offsetWidth, vh = vp.offsetHeight;
@@ -535,6 +562,7 @@ class WjgCameraCard extends HTMLElement {
   }
 
   _panBy(dx, dy) {
+    this._lastInteract = Date.now();
     this._px += dx; this._py += dy;
     this._clamp(); this._applyZoom();
   }
@@ -587,7 +615,7 @@ class WjgCameraCard extends HTMLElement {
 if (!customElements.get('wjg-camera-card')) {
   customElements.define('wjg-camera-card', WjgCameraCard);
   console.info(
-    '%c WJG Camera Card v2.0 %c bereit – 1 Stream, Zoom, Badges, Resize',
+    '%c WJG Camera Card v2.1 %c bereit – 1 Stream, Zoom, Badges, Resize, Server-Sync',
     'color:#fff;background:#03a9f4;padding:2px 6px;border-radius:3px;font-weight:bold', ''
   );
 }

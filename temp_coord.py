@@ -22,12 +22,9 @@ import struct
 import time
 from datetime import timedelta
 from typing import Any
-from urllib.error import HTTPError as _UrllibHTTPError
 from urllib.parse import quote
 from urllib.parse import urlparse
 from urllib.parse import urlunparse
-from urllib.request import Request as _UrllibRequest
-from urllib.request import urlopen as _urlopen
 
 import aiohttp
 import async_timeout
@@ -37,7 +34,6 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNA
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .xm_soap import XMSoapClient as _XMSoapClient
 
 # Konstanten lokal definieren, um zirkulären Import zu vermeiden
 CONF_PROTOCOL = "protocol"
@@ -91,10 +87,10 @@ ONVIF_SERVICE_PATH_CANDIDATES: dict[str, tuple[str, ...]] = {
     ONVIF_SERVICE_EVENTS: ("/onvif/Events", "/onvif/events_service"),
 }
 
-# XM-3820 benoetigt application/soap+xml (SOAP 1.2). text/xml als Fallback.
+# Reihenfolge ist wichtig: XM-Derivate akzeptieren haeufig nur text/xml.
 ONVIF_CONTENT_TYPE_CANDIDATES = (
-    "application/soap+xml; charset=utf-8",
     "text/xml; charset=utf-8",
+    "application/soap+xml; charset=utf-8",
 )
 
 ONVIF_EVENT_RULES: dict[str, dict[str, Any]] = {
@@ -446,10 +442,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # PTZ
         self._ptz_speed: int = 5
         self._ptz_presets: dict[str, str] = {}  # token -> name
-        # Digital Zoom (Pillow-Crop für Snapshots, CSS-Sync über Lovelace-Karte)
-        self._digital_zoom: float = 1.0
-        self._digital_zoom_cx: float = 0.5   # Bildmittelpunkt X (0–1)
-        self._digital_zoom_cy: float = 0.5   # Bildmittelpunkt Y (0–1)
         # Imaging
         self._imaging: dict[str, Any] = {}
         # Sensoren
@@ -712,8 +704,22 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol not in (PROTOCOL_RTSP, PROTOCOL_ONVIF):
             return
 
-        # Konfigurierten Pfad zuerst pruefen — ONVIF GetStreamUri liefert fuer
-        # XM-Kameras oft fehlerhafte URLs (/streamtype=0).
+        if self.protocol == PROTOCOL_ONVIF:
+            onvif_url = await self.async_onvif_stream_url()
+            if onvif_url:
+                has_video = await self.hass.async_add_executor_job(
+                    self._rtsp_url_has_video,
+                    onvif_url,
+                    4.0,
+                )
+                if has_video:
+                    self._resolved_rtsp_url = onvif_url
+                    return
+                _LOGGER.warning(
+                    "ONVIF Stream-URL ohne Video-Track erkannt, suche RTSP-Fallback: %s",
+                    onvif_url,
+                )
+
         for rtsp_url in self._candidate_rtsp_urls():
             has_video = await self.hass.async_add_executor_job(
                 self._rtsp_url_has_video,
@@ -725,19 +731,6 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 if rtsp_url != self._build_rtsp_url(self._render_rtsp_path()):
                     _LOGGER.info("RTSP-Fallback mit Video erkannt: %s", rtsp_url)
                 return
-
-        if self.protocol == PROTOCOL_ONVIF:
-            onvif_url = await self.async_onvif_stream_url()
-            if onvif_url:
-                has_video = await self.hass.async_add_executor_job(
-                    self._rtsp_url_has_video,
-                    onvif_url,
-                    4.0,
-                )
-                if has_video:
-                    self._resolved_rtsp_url = onvif_url
-                    _LOGGER.info("ONVIF Stream-URL als Fallback genutzt: %s", onvif_url)
-                    return
 
         self._resolved_rtsp_url = self._build_rtsp_url(self._render_rtsp_path())
 
@@ -888,13 +881,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict[str, Any]:
         """Kamera-Status aktualisieren."""
         self._update_count += 1
-        prev_data = self.data if isinstance(self.data, dict) else {}
         data: dict[str, Any] = {
             "available": False,
             "recording": self._recording,
             "motion": self.motion_detected,
-            # Dateiliste nicht bei jedem Poll zuruecksetzen.
-            "files": prev_data.get("files", []),
+            "files": [],
         }
 
         # Snapshot abrufen um Erreichbarkeit zu prüfen
@@ -1042,59 +1033,27 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return False
 
     async def async_get_file_list(self) -> list[dict]:
-        """Dateiliste von der Kamera abrufen. Supportet XM-SDK + HTTP-Fallback."""
+        """Dateiliste von der Kamera abrufen."""
         xm_client = self._xm
-        
-        # Versuch 1: XM-SDK (Port 34567)
         if xm_client is not None:
-            try:
-                files = await self.hass.async_add_executor_job(
-                    xm_client.get_file_list,
-                    0,
-                    50,
-                )
-                if files:
-                    _LOGGER.debug("✓ Dateiliste via XM-SDK: %s Dateien", len(files))
-                    return files
-                else:
-                    _LOGGER.debug("✓ XM-SDK antwortet, aber keine Dateien (leere Liste)")
-            except Exception as err:
-                _LOGGER.warning("✗ XM-SDK get_file_list() fehlgeschlagen: %s", err)
-        else:
-            _LOGGER.debug("ℹ XM-SDK-Client nicht verbunden, nutze HTTP-Fallback")
+            files = await self.hass.async_add_executor_job(
+                xm_client.get_file_list,
+                0,
+                50,
+            )
+            return files
 
-        # Versuch 2: HTTP-Fallback (/cgi-bin/fileman)
+        # HTTP-Fallback
         if self._session:
-            try:
-                url = f"http://{self.host}:{self.http_port}/cgi-bin/fileman"
-                data = await self._async_http_get_data(
-                    url,
-                    timeout_seconds=10,
-                    as_json=True,
-                )
-                if isinstance(data, dict):
-                    files = data.get("files", [])
-                    if files:
-                        _LOGGER.debug("✓ Dateiliste via HTTP /cgi-bin/fileman: %s Dateien", len(files))
-                        return files
-                    else:
-                        _LOGGER.debug("✓ HTTP /cgi-bin/fileman antwortet, aber keine Dateien")
-                else:
-                    _LOGGER.debug("ℹ HTTP /cgi-bin/fileman Response ist kein Dict: %s", type(data))
-            except Exception as err:
-                _LOGGER.warning("✗ HTTP /cgi-bin/fileman fehlgeschlagen: %s", err)
-
-        # Fallback: Leere Liste
-        _LOGGER.warning("⚠ Dateiliste konnte nicht abgerufen werden (XM-SDK + HTTP-Fallback)")
+            url = f"http://{self.host}:{self.http_port}/cgi-bin/fileman"
+            data = await self._async_http_get_data(
+                url,
+                timeout_seconds=10,
+                as_json=True,
+            )
+            if isinstance(data, dict):
+                return data.get("files", [])
         return []
-
-    async def async_refresh_file_list(self) -> list[dict]:
-        """Dateiliste abrufen und direkt in Coordinator-Daten publizieren."""
-        files = await self.async_get_file_list()
-        new_data = dict(self.data or {})
-        new_data["files"] = files
-        self.async_set_updated_data(new_data)
-        return files
 
     async def async_snapshot(self) -> bytes | None:
         """Aktuelles Bild von der Kamera laden."""
@@ -1202,274 +1161,39 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 deduped.append(candidate)
         return deduped
 
-    def _xm_soap_send(
-        self, url: str, xml_bytes: bytes, extra_headers: dict | None = None
-    ) -> tuple[int, str]:
-        """Sendet SOAP-Request via urllib (kein aiohttp, keine Versionsabhaengigkeit)."""
-        hdrs: dict[str, str] = {"Content-Type": "application/soap+xml; charset=utf-8"}
-        if extra_headers:
-            hdrs.update(extra_headers)
-        req = _UrllibRequest(url, data=xml_bytes, headers=hdrs, method="POST")
-        try:
-            with _urlopen(req, timeout=6) as r:
-                return r.status, r.read().decode("utf-8", errors="replace")
-        except _UrllibHTTPError as e:
-            return e.code, e.read().decode("utf-8", errors="replace")
-        except Exception as exc:
-            return 0, str(exc)
-
-    def _xm_camera_utcnow_sync(self) -> datetime.datetime:
-        """Liest Kamera-UTC-Zeit via GetSystemDateAndTime (kein Auth noetig).
-
-        Prueft ob Systemzeit von Kamera-Zeit abweicht – relevant fuer WSSE-Timestamps
-        auf Proxmox-VMs mit Clock-Drift.
-        """
-        body = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            '<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"'
-            ' xmlns:tds="http://www.onvif.org/ver10/device/wsdl">'
-            '<s:Body><tds:GetSystemDateAndTime/></s:Body>'
-            '</s:Envelope>'
-        ).encode("utf-8")
-        url = f"http://{self.host}:{self.onvif_port}/onvif/device_service"
-        try:
-            status, text = self._xm_soap_send(url, body)
-            if status == 200:
-                def _int(tag: str) -> int:
-                    m = re.search(rf"<(?:[^:>]+:)?{tag}[^>]*>(\d+)<", text)
-                    return int(m.group(1)) if m else 0
-                year = _int("Year")
-                month = _int("Month") or 1
-                day = _int("Day") or 1
-                hour = _int("Hour")
-                minute = _int("Minute")
-                second = _int("Second")
-                if year > 2000:
-                    cam_dt = datetime.datetime(
-                        year, month, day, hour, minute, second,
-                        tzinfo=datetime.timezone.utc,
-                    )
-                    skew = abs(
-                        (cam_dt - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
-                    )
-                    _LOGGER.warning(
-                        "XM Kamera-Zeit: %s  HA-Zeit: %s  Abweichung: %.1fs",
-                        cam_dt.isoformat(), datetime.datetime.now(datetime.timezone.utc).isoformat(), skew,
-                    )
-                    return cam_dt
-        except Exception as exc:
-            _LOGGER.debug("GetSystemDateAndTime fehlgeschlagen: %s", exc)
-        return datetime.datetime.now(datetime.timezone.utc)
-
-    def _xm_ptz_envelope(
-        self,
-        body: str,
-        with_wsse: bool = True,
-        utc_now: datetime.datetime | None = None,
-    ) -> bytes:
-        """Baut SOAP-Envelope fuer PTZ-Befehle.
-
-        utc_now: Kamera-Zeit fuer clock-korrektes WSSE (verhindert Ablehnung bei
-        Proxmox VM Clock-Drift).
-        """
-        ns = (
-            ' xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"'
-            ' xmlns:tt="http://www.onvif.org/ver10/schema"'
-        )
-        if with_wsse:
-            ns += (
-                ' xmlns:wsse="http://docs.oasis-open.org/wss/2004/01'
-                '/oasis-200401-wss-wssecurity-secext-1.0.xsd"'
-                ' xmlns:wsu="http://docs.oasis-open.org/wss/2004/01'
-                '/oasis-200401-wss-wssecurity-utility-1.0.xsd"'
-            )
-        header = (
-            f"<s:Header>{self._wsse_header(utc_now=utc_now)}</s:Header>"
-            if with_wsse else ""
-        )
-        return (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            f'<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"{ns}>'
-            f"{header}"
-            f"<s:Body>{body}</s:Body>"
-            "</s:Envelope>"
-        ).encode("utf-8")
-
-    async def _xm_direct_ptz(self, cmd: str, speed: int = 5) -> bool:
-        """Direkt-SOAP via urllib – versucht kein-Auth, WSSE und Basic-Auth."""
-        if cmd == "stop":
-            return await self._xm_direct_ptz_stop()
-        spd = min(speed, 8) / 8
-        vel_map = {
-            "up":       (0.0,  spd,  0.0),
-            "down":     (0.0, -spd,  0.0),
-            "left":     (-spd, 0.0,  0.0),
-            "right":    (spd,  0.0,  0.0),
-            "zoom_in":  (0.0,  0.0,  spd),
-            "zoom_out": (0.0,  0.0, -spd),
-        }
-        if cmd not in vel_map:
-            return False
-        pan, tilt, zoom = vel_map[cmd]
-        move_body = (
-            f"<tptz:ContinuousMove>"
-            f"<tptz:ProfileToken>000</tptz:ProfileToken>"
-            f"<tptz:Velocity>"
-            f'<tt:PanTilt x="{pan:.2f}" y="{tilt:.2f}"/>'
-            f'<tt:Zoom x="{zoom:.2f}"/>'
-            f"</tptz:Velocity>"
-            f"</tptz:ContinuousMove>"
-        )
-        url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
-        loop = asyncio.get_running_loop()
-
-        def _fault(resp: str) -> str:
-            """Extrahiert Fault-Text aus SOAP-Response fuer lesbare Logs."""
-            m = re.search(r"<[^>:]+:?Text[^>]*>([^<]+)", resp)
-            if m:
-                return m.group(1).strip()
-            m2 = re.search(r"<[^>:]+:?faultstring[^>]*>([^<]+)", resp)
-            if m2:
-                return m2.group(1).strip()
-            return resp[300:700] if len(resp) > 300 else resp
-
-        # --- Versuch 1: kein Auth ---
-        xml_no_auth = self._xm_ptz_envelope(move_body, with_wsse=False)
-        status, text = await loop.run_in_executor(
-            None, lambda: self._xm_soap_send(url, xml_no_auth)
-        )
-        _LOGGER.warning("XM PTZ [1/3] no-auth: HTTP %s | fault: %s", status, _fault(text))
-        if status == 200 and "fault" not in text.lower():
-            _LOGGER.warning("XM PTZ '%s' OK via no-auth", cmd)
-            self._last_ptz_fault = ""
-            async def _stop1() -> None:
-                await asyncio.sleep(0.8)
-                await self._xm_direct_ptz_stop()
-            self.hass.async_create_task(_stop1())
-            return True
-
-        # --- Versuch 2: WSSE PasswordDigest (mit Kamera-Zeit gegen Clock-Skew) ---
-        cam_time = await loop.run_in_executor(None, self._xm_camera_utcnow_sync)
-        xml_wsse = self._xm_ptz_envelope(move_body, with_wsse=True, utc_now=cam_time)
-        status, text = await loop.run_in_executor(
-            None, lambda: self._xm_soap_send(url, xml_wsse)
-        )
-        _LOGGER.warning(
-            "XM PTZ [2/3] wsse (cam_time=%s): HTTP %s | fault: %s",
-            cam_time.strftime("%H:%M:%S"), status, _fault(text),
-        )
-        if status == 200 and "fault" not in text.lower():
-            _LOGGER.warning("XM PTZ '%s' OK via wsse", cmd)
-            self._last_ptz_fault = ""
-            async def _stop2() -> None:
-                await asyncio.sleep(0.8)
-                await self._xm_direct_ptz_stop()
-            self.hass.async_create_task(_stop2())
-            return True
-
-        # --- Versuch 3: HTTP Basic Auth (kein WSSE) ---
-        basic = base64.b64encode(
-            f"{self.username}:{self.password or ''}".encode()
-        ).decode()
-        xml_basic = self._xm_ptz_envelope(move_body, with_wsse=False)
-        basic_hdrs = {"Authorization": f"Basic {basic}"}
-        status, text = await loop.run_in_executor(
-            None, lambda: self._xm_soap_send(url, xml_basic, basic_hdrs)
-        )
-        _LOGGER.warning("XM PTZ [3/3] basic-auth: HTTP %s | fault: %s", status, _fault(text))
-        if status == 200 and "fault" not in text.lower():
-            _LOGGER.warning("XM PTZ '%s' OK via basic-auth", cmd)
-            self._last_ptz_fault = ""
-            async def _stop3() -> None:
-                await asyncio.sleep(0.8)
-                await self._xm_direct_ptz_stop()
-            self.hass.async_create_task(_stop3())
-            return True
-
-        self._last_ptz_fault = f"XM PTZ alle 3 Varianten HTTP {status}"
-        _LOGGER.warning(
-            "XM PTZ '%s' fehlgeschlagen (no-auth/wsse/basic alle HTTP %s)", cmd, status
-        )
-        return False
-
-    async def _xm_direct_ptz_stop(self) -> bool:
-        """PTZ Stop via urllib – versucht kein-Auth, dann WSSE."""
-        stop_body = (
-            "<tptz:Stop><tptz:ProfileToken>000</tptz:ProfileToken>"
-            "<tptz:PanTilt>true</tptz:PanTilt><tptz:Zoom>true</tptz:Zoom></tptz:Stop>"
-        )
-        url = f"http://{self.host}:{self.onvif_port}/onvif/PTZ"
-        loop = asyncio.get_running_loop()
-        for with_wsse in (False, True):
-            _stop_xml = self._xm_ptz_envelope(stop_body, with_wsse=with_wsse)
-            status, _ = await loop.run_in_executor(
-                None, lambda: self._xm_soap_send(url, _stop_xml)
-            )
-            if status == 200:
-                return True
-        return False
-
     async def async_ptz_command(self, cmd: str, speed: int = 5) -> bool:
         """PTZ-Steuerbefehl senden (Start/Stop Up/Down/Left/Right/Zoom)."""
         self._last_ptz_fault = ""
-
-        # XM-3820 hat kein optisches Zoom → Buttons steuern Digital-Zoom
-        if cmd == "zoom_in":
-            await self.async_digital_zoom_in()
-            _LOGGER.info("Digital Zoom IN → %.1f×", self._digital_zoom)
-            return True
-        if cmd == "zoom_out":
-            await self.async_digital_zoom_out()
-            _LOGGER.info("Digital Zoom OUT → %.1f×", self._digital_zoom)
-            return True
-
         ptz_map = {
             "up": 0x10, "down": 0x11, "left": 0x12, "right": 0x13,
-            "focus_in": 0x03, "focus_out": 0x04, "stop": 0xFF
+            "zoom_in": 0x01, "zoom_out": 0x02, "focus_in": 0x03,
+            "focus_out": 0x04, "stop": 0xFF
         }
         if cmd not in ptz_map:
             self._last_ptz_fault = f"Unbekannter PTZ-Befehl: {cmd}"
             _LOGGER.warning("Unbekannter PTZ-Befehl: %s", cmd)
             return False
 
-        # Primärweg: XMSoapClient mit eigener frischer Session (verifiziert 13.05)
-        if self.protocol == PROTOCOL_ONVIF:
-            spd = min(speed, 8) / 8
-            try:
-                async with _XMSoapClient() as soap:
-                    ok = await soap.ptz_command(cmd, speed=spd)
-                if ok:
-                    self._last_ptz_fault = ""
-                    _LOGGER.info("PTZ '%s' OK via XMSoapClient", cmd)
-                    return True
-                self._last_ptz_fault = f"XMSoapClient PTZ fehlgeschlagen: {cmd}"
-                _LOGGER.warning("XMSoapClient PTZ '%s' nicht erfolgreich", cmd)
-            except Exception as soap_exc:
-                self._last_ptz_fault = f"XMSoapClient Fehler: {soap_exc}"
-                _LOGGER.warning("XMSoapClient PTZ '%s' Exception: %s", cmd, soap_exc)
-
         # ONVIF: Direct-SOAP ContinuousMove als primärer Weg
         if self.protocol == PROTOCOL_ONVIF:
             if cmd == "stop":
                 return await self.async_ptz_stop()
             spd = f"{min(speed, 8) / 8:.2f}"
-            # xm-soap.py bestaetigt: Velocity braucht IMMER beide Elemente.
-            # Kamera gibt SOAP-Fault wenn PanTilt oder Zoom fehlt.
             soap_velocity_map: dict[str, str] = {
-                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
-                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
-                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
-                "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
+                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/>',
+                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/>',
+                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/>',
+                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/>',
+                "zoom_in":  f'<tt:Zoom x="{spd}"/>',
+                "zoom_out": f'<tt:Zoom x="-{spd}"/>',
             }
             soap_translation_map: dict[str, str] = {
-                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
-                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
-                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
-                "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
+                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/>',
+                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/>',
+                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/>',
+                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/>',
+                "zoom_in":  f'<tt:Zoom x="{spd}"/>',
+                "zoom_out": f'<tt:Zoom x="-{spd}"/>',
             }
             if cmd in soap_velocity_map:
                 tried_tokens = await self._async_candidate_ptz_profile_tokens()
@@ -1562,14 +1286,17 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     # ── ONVIF Direct-SOAP helper ────────────────────────────────────────────
 
-    def _wsse_header(self, utc_now: datetime.datetime | None = None) -> str:
-        """WSSE PasswordDigest Header.
+    def _wsse_header(self) -> str:
+        """
+        WSSE PasswordDigest Header.
 
-        utc_now: optionale Referenzzeit (z.B. Kamera-Zeit) um Clock-Skew
-        bei Proxmox-VMs zu vermeiden.
+        FIX: Millisekunden im Timestamp (.%f → [:3]) — XM-Firmware akzeptiert
+        ISO 8601 mit Millisekunden, aber nicht mit Mikrosekunden.
+        Verifiziert: SHA1(nonce_raw + created_utf8 + password_utf8), leeres PW.
         """
         nonce = os.urandom(16)
-        now = (utc_now or datetime.datetime.now(datetime.timezone.utc)).replace(tzinfo=None)
+        # Millisekunden-Timestamp (XM-Firmware-kompatibel)
+        now = datetime.datetime.utcnow()
         created = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
         pwd = (self.password or "").encode("utf-8")
         digest = base64.b64encode(
@@ -1652,10 +1379,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         ]
         last_result = ""
         for content_type in content_types_to_try:
-            # WSSE im Header genuegt — kein HTTP Basic Auth noetig (wie xm-soap.py).
-            auth_candidates: list[aiohttp.BasicAuth | None] = [None]
+            auth_candidates: list[aiohttp.BasicAuth | None] = [http_auth] if http_auth is not None else [None]
             if http_auth is not None:
-                auth_candidates.append(http_auth)
+                auth_candidates.append(None)
             for auth_candidate in auth_candidates:
                 try:
                     async with async_timeout.timeout(timeout_seconds):
@@ -2098,62 +1824,46 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_set_ptz_speed(self, speed: int) -> None:
         self._ptz_speed = max(1, min(8, speed))
 
-    # ── Digital Zoom ────────────────────────────────────────────────────────
-
-    @property
-    def digital_zoom(self) -> float:
-        return self._digital_zoom
-
-    @property
-    def digital_zoom_center(self) -> tuple[float, float]:
-        return (self._digital_zoom_cx, self._digital_zoom_cy)
-
-    async def async_digital_zoom_in(self) -> None:
-        self._digital_zoom = min(8.0, round(self._digital_zoom * 1.5, 1))
-
-    async def async_digital_zoom_out(self) -> None:
-        self._digital_zoom = max(1.0, round(self._digital_zoom / 1.5, 1))
-
-    async def async_digital_zoom_reset(self) -> None:
-        self._digital_zoom = 1.0
-        self._digital_zoom_cx = 0.5
-        self._digital_zoom_cy = 0.5
-
-    async def async_digital_zoom_set(
-        self, zoom: float, cx: float = 0.5, cy: float = 0.5
-    ) -> None:
-        self._digital_zoom = max(1.0, min(8.0, float(zoom)))
-        self._digital_zoom_cx = max(0.0, min(1.0, float(cx)))
-        self._digital_zoom_cy = max(0.0, min(1.0, float(cy)))
-
     @property
     def ptz_presets(self) -> dict[str, str]:
         return dict(self._ptz_presets)
 
     async def async_ptz_home(self) -> bool:
-        spd = self._ptz_speed / 8
-        try:
-            async with _XMSoapClient() as soap:
-                return await soap.ptz_goto_home(speed=spd)
-        except Exception as exc:
-            _LOGGER.warning("ptz_home Fehler: %s", exc)
-            return False
+        spd = f"{self._ptz_speed / 8:.2f}"
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
+            f"<tptz:GotoHomePosition>"
+            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+            f'<tptz:Speed><tt:PanTilt x="{spd}" y="{spd}"/></tptz:Speed>'
+            f"</tptz:GotoHomePosition>",
+        )
+        return "GotoHomePositionResponse" in resp
 
     async def async_ptz_set_home(self) -> bool:
-        try:
-            async with _XMSoapClient() as soap:
-                return await soap.ptz_set_home()
-        except Exception as exc:
-            _LOGGER.warning("ptz_set_home Fehler: %s", exc)
-            return False
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
+            f"<tptz:SetHomePosition>"
+            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+            f"</tptz:SetHomePosition>",
+        )
+        return "SetHomePositionResponse" in resp
 
     async def async_ptz_stop(self) -> bool:
-        try:
-            async with _XMSoapClient() as soap:
-                return await soap.ptz_stop()
-        except Exception as exc:
-            _LOGGER.warning("ptz_stop Fehler: %s", exc)
-            return False
+        for profile_token in await self._async_candidate_ptz_profile_tokens():
+            resp = await self._onvif_soap_for(
+                ONVIF_SERVICE_PTZ,
+                f"<tptz:Stop>"
+                f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+                f"<tptz:PanTilt>true</tptz:PanTilt>"
+                f"<tptz:Zoom>true</tptz:Zoom>"
+                f"</tptz:Stop>",
+            )
+            if "StopResponse" in resp:
+                self._onvif_profile_tokens[self._active_stream] = profile_token
+                return True
+        return False
 
     async def async_ptz_get_presets(self) -> dict[str, str]:
         profile_token = await self._async_active_onvif_profile_token()
@@ -2173,25 +1883,35 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return presets
 
     async def async_ptz_goto_preset(self, token: str) -> bool:
-        spd = self._ptz_speed / 8
-        try:
-            async with _XMSoapClient() as soap:
-                return await soap.ptz_goto_preset(preset_token=token, speed=spd)
-        except Exception as exc:
-            _LOGGER.warning("ptz_goto_preset Fehler: %s", exc)
-            return False
+        spd = f"{self._ptz_speed / 8:.2f}"
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
+            f"<tptz:GotoPreset>"
+            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+            f"<tptz:PresetToken>{token}</tptz:PresetToken>"
+            f'<tptz:Speed><tt:PanTilt x="{spd}" y="{spd}"/>'
+            f'<tt:Zoom x="{spd}"/></tptz:Speed>'
+            f"</tptz:GotoPreset>",
+        )
+        return "GotoPresetResponse" in resp
 
     async def async_ptz_set_preset(self, name: str, token: str | None = None) -> str | None:
-        try:
-            async with _XMSoapClient() as soap:
-                new_token = await soap.ptz_set_preset(name=name, preset_token=token)
-            if new_token:
-                self._ptz_presets[new_token] = name
-                return new_token
-            return None
-        except Exception as exc:
-            _LOGGER.warning("ptz_set_preset Fehler: %s", exc)
-            return None
+        tok_xml = f"<tptz:PresetToken>{token}</tptz:PresetToken>" if token else ""
+        profile_token = await self._async_active_onvif_profile_token()
+        resp = await self._onvif_soap_for(
+            ONVIF_SERVICE_PTZ,
+            f"<tptz:SetPreset>"
+            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+            f"<tptz:PresetName>{name}</tptz:PresetName>"
+            f"{tok_xml}"
+            f"</tptz:SetPreset>",
+        )
+        new_token = self._xml_text(resp, "PresetToken")
+        if new_token:
+            self._ptz_presets[new_token] = name
+            return new_token
+        return None
 
     async def async_ptz_delete_preset(self, token: str) -> bool:
         profile_token = await self._async_active_onvif_profile_token()
