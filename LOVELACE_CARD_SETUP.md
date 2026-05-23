@@ -1,11 +1,11 @@
 # Lovelace Custom Card Setup — WJG Camera Card 2
 
 ## Problem
-Die Custom Card `wjg-camera-card2` funktioniert nicht im Dashboard, weil HA sie nicht kennt.
+Die Custom Card `wjg-camera-card` funktioniert nicht im Dashboard, weil HA sie nicht kennt.
 
 **Fehler im Dashboard:**
 ```
-Custom element doesn't exist: custom:wjg-camera-card2
+Custom element doesn't exist: custom:wjg-camera-card
 ```
 
 ---
@@ -24,9 +24,9 @@ Home Assistant
 ### Schritt 2: URL eintragen
 Verwende die vollständige URL zur Card:
 
-**Für `wjg-camera-card2.js`:**
+**Für `wjg-camera-card.js` (v3.2 mit PTZ + Zoom):**
 ```
-/local/wjg_camera/wjg-camera-card2.js
+/local/wjg_camera/wjg-camera-card.js
 ```
 
 **Typ wählen:**
@@ -45,13 +45,13 @@ Ressourcentyp: JavaScript Module
 
 Falls du die Ressource im YAML eintragen möchtest (nicht über UI):
 
-**1. `configuration.yaml` öffnen** (oder `lovelace.yaml`)
+**2. `configuration.yaml` öffnen** (oder `lovelace.yaml`)
 
 **2. Folgendes hinzufügen:**
 ```yaml
 # Am Anfang der Datei
 resources:
-  - url: /local/wjg_camera/wjg-camera-card2.js
+  - url: /local/wjg_camera/wjg-camera-card.js
     type: module
 ```
 
@@ -92,7 +92,7 @@ resources:
 Falls du die Card nur **kurz testen** möchtest ohne komplettes Dashboard:
 
 ```yaml
-type: custom:wjg-camera-card2
+type: custom:wjg-camera-card
 entity: camera.wjg_xm_3820
 title: "Test"
 show_ptz: true
@@ -113,7 +113,7 @@ Falls die Card immer noch nicht funktioniert:
    ```
 
 2. **Prüfe:** Ist der static path registriert?
-   - Gehe zu `http://192.168.1.x:8123/local/wjg_camera/wjg-camera-card2.js`
+   - Gehe zu `http://192.168.1.x:8123/local/wjg_camera/wjg-camera-card.js`
    - Falls **404** → Datei nicht erreichbar
    - Falls **JavaScript-Code** sichtbar → OK ✅
 

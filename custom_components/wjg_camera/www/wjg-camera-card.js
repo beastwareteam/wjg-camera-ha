@@ -38,8 +38,8 @@
  *  • Resize-Handles (Höhe, Breite, Ecke)
  *  • Vollständige Speicherbereinigung in disconnectedCallback
  *
- * Konfigurationsbeispiel (YAML):
- *   type: custom:wjg-camera-card
+ * Konfigurationsbeispiel (YAML) — echte Entity-IDs WJG XM-3820:
+ *   type: custom:wjg-camera-card2
  *   entity: camera.wjg_xm_3820
  *   title: Einfahrt
  *   show_zoom_bar: true
@@ -48,6 +48,7 @@
  *   min_zoom: 0.5
  *   max_zoom: 64
  *   aspect_ratio: "16/9"
+ *   ptz_speed_entity: number.wjg_xm_3820_ptz_geschwindigkeit
  *   ptz_entities:
  *     up:         button.wjg_xm_3820_ptz_up
  *     down:       button.wjg_xm_3820_ptz_down
@@ -61,13 +62,61 @@
  *     zoom_in:    button.wjg_xm_3820_ptz_zoom_in
  *     zoom_out:   button.wjg_xm_3820_ptz_zoom_out
  *   badges:
- *     - entity: binary_sensor.motion_einfahrt
+ *     - entity: binary_sensor.wjg_xm_3820_bewegung
  *       icon: mdi:motion-sensor
  *       label: Bewegung
- *     - entity: switch.aufnahme
+ *     - entity: switch.wjg_xm_3820_aufnahme
  *       icon: mdi:record-circle
  *       label: Aufnahme
  *       action: switch.toggle
+ *     - entity: binary_sensor.wjg_xm_3820_manipulation
+ *       icon: mdi:shield-alert
+ *       label: Manipulation
+ *     - entity: binary_sensor.wjg_xm_3820_signalverlust
+ *       icon: mdi:video-off
+ *       label: Signalverlust
+ *
+ * Alle verfügbaren Entities dieses Geräts:
+ *   camera:         camera.wjg_xm_3820
+ *   binary_sensor:  binary_sensor.wjg_xm_3820_bewegung
+ *                   binary_sensor.wjg_xm_3820_manipulation
+ *                   binary_sensor.wjg_xm_3820_signalverlust
+ *   button (PTZ):   button.wjg_xm_3820_ptz_up/down/left/right
+ *                   button.wjg_xm_3820_ptz_home
+ *                   button.wjg_xm_3820_ptz_home_setzen
+ *                   button.wjg_xm_3820_ptz_stopp
+ *                   button.wjg_xm_3820_ptz_zoom_in/out
+ *                   button.wjg_xm_3820_ptz_preset_1..4_anfahren
+ *                   button.wjg_xm_3820_ptz_preset_1..4_speichern
+ *   button (sys):   button.wjg_xm_3820_snapshot
+ *                   button.wjg_xm_3820_kamera_neu_starten
+ *                   button.wjg_xm_3820_ntp_synchronisieren
+ *                   button.wjg_xm_3820_digital_zoom_reset
+ *                   button.wjg_xm_3820_dateiliste_aktualisieren
+ *   number:         number.wjg_xm_3820_ptz_geschwindigkeit  (1–8)
+ *                   number.wjg_xm_3820_helligkeit
+ *                   number.wjg_xm_3820_kontrast
+ *                   number.wjg_xm_3820_sattigung
+ *                   number.wjg_xm_3820_scharfe
+ *                   number.wjg_xm_3820_wdr_starke
+ *                   number.wjg_xm_3820_weissabgleich_crgain
+ *                   number.wjg_xm_3820_weissabgleich_cbgain
+ *   select:         select.wjg_xm_3820_ir_modus  (AUTO/ON/OFF)
+ *                   select.wjg_xm_3820_belichtungs_modus
+ *                   select.wjg_xm_3820_belichtungs_prioritat
+ *                   select.wjg_xm_3820_weissabgleich
+ *                   select.wjg_xm_3820_stream_qualitat
+ *                   select.wjg_xm_3820_ptz_preset_anfahren
+ *   switch:         switch.wjg_xm_3820_aufnahme
+ *                   switch.wjg_xm_3820_ir_cut_nachtmodus
+ *                   switch.wjg_xm_3820_mikrofon
+ *                   switch.wjg_xm_3820_wdr
+ *   sensor:         sensor.wjg_xm_3820_dateiliste
+ *                   sensor.wjg_xm_3820_firmware
+ *                   sensor.wjg_xm_3820_seriennummer
+ *                   sensor.wjg_xm_3820_mac_adresse
+ *                   sensor.wjg_xm_3820_kamera_uhrzeit
+ *                   sensor.wjg_xm_3820_aktiver_stream
  */
 
 // ─────────────────────────────── Template ────────────────────────────────────
@@ -532,9 +581,9 @@ _tpl.innerHTML = `
 <div id="ptz-speed-bar">
   <span id="ptz-speed-label">PTZ Geschw.</span>
   <div id="ptz-speed-wrap">
-    <input id="ptz-speed-slider" type="range" min="1" max="8" value="4" step="1">
+    <input id="ptz-speed-slider" type="range" min="1" max="8" value="1" step="1">
   </div>
-  <span id="ptz-speed-val">4</span>
+  <span id="ptz-speed-val">1</span>
 </div>
 
 <!-- ── Zoom Bar + Toolbar ─────────────────────────────────────────── -->
@@ -618,7 +667,7 @@ class WjgCameraCard extends HTMLElement {
     // ── Feature state ─────────────────────────────────────────────
     this._overlayMode   = 'none';
     this._ptzVisible    = false;
-    this._ptzSpeed      = 4;
+    this._ptzSpeed      = 1;
     this._minimapForced = null;   // null=auto, true=force on, false=force off
     this._kbdTimer      = null;
     this._syncTimer     = null;
@@ -1293,7 +1342,10 @@ class WjgCameraCard extends HTMLElement {
 
   // ── PTZ ────────────────────────────────────────────────────────────────────
   _speedEntity() {
-    return this._config?.ptz_speed_entity || 'number.wjg_xm_3820_ptz_geschwindigkeit';
+    return this._config?.ptz_speed_entity
+        || (this._config?.entity
+              ? this._config.entity.replace(/^camera\./, 'number.') + '_ptz_geschwindigkeit'
+              : 'number.wjg_xm_3820_ptz_geschwindigkeit');
   }
 
   _syncSpeedFromEntity() {

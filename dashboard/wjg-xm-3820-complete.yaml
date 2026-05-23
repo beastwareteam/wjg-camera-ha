@@ -3,7 +3,7 @@ views:
   - title: Kamera & PTZ
     cards:
       # ── Kamera-Stream mit PTZ-Overlay ──
-      - type: custom:wjg-camera-card2
+      - type: custom:wjg-camera-card
         entity: camera.wjg_xm_3820
         title: WJG XM-3820 Live
         show_ptz: true
