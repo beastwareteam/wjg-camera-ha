@@ -18,16 +18,9 @@ async def async_setup_entry(
 ) -> None:
     """Sensor-Entities fuer einen Config-Entry registrieren."""
     coordinator: WJGCameraCoordinator = hass.data[DOMAIN][entry.entry_id]
-
-    file_sensor = WJGFileListSensor(coordinator, entry)
-
-    # Referenz in hass.data ablegen damit button.py darauf zugreifen kann,
-    # ohne einen fragilen Registry-Lookup machen zu muessen.
-    hass.data.setdefault(DOMAIN, {})[f"{entry.entry_id}_file_sensor"] = file_sensor
-
     async_add_entities(
         [
-            file_sensor,
+            WJGFileListSensor(coordinator, entry),
             WJGFirmwareSensor(coordinator, entry),
             WJGSerialSensor(coordinator, entry),
             WJGMacSensor(coordinator, entry),
@@ -38,57 +31,34 @@ async def async_setup_entry(
 
 
 class WJGFileListSensor(CoordinatorEntity[WJGCameraCoordinator], SensorEntity):
-    """Sensor fuer die Dateiliste/SD-Karte der Kamera.
-
-    Wird NICHT automatisch bei jedem Poll-Zyklus aktualisiert – das wuerde
-    bei jedem 30s-Intervall einen teuren XM-SDK- oder HTTP-Request ausloesen.
-    Stattdessen aktualisiert der WJGFetchFileListButton (button.py) den Cache
-    manuell auf Anforderung. Der Sensor liest dann nur aus dem internen Cache.
-    """
+    """Sensor für die Dateiliste/SD-Karte der Kamera."""
 
     _attr_has_entity_name = True
     _attr_name = "Dateiliste"
     _attr_icon = "mdi:folder-multiple"
-    # Kein shouldpoll = False nötig, da wir async_update NICHT überschreiben.
-    # CoordinatorEntity aktualisiert den State wenn der Coordinator seinen Zyklus
-    # abschliesst – wir zeigen dabei nur den bereits gecachten Wert.
 
     def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
         """Dateilisten-Sensor initialisieren."""
         super().__init__(coordinator)
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_filelist"
-        # Interner Cache – wird nur durch async_refresh_file_list() befuellt
-        self._cached_files: list[dict] = []
+        self._attr_native_value = 0
+        self._attr_extra_state_attributes = {"files": []}
 
     @property
     def device_info(self) -> DeviceInfo:
         """Zugehoerige Geraeteinformationen zurueckgeben."""
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
-    @property
-    def native_value(self) -> int:
-        """Anzahl gecachter Dateien."""
-        return len(self._cached_files)
-
-    @property
-    def extra_state_attributes(self) -> dict:
-        """Gecachte Dateiliste als Attribut exponieren."""
-        return {"files": self._cached_files}
-
-    async def async_refresh_file_list(self) -> None:
-        """Dateiliste aktiv von der Kamera laden und Cache aktualisieren.
-
-        Wird ausschliesslich vom WJGFetchFileListButton aufgerufen.
-        Kein automatischer Aufruf im Poll-Zyklus.
-        """
+    async def async_update(self) -> None:
+        """Dateiliste vom Coordinator abrufen und Attribute aktualisieren."""
         files = await self.coordinator.async_get_file_list()
-        self._cached_files = files if isinstance(files, list) else []
-        self.async_write_ha_state()
+        self._attr_native_value = len(files)
+        self._attr_extra_state_attributes = {"files": files}
 
 
 class _WJGStaticSensor(CoordinatorEntity[WJGCameraCoordinator], SensorEntity):
-    """Basis fuer statische Text-Sensoren."""
+    """Basis für statische Text-Sensoren."""
 
     _attr_has_entity_name = True
 
