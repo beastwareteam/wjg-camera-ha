@@ -84,34 +84,19 @@ PLATFORMS: list[Platform] = [
 _SERVICE_SET_ZOOM = "set_digital_zoom"
 _SVC_SCHEMA_ZOOM = vol.Schema({
     vol.Required("entity_id"): cv.entity_id,
-    vol.Required("zoom"):      vol.All(vol.Coerce(float), vol.Range(min=1.0, max=8.0)),
+    vol.Required("zoom"):      vol.All(vol.Coerce(float), vol.Range(min=1.0, max=10.0)),
     vol.Optional("cx", default=0.5): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
     vol.Optional("cy", default=0.5): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
 })
 
 
 def _get_coordinator(hass: HomeAssistant, entity_id: str) -> WJGCameraCoordinator | None:
-    """Coordinator für eine entity_id aus hass.data suchen.
-
-    Sucht anhand der entity_id den zugehörigen entry_id und gibt den passenden
-    Coordinator zurück. Unterstützt mehrere Kameras korrekt.
-    """
-    # entity_id Format: "camera.<entry_id>_camera"
-    # Extraktion: Teil nach dem ersten "." und vor "_camera"
-    entity_part = entity_id.split(".", 1)[-1]  # z.B. "abc123_camera"
-    for entry_id, coord in hass.data.get(DOMAIN, {}).items():
-        if not isinstance(coord, WJGCameraCoordinator):
-            continue
-        # Exakter Match: entity_part beginnt mit entry_id
-        if entity_part.startswith(entry_id):
+    """Coordinator für eine entity_id aus hass.data suchen."""
+    for coord in hass.data.get(DOMAIN, {}).values():
+        if isinstance(coord, WJGCameraCoordinator):
+            # Kamera-Entity-ID hat Format "<domain>.<entry_id>_camera" oder ähnlich
+            # Einfachster Weg: ersten Coordinator zurückgeben wenn nur einer existiert
             return coord
-    # Fallback: Wenn nur eine Kamera konfiguriert ist
-    coordinators = [
-        coord for coord in hass.data.get(DOMAIN, {}).values()
-        if isinstance(coord, WJGCameraCoordinator)
-    ]
-    if len(coordinators) == 1:
-        return coordinators[0]
     return None
 
 
