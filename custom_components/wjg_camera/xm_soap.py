@@ -89,6 +89,8 @@ def _envelope(body: str, auth: bool = True) -> str:
             xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"
             xmlns:tds="http://www.onvif.org/ver10/device/wsdl"
             xmlns:tt="http://www.onvif.org/ver10/schema"
+            xmlns:tev="http://www.onvif.org/ver10/events/wsdl"
+            xmlns:wsnt="http://docs.oasis-open.org/wsn/b-2"
             xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd"
             xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
   {header}
@@ -129,7 +131,7 @@ class XMSoapClient:
             async with self._session.post(endpoint, data=soap.encode("utf-8")) as resp:
                 text = await resp.text()
                 if resp.status != 200:
-                    _LOGGER.warning("SOAP %s HTTP %s: %s", endpoint, resp.status, text[:200])
+                    _LOGGER.debug("SOAP %s HTTP %s: %s", endpoint, resp.status, text[:200])
                     return None
                 return ET.fromstring(text)
         except aiohttp.ClientError as e:
