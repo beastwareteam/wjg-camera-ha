@@ -1,5 +1,32 @@
 # WJG XM-3820 Camera Bridge — Kritisches Wissen für Claude
 
+## Motion Detection via ONVIF PullPoint (Fix v2.2.25 — Mai 2026)
+
+### Problem
+`binary_sensor.motion_detected` blieb immer OFF, obwohl die Kamera-Hardware Bewegung erkannte.
+
+### Ursache
+Die Kamera verlangt WSSE-Auth für `CreatePullPointSubscription` (HTTP 400 ohne Auth).
+`async_onvif_create_pullpoint()` nutzte `_onvif_soap_for()` mit `_onvif_wsse_enabled=False`
+→ keine Auth → HTTP 400 → Event-Loop schlug still fehl → kein Motion-Event in HA.
+
+### Lösung (identisch zum PTZ-Fix)
+`async_onvif_create_pullpoint()` nutzt jetzt `_XMSoapClient()` mit frischer WSSE-Session.
+`async_onvif_pull_messages_once()` nutzt jetzt `use_auth=True`.
+
+### Port-Situation (bestätigt 29.05.2026)
+- Port 34567 (XM-SDK/DVRIP): `ConnectionRefused` — Dienst läuft NICHT auf der Kamera
+- Port 15668 (alternatives DVRIP): `ConnectionRefused` — ebenfalls nicht vorhanden
+- SD-Karte Dateiliste: **unmöglich** ohne diese Ports (Firmware-Entscheidung)
+- python-dvr würde dasselbe Problem haben (gleiches Protokoll, gleiche Ports)
+- Kamera-UID aus pcapng: `16000102c0abce2bos9ixucsiajt20ch`
+
+### Netzwerk-Captures (pcapng-Analyse)
+Die Captures zeigen ein ANDERES XM-Gerät (IP .31) das Port 15668 nutzte — nicht unsere Kamera.
+Unsere Kamera (.49) hat Port 34567/15668 schlicht nicht geöffnet.
+
+---
+
 ## Das PTZ-Problem und die Lösung (Mai 2025)
 
 ### Symptom
