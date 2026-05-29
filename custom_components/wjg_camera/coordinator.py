@@ -433,6 +433,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._resolved_rtsp_url: str | None = None
         self._snapshot_url_working: str | None = None  # erste funktionierende URL cachen
         self._snapshot_error_logged: bool = False       # Fehler nur einmal loggen
+        self._rtsp_motion_task: asyncio.Task | None = None
+        self._udp_monitor_task: asyncio.Task | None = None
         self._onvif = None
         # ONVIF direkt (Options haben Vorrang vor entry.data)
         self.onvif_port: int = int(
@@ -850,8 +852,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Audio-Einstellungen nicht abrufbar: %s", exc)
 
         if self.protocol == PROTOCOL_ONVIF:
-            # kein update_xaddrs mehr (python-onvif-zeep nicht aktiv)
             self._event_task = asyncio.create_task(self._async_onvif_event_loop())
+            self._rtsp_motion_task = asyncio.create_task(self._async_rtsp_motion_loop())
+            self._udp_monitor_task = asyncio.create_task(self._async_udp_motion_monitor())
+            _LOGGER.info("Motion-Detection: 3 Kanäle aktiv (ONVIF + RTSP + UDP)")
 
         await self.async_refresh()
 
@@ -2617,15 +2621,104 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         resp = await self._onvif_soap_for(ONVIF_SERVICE_DEVICE, "<tds:GetNTP/>")
         return bool(resp)
 
+    async def _async_rtsp_motion_loop(self) -> None:
+        """Kanal 2: RTSP Frame-Vergleich via FFmpeg + Pillow alle 8 Sekunden."""
+        prev_frame: bytes | None = None
+        await asyncio.sleep(15)  # Startup-Delay damit RTSP-URL gecacht ist
+        while True:
+            await asyncio.sleep(8)
+            if not self._session:
+                continue
+            try:
+                cmd = [
+                    "ffmpeg", "-loglevel", "error",
+                    "-rtsp_transport", "tcp",
+                    "-i", self.rtsp_url,
+                    "-frames:v", "1",
+                    "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                frame, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+            except Exception:
+                continue
+
+            if not frame or len(frame) < 500:
+                continue
+
+            if prev_frame is None:
+                prev_frame = frame
+                continue
+
+            try:
+                from PIL import Image, ImageChops  # pylint: disable=import-outside-toplevel
+                import io as _io  # pylint: disable=import-outside-toplevel
+                img1 = Image.open(_io.BytesIO(prev_frame)).convert("L").resize((80, 60))
+                img2 = Image.open(_io.BytesIO(frame)).convert("L").resize((80, 60))
+                diff = ImageChops.difference(img1, img2)
+                pixels = list(diff.getdata())
+                pct = sum(1 for p in pixels if p > 15) / len(pixels) * 100
+                prev_frame = frame
+                if pct >= 2.0:
+                    _LOGGER.info("RTSP Motion: %.1f%% Pixeländerung erkannt", pct)
+                    self._last_motion_time = time.time()
+                    self.async_update_listeners()
+            except Exception:
+                pass
+
+    async def _async_udp_motion_monitor(self) -> None:
+        """Kanal 3: UDP 16658 Broadcast-Monitor — XM sendet Kamera-Status-Pakete."""
+        import socket as _socket  # pylint: disable=import-outside-toplevel
+        while True:
+            sock: _socket.socket | None = None
+            try:
+                sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+                sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+                sock.bind(("", 16658))
+                sock.settimeout(30)
+                loop = asyncio.get_running_loop()
+                while True:
+                    try:
+                        data, addr = await loop.run_in_executor(
+                            None, lambda: sock.recvfrom(4096)  # type: ignore[union-attr]
+                        )
+                        if addr[0] != self.host:
+                            continue
+                        text = data.decode("utf-8", errors="ignore")
+                        tl = text.lower()
+                        if "motion" in tl or "alarm" in tl or "detect" in tl:
+                            _LOGGER.info("UDP Motion von Kamera %s: %s", self.host, text[:120])
+                            self._last_motion_time = time.time()
+                            self.async_update_listeners()
+                    except _socket.timeout:
+                        pass
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _LOGGER.debug("UDP Monitor Fehler: %s", exc)
+                await asyncio.sleep(5)
+            finally:
+                if sock:
+                    try:
+                        sock.close()
+                    except Exception:
+                        pass
+
     async def async_shutdown(self) -> None:
         """Verbindungen schließen."""
-        if self._event_task:
-            self._event_task.cancel()
-            try:
-                await self._event_task
-            except asyncio.CancelledError:
-                pass
-            self._event_task = None
+        for task in (self._event_task, self._rtsp_motion_task, self._udp_monitor_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._event_task = None
+        self._rtsp_motion_task = None
+        self._udp_monitor_task = None
         self._event_pullpoint_path = ""
         if self._session:
             await self._session.close()
