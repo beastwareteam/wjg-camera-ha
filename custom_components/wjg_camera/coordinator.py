@@ -438,6 +438,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._motion: bool = False
         self._last_motion_time: float = 0
         self._resolved_rtsp_url: str | None = None
+        self._snapshot_url_working: str | None = None  # erste funktionierende URL cachen
+        self._snapshot_error_logged: bool = False       # Fehler nur einmal loggen
         self._onvif = None
         # ONVIF direkt (Options haben Vorrang vor entry.data)
         self.onvif_port: int = int(
@@ -901,44 +903,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             "available": False,
             "recording": self._recording,
             "motion": self.motion_detected,
-            # Dateiliste nicht bei jedem Poll zuruecksetzen.
             "files": prev_data.get("files", []),
         }
 
-        # Snapshot abrufen um Erreichbarkeit zu prüfen
-        session = self._session
-        if session is not None:
-            try:
-                auth = None
-                if self.username:
-                    auth = aiohttp.BasicAuth(self.username, self.password or "")
-                async with async_timeout.timeout(5):
-                    async with session.get(
-                        self.snapshot_url,
-                        allow_redirects=True,
-                        auth=auth,
-                    ) as resp:
-                        # 200 = OK, 401/403 = Kamera antwortet (Auth fehlt oder
-                        # nicht nötig), trotzdem erreichbar
-                        if resp.status in (200, 401, 403):
-                            data["available"] = True
-                        if resp.status == 200:
-                            ct = resp.headers.get("Content-Type", "")
-                            if "image" in ct:
-                                data["snapshot_bytes"] = await resp.read()
-            except Exception as e:
-                _LOGGER.debug("Snapshot fehlgeschlagen: %s", e)
-
-        # Fallback: TCP-Erreichbarkeit prüfen (RTSP-Port oder HTTP-Port)
-        if not data["available"]:
-            for port in {self.rtsp_port, self.http_port, self.xm_port}:
-                if port and await self._tcp_port_reachable(port):
-                    data["available"] = True
-                    _LOGGER.debug(
-                        "Kamera via TCP-Port %s erreichbar (Snapshot nicht verfügbar)",
-                        port,
-                    )
-                    break
+        # Availability: direkter TCP-Check auf RTSP- oder ONVIF-Port — kein HTTP-Flood
+        for port in (self.rtsp_port, self.onvif_port):
+            if port and await self._tcp_port_reachable(port, timeout=2.0):
+                data["available"] = True
+                break
 
         # XM Keepalive + Status
         if self._xm:
@@ -1105,43 +1077,33 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return files
 
     async def async_snapshot(self) -> bytes | None:
-        """Aktuelles Bild von der Kamera laden."""
+        """Aktuelles Bild von der Kamera laden — direkt, kein Retry-Loop."""
         if not self._session:
             return None
 
-        auth_candidates: list[aiohttp.BasicAuth | None] = [None]
-        if self.username:
-            auth_candidates = [
-                aiohttp.BasicAuth(self.username, self.password or ""),
-                None,
-            ]
+        # Gecachte URL zuerst probieren (kein Kandidaten-Loop nach erstem Erfolg)
+        urls_to_try: list[str] = []
+        if self._snapshot_url_working:
+            urls_to_try.append(self._snapshot_url_working)
+        else:
+            urls_to_try = self._candidate_snapshot_urls()
 
-        attempts = max(1, self.http_retries + 1)
-        for snapshot_url in self._candidate_snapshot_urls():
-            for auth in auth_candidates:
-                for attempt in range(attempts):
-                    try:
-                        async with async_timeout.timeout(5):
-                            async with self._session.get(
-                                snapshot_url,
-                                allow_redirects=True,
-                                auth=auth,
-                            ) as resp:
-                                if resp.status == 200:
-                                    payload = await resp.read()
-                                    if payload:
-                                        return bytes(payload)
-                                if resp.status in (401, 403) and auth is not None:
-                                    break
-                    except Exception as exc:
-                        _LOGGER.debug(
-                            "Snapshot fehlgeschlagen (%s, auth=%s): %s",
-                            snapshot_url,
-                            "on" if auth is not None else "off",
-                            exc,
-                        )
-                    if attempt < attempts - 1:
-                        await asyncio.sleep(0)
+        for url in urls_to_try:
+            try:
+                async with async_timeout.timeout(5):
+                    async with self._session.get(url, allow_redirects=True) as resp:
+                        if resp.status == 200:
+                            payload = await resp.read()
+                            if payload:
+                                self._snapshot_url_working = url
+                                self._snapshot_error_logged = False
+                                return bytes(payload)
+            except Exception:
+                pass
+
+        if not self._snapshot_error_logged:
+            _LOGGER.debug("Snapshot nicht verfügbar (Port %s nicht erreichbar)", self.http_port)
+            self._snapshot_error_logged = True
         return None
 
     @staticmethod
