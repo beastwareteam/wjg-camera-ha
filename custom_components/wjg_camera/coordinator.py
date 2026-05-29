@@ -12,7 +12,6 @@ import asyncio
 import base64
 import datetime
 import hashlib
-import inspect
 import json
 import logging
 import os
@@ -153,12 +152,6 @@ XM_RECORD_STOP     = 0x041B
 XM_FILELIST_REQ    = 0x0592
 XM_MOTION_REQ      = 0x0144
 
-
-async def _await_if_needed(value: Any) -> Any:
-    """Async und sync Rueckgaben einheitlich behandeln."""
-    if inspect.isawaitable(value):
-        return await value
-    return value
 
 def xm_packet(session_id: int, seq: int, msg_id: int, data: dict) -> bytes:
     """Erstellt ein XM SDK Binärpaket."""
@@ -637,29 +630,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         )
 
     def _credential_authorities(self) -> list[str]:
-        """Mögliche Auth-Varianten für RTSP-URLs erzeugen."""
+        """Mögliche Auth-Varianten für RTSP-URLs erzeugen.
+
+        XM-Kameras nutzen lokal immer admin/leer — konfigurierte Cloud-Credentials
+        (z.B. E-Mail-Adressen) kommen erst als Fallback, damit die Standard-URL
+        gecacht wird und FFmpeg keine E-Mail im Username bekommt.
+        """
         username = quote(self.username or "admin", safe="")
         password = quote(self.password or "", safe="")
 
-        variants: list[str] = []
-        if username and password:
+        # Kamera-Standard zuerst — verhindert dass Cloud-Credentials gecacht werden
+        variants: list[str] = ["admin:@", ""]
+
+        # Konfigurierte Credentials als weiterer Versuch (kann Cloud-Credentials sein)
+        if username and password and f"{username}:{password}@" not in variants:
             variants.append(f"{username}:{password}@")
-        elif username:
-            variants.extend((f"{username}:@", f"{username}@", ""))
-        else:
-            variants.append("")
+        elif username and f"{username}:@" not in variants:
+            variants.append(f"{username}:@")
 
-        # XM-Kameras brauchen kein Auth für RTSP — immer als Fallback probieren
-        for fallback in ("admin:@", ""):
-            if fallback not in variants:
-                variants.append(fallback)
-
-        # Reihenfolge erhalten, Duplikate entfernen
-        deduped: list[str] = []
-        for authority in variants:
-            if authority not in deduped:
-                deduped.append(authority)
-        return deduped
+        return variants
 
     def _build_rtsp_url(self, path: str, authority: str | None = None) -> str:
         """Vollständige RTSP-URL für einen Pfad erzeugen."""
@@ -1569,7 +1558,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         """WSSE-Header mit PasswordText (Klartext)."""
         nonce = os.urandom(16)
         nonce_b64 = base64.b64encode(nonce).decode()
-        created = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        created = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         pwd = password_override if password_override is not None else (self.password or "")
         return (
             '<wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01'
