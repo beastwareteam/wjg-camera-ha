@@ -402,14 +402,25 @@ class XMSoapClient:
         events: list[dict[str, Any]] = []
         ns = {"wsnt": "http://docs.oasis-open.org/wsn/b-2",
               "tt": "http://www.onvif.org/ver10/schema"}
+        motion_names = {"ismotion", "motion", "motionalarm", "videomotion"}
         for msg in root.findall(".//wsnt:NotificationMessage", ns):
             topic_el = msg.find("wsnt:Topic", ns)
-            data_el = msg.find(".//tt:SimpleItem", ns)
-            if topic_el is not None:
-                events.append({
-                    "topic": topic_el.text or "",
-                    "value": data_el.get("Value") if data_el is not None else None,
-                })
+            if topic_el is None:
+                continue
+            # Alle SimpleItems sammeln — IsMotion hat Vorrang vor dem ersten Item
+            all_items = msg.findall(".//tt:SimpleItem", ns)
+            value: Any = None
+            for item in all_items:
+                name = (item.get("Name") or "").lower()
+                if name in motion_names:
+                    value = item.get("Value")
+                    break
+            if value is None and all_items:
+                value = all_items[0].get("Value")
+            events.append({
+                "topic": topic_el.text or "",
+                "value": value,
+            })
         return events
 
 
