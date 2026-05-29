@@ -2719,24 +2719,26 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     _RECORDING_TRAIL_SECS = 10  # Nachlaufzeit nach Bewegungsende
 
     async def async_start_local_recording(self) -> str:
-        """Startet FFmpeg-Aufnahme nach /media/camera/. Gibt Dateipfad zurück."""
+        """Startet FFmpeg-Aufnahme nach /media/camera/ als MKV (nie korrupt)."""
         if self._recording_proc and self._recording_proc.returncode is None:
             return self._recording_file
         import os as _os  # pylint: disable=import-outside-toplevel
         _os.makedirs(self._RECORDING_DIR, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filepath = f"{self._RECORDING_DIR}/motion_{ts}.mp4"
+        # MKV statt MP4: frame-by-frame schreiben, kein moov-Atom nötig → nie korrupt
+        filepath = f"{self._RECORDING_DIR}/motion_{ts}.mkv"
         cmd = [
             "ffmpeg", "-loglevel", "error",
             "-rtsp_transport", "tcp",
             "-i", self.rtsp_url,
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-movflags", "+faststart",
+            "-c:v", "copy",   # H.265 direkt kopieren
+            "-c:a", "aac",    # PCMA → AAC
+            "-f", "matroska", # MKV-Container
             filepath,
         ]
         self._recording_proc = await asyncio.create_subprocess_exec(
             *cmd,
+            stdin=asyncio.subprocess.PIPE,   # für graceful stop via 'q'
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
@@ -2747,16 +2749,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return filepath
 
     async def async_stop_local_recording(self) -> None:
-        """Stoppt die laufende FFmpeg-Aufnahme sauber."""
+        """Stoppt FFmpeg graceful via 'q' → MKV wird korrekt abgeschlossen."""
         proc = self._recording_proc
         if not proc or proc.returncode is not None:
             return
         try:
-            proc.terminate()
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
+            # 'q' sendet FFmpeg das Signal zum sauberen Stop (schreibt alle Frames)
+            if proc.stdin:
+                proc.stdin.write(b"q\n")
+                await proc.stdin.drain()
+            await asyncio.wait_for(proc.wait(), timeout=10.0)
         except Exception:
             try:
                 proc.kill()
+                await proc.wait()
             except Exception:
                 pass
         self._recording_proc = None
