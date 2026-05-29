@@ -435,6 +435,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._snapshot_error_logged: bool = False       # Fehler nur einmal loggen
         self._rtsp_motion_task: asyncio.Task | None = None
         self._udp_monitor_task: asyncio.Task | None = None
+        self._recording_proc: asyncio.subprocess.Process | None = None
+        self._recording_file: str = ""
+        self._recording_stop_task: asyncio.Task | None = None
         self._onvif = None
         # ONVIF direkt (Options haben Vorrang vor entry.data)
         self.onvif_port: int = int(
@@ -2366,6 +2369,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 if truthy or (topic_match and not values and rule.get("topic_only_true", False)):
                     _LOGGER.info("BEWEGUNG erkannt! Topic=%s values=%s", topic, values)
                     self._last_motion_time = time.time()
+                    asyncio.ensure_future(self._trigger_motion_recording())
                     changed = True
                 continue
 
@@ -2665,6 +2669,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 if pct >= 2.0:
                     _LOGGER.info("RTSP Motion: %.1f%% Pixeländerung erkannt", pct)
                     self._last_motion_time = time.time()
+                    asyncio.ensure_future(self._trigger_motion_recording())
                     self.async_update_listeners()
             except Exception:
                 pass
@@ -2692,6 +2697,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         if "motion" in tl or "alarm" in tl or "detect" in tl:
                             _LOGGER.info("UDP Motion von Kamera %s: %s", self.host, text[:120])
                             self._last_motion_time = time.time()
+                            asyncio.ensure_future(self._trigger_motion_recording())
                             self.async_update_listeners()
                     except _socket.timeout:
                         pass
@@ -2707,9 +2713,77 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     except Exception:
                         pass
 
+    # ── Lokale Aufnahme via FFmpeg ────────────────────────────────────────────
+
+    _RECORDING_DIR = "/media/camera"
+    _RECORDING_TRAIL_SECS = 10  # Nachlaufzeit nach Bewegungsende
+
+    async def async_start_local_recording(self) -> str:
+        """Startet FFmpeg-Aufnahme nach /media/camera/. Gibt Dateipfad zurück."""
+        if self._recording_proc and self._recording_proc.returncode is None:
+            return self._recording_file
+        import os as _os  # pylint: disable=import-outside-toplevel
+        _os.makedirs(self._RECORDING_DIR, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = f"{self._RECORDING_DIR}/motion_{ts}.mp4"
+        cmd = [
+            "ffmpeg", "-loglevel", "error",
+            "-rtsp_transport", "tcp",
+            "-i", self.rtsp_url,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-movflags", "+faststart",
+            filepath,
+        ]
+        self._recording_proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        self._recording_file = filepath
+        self._recording = True
+        _LOGGER.info("Aufnahme gestartet: %s", filepath)
+        self.async_update_listeners()
+        return filepath
+
+    async def async_stop_local_recording(self) -> None:
+        """Stoppt die laufende FFmpeg-Aufnahme sauber."""
+        proc = self._recording_proc
+        if not proc or proc.returncode is not None:
+            return
+        try:
+            proc.terminate()
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        self._recording_proc = None
+        self._recording = False
+        _LOGGER.info("Aufnahme gestoppt: %s", self._recording_file)
+        self._recording_file = ""
+        self.async_update_listeners()
+
+    async def _trigger_motion_recording(self) -> None:
+        """Startet Aufnahme und plant automatischen Stop nach Bewegungsende."""
+        await self.async_start_local_recording()
+        if self._recording_stop_task and not self._recording_stop_task.done():
+            self._recording_stop_task.cancel()
+
+        async def _delayed_stop() -> None:
+            await asyncio.sleep(self._RECORDING_TRAIL_SECS)
+            if not self.motion_detected:
+                await self.async_stop_local_recording()
+
+        self._recording_stop_task = asyncio.create_task(_delayed_stop())
+
     async def async_shutdown(self) -> None:
         """Verbindungen schließen."""
-        for task in (self._event_task, self._rtsp_motion_task, self._udp_monitor_task):
+        for task in (
+            self._event_task, self._rtsp_motion_task,
+            self._udp_monitor_task, self._recording_stop_task,
+        ):
             if task:
                 task.cancel()
                 try:
@@ -2719,6 +2793,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._event_task = None
         self._rtsp_motion_task = None
         self._udp_monitor_task = None
+        self._recording_stop_task = None
+        await self.async_stop_local_recording()
         self._event_pullpoint_path = ""
         if self._session:
             await self._session.close()

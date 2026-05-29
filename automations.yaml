@@ -1,3 +1,20 @@
+- id: wjg_kamera_bewegungsaufnahme
+  alias: "WJG Kamera: Bewegungsaufnahme"
+  description: "Startet HA-native Aufnahme bei Bewegungserkennung (Backup zur Coordinator-Aufnahme)"
+  mode: restart
+  triggers:
+    - platform: state
+      entity_id: binary_sensor.wjg_xm_3820_bewegung
+      to: "on"
+  actions:
+    - service: camera.record
+      target:
+        entity_id: camera.wjg_xm_3820
+      data:
+        filename: "/media/camera/ha_motion_{{ now().strftime('%Y%m%d_%H%M%S') }}.mp4"
+        duration: 120
+        lookback: 2
+
 - id: '1777229948150'
   alias: Alarm - Beast Zombie (alle 3 Tage)
   description: Ab 26.04. alle 3 Tage um 16:00, bei Samstag auf Sonntag verschoben
