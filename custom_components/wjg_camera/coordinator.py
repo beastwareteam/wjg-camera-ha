@@ -647,6 +647,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         else:
             variants.append("")
 
+        # XM-Kameras brauchen kein Auth für RTSP — immer als Fallback probieren
+        for fallback in ("admin:@", ""):
+            if fallback not in variants:
+                variants.append(fallback)
+
         # Reihenfolge erhalten, Duplikate entfernen
         deduped: list[str] = []
         for authority in variants:
@@ -762,16 +767,22 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             if url not in candidates:
                 candidates.append(url)
 
-        if self.username:
-            user_q = quote(self.username or "admin", safe="")
-            pass_q = quote(self.password or "", safe="")
-            with_query_auth: list[str] = []
-            for url in candidates:
-                separator = "&" if "?" in url else "?"
-                url_with_auth = f"{url}{separator}user={user_q}&password={pass_q}"
-                if url_with_auth not in candidates and url_with_auth not in with_query_auth:
-                    with_query_auth.append(url_with_auth)
-            candidates.extend(with_query_auth)
+        # ONVIF-Port als Snapshot-Fallback (wenn HTTP-Port nicht erreichbar)
+        if self.onvif_port and self.onvif_port != self.http_port:
+            for path in ("/webcapture.jpg?command=snap&channel=1", "/webcapture.jpg"):
+                url = f"http://{self.host}:{self.onvif_port}{path}"
+                if url not in candidates:
+                    candidates.append(url)
+
+        # Query-Auth nur mit Standard-Kamera-Credentials (admin/leer), nicht mit
+        # konfigurierten Cloud-Credentials die falsch sein könnten
+        with_query_auth: list[str] = []
+        for url in candidates[:4]:  # nur erste 4 Kandidaten — keine Explosion
+            separator = "&" if "?" in url else "?"
+            url_with_auth = f"{url}{separator}user=admin&password="
+            if url_with_auth not in candidates and url_with_auth not in with_query_auth:
+                with_query_auth.append(url_with_auth)
+        candidates.extend(with_query_auth)
 
         return candidates
 
