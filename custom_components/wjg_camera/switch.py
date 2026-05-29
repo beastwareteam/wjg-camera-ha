@@ -1,7 +1,6 @@
 """WJG Switch Entities."""
 from __future__ import annotations
 
-import logging
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
@@ -13,8 +12,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DOMAIN
 from .coordinator import WJGCameraCoordinator
-
-_LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -57,23 +54,16 @@ class WJGRecordingSwitch(  # pyright: ignore[reportAbstractUsage]
         return self.coordinator.is_recording
 
     async def async_turn_on(self, **_: Any) -> None:
-        """Aufnahme starten."""
-        ok = await self.coordinator.async_set_recording(True)
-        if ok:
-            _LOGGER.info("Aufnahme gestartet auf %s", self.coordinator.host)
-        else:
-            _LOGGER.warning("Aufnahme konnte nicht gestartet werden")
+        """Aufnahme starten (FFmpeg → /media/camera/)."""
+        await self.coordinator.async_start_local_recording()
         self.async_write_ha_state()
 
     def turn_on(self, **kwargs: Any) -> None:
-        """Sync-API bewusst nicht unterstuetzen."""
         raise NotImplementedError("Use async_turn_on instead")
 
     async def async_turn_off(self, **_: Any) -> None:
         """Aufnahme stoppen."""
-        ok = await self.coordinator.async_set_recording(False)
-        if ok:
-            _LOGGER.info("Aufnahme gestoppt auf %s", self.coordinator.host)
+        await self.coordinator.async_stop_local_recording()
         self.async_write_ha_state()
 
     def turn_off(self, **kwargs: Any) -> None:
