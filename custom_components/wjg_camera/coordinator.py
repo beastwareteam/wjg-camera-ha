@@ -2360,6 +2360,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             truthy = any(value is True for value in values)
             if rule_name == "motion":
                 if truthy or (topic_match and not values and rule.get("topic_only_true", False)):
+                    _LOGGER.info("BEWEGUNG erkannt! Topic=%s values=%s", topic, values)
                     self._last_motion_time = time.time()
                     changed = True
                 continue
@@ -2417,10 +2418,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             async with _XMSoapClient() as soap:
                 sub_url = await soap.create_pull_point_subscription()
         except Exception as exc:
-            _LOGGER.debug("PullPoint-Subscription fehlgeschlagen: %s", exc)
+            _LOGGER.warning("Motion-Detection: PullPoint-Subscription fehlgeschlagen: %s", exc)
             return False
 
         if not sub_url:
+            _LOGGER.warning("Motion-Detection: Kamera gab keine Subscription-URL zurück — kein Motion")
             self._event_pullpoint_path = "/onvif/Events"
             return True
 
@@ -2431,6 +2433,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             self._event_pullpoint_path = sub_url
         else:
             self._event_pullpoint_path = f"/{sub_url}"
+        _LOGGER.info("Motion-Detection aktiv: PullPoint=%s", self._event_pullpoint_path)
         self._remember_onvif_service_path(ONVIF_SERVICE_EVENTS, self._event_pullpoint_path)
         return True
 
