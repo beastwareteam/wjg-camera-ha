@@ -2427,7 +2427,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             "<tev:Timeout>PT15S</tev:Timeout>"
             "<tev:MessageLimit>16</tev:MessageLimit>"
             "</tev:PullMessages>",
-            use_auth=False,
+            use_auth=True,
             timeout_seconds=20,
         )
         if not resp:
@@ -2450,27 +2450,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return "PullMessagesResponse" in resp
 
     async def async_onvif_create_pullpoint(self) -> bool:
-        resp = await self._onvif_soap_for(
-            ONVIF_SERVICE_EVENTS,
-            "<tev:CreatePullPointSubscription>"
-            "<tev:InitialTerminationTime>PT30M</tev:InitialTerminationTime>"
-            "</tev:CreatePullPointSubscription>",
-        )
-        if not resp:
+        # Frische Session mit WSSE (wie PTZ) – Kamera verlangt Auth für Events (HTTP 400 ohne)
+        try:
+            async with _XMSoapClient() as soap:
+                sub_url = await soap.create_pull_point_subscription()
+        except Exception as exc:
+            _LOGGER.debug("PullPoint-Subscription fehlgeschlagen: %s", exc)
             return False
 
-        address = self._xml_text(resp, "Address")
-        if not address:
+        if not sub_url:
             self._event_pullpoint_path = "/onvif/Events"
             return True
 
-        if address.startswith("http://") or address.startswith("https://"):
-            parsed = urlparse(address)
+        if sub_url.startswith("http://") or sub_url.startswith("https://"):
+            parsed = urlparse(sub_url)
             self._event_pullpoint_path = parsed.path or "/onvif/Events"
-        elif address.startswith("/"):
-            self._event_pullpoint_path = address
+        elif sub_url.startswith("/"):
+            self._event_pullpoint_path = sub_url
         else:
-            self._event_pullpoint_path = f"/{address}"
+            self._event_pullpoint_path = f"/{sub_url}"
         self._remember_onvif_service_path(ONVIF_SERVICE_EVENTS, self._event_pullpoint_path)
         return True
 
