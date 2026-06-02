@@ -476,6 +476,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._update_count: int = 0
         self._event_pullpoint_path: str = ""
         self._event_task: asyncio.Task | None = None
+        # Motion-Warnung nur einmal pro Ausfall-Episode loggen (kein Log-Spam,
+        # v. a. wenn eine Kamera offline ist oder keine ONVIF-Events liefert)
+        self._motion_warn_suppressed: bool = False
         self._onvif_profile_tokens: dict[str, str] = {}
         self._onvif_video_source_token: str = "000"
         self._last_ptz_fault: str = ""
@@ -2441,13 +2444,26 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             async with self._soap() as soap:
                 sub_url = await soap.create_pull_point_subscription()
         except Exception as exc:
-            _LOGGER.warning("Motion-Detection: PullPoint-Subscription fehlgeschlagen: %s", exc)
+            if not self._motion_warn_suppressed:
+                _LOGGER.warning(
+                    "Motion-Detection (%s): PullPoint-Subscription fehlgeschlagen: %s "
+                    "(weitere Meldungen unterdrückt bis zur Erholung)", self.host, exc
+                )
+                self._motion_warn_suppressed = True
             return False
 
         if not sub_url:
-            _LOGGER.warning("Motion-Detection: Kamera gab keine Subscription-URL zurück — kein Motion")
+            if not self._motion_warn_suppressed:
+                _LOGGER.warning(
+                    "Motion-Detection (%s): Kamera gab keine Subscription-URL zurück — kein Motion "
+                    "(weitere Meldungen unterdrückt bis zur Erholung)", self.host
+                )
+                self._motion_warn_suppressed = True
             self._event_pullpoint_path = "/onvif/Events"
             return True
+
+        # Erfolgreiche Subscription → Warn-Unterdrückung zurücksetzen
+        self._motion_warn_suppressed = False
 
         if sub_url.startswith("http://") or sub_url.startswith("https://"):
             parsed = urlparse(sub_url)
