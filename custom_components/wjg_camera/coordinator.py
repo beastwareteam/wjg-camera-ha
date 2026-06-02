@@ -1404,7 +1404,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol == PROTOCOL_ONVIF:
             spd = min(speed, 8) / 8
             try:
-                async with _XMSoapClient() as soap:
+                async with self._soap() as soap:
                     ok = await soap.ptz_command(cmd, speed=spd)
                 if ok:
                     self._last_ptz_fault = ""
@@ -2098,10 +2098,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     def ptz_presets(self) -> dict[str, str]:
         return dict(self._ptz_presets)
 
+    def _soap(self) -> _XMSoapClient:
+        """Frischen XMSoapClient für DIESE Kamera erstellen (Multi-Device-fähig).
+
+        Wichtig: pro Befehl eine neue Instanz/Session (siehe CLAUDE.md, Lockout).
+        Host/Zugangsdaten/Port/Profile-Token kommen aus diesem Coordinator, damit
+        bei mehreren Kameras jeweils das richtige Gerät angesprochen wird.
+        """
+        return _XMSoapClient(
+            host=self.host,
+            username=self.username,
+            password=self.password,
+            onvif_port=self.onvif_port,
+            profile_token=self._preferred_onvif_profile_token or None,
+        )
+
     async def async_ptz_home(self) -> bool:
         spd = self._ptz_speed / 8
         try:
-            async with _XMSoapClient() as soap:
+            async with self._soap() as soap:
                 return await soap.ptz_goto_home(speed=spd)
         except Exception as exc:
             _LOGGER.warning("ptz_home Fehler: %s", exc)
@@ -2109,7 +2124,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_ptz_set_home(self) -> bool:
         try:
-            async with _XMSoapClient() as soap:
+            async with self._soap() as soap:
                 return await soap.ptz_set_home()
         except Exception as exc:
             _LOGGER.warning("ptz_set_home Fehler: %s", exc)
@@ -2117,7 +2132,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_ptz_stop(self) -> bool:
         try:
-            async with _XMSoapClient() as soap:
+            async with self._soap() as soap:
                 return await soap.ptz_stop()
         except Exception as exc:
             _LOGGER.warning("ptz_stop Fehler: %s", exc)
@@ -2143,7 +2158,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_ptz_goto_preset(self, token: str) -> bool:
         spd = self._ptz_speed / 8
         try:
-            async with _XMSoapClient() as soap:
+            async with self._soap() as soap:
                 return await soap.ptz_goto_preset(preset_token=token, speed=spd)
         except Exception as exc:
             _LOGGER.warning("ptz_goto_preset Fehler: %s", exc)
@@ -2151,7 +2166,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_ptz_set_preset(self, name: str, token: str | None = None) -> str | None:
         try:
-            async with _XMSoapClient() as soap:
+            async with self._soap() as soap:
                 new_token = await soap.ptz_set_preset(name=name, preset_token=token)
             if new_token:
                 self._ptz_presets[new_token] = name
@@ -2423,7 +2438,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_onvif_create_pullpoint(self) -> bool:
         # Frische Session mit WSSE (wie PTZ) – Kamera verlangt Auth für Events (HTTP 400 ohne)
         try:
-            async with _XMSoapClient() as soap:
+            async with self._soap() as soap:
                 sub_url = await soap.create_pull_point_subscription()
         except Exception as exc:
             _LOGGER.warning("Motion-Detection: PullPoint-Subscription fehlgeschlagen: %s", exc)

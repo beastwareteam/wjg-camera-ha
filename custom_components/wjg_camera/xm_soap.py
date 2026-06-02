@@ -4,7 +4,9 @@ xm_soap.py – Direkter ONVIF-SOAP-Client für XM/Xiongmai-Kameras (WJG XM-3820)
 Ersetzt python-onvif-zeep vollständig. Keine WSSE-Library nötig.
 Auth: PasswordDigest (SHA1, leer), Profile-Token: "000", PTZ-Endpoint: Port 8899.
 
-Hardcodierte Defaults für WJG XM-3820 – kein Config-Flow-Fehler mehr möglich.
+Multi-Device: Host, Zugangsdaten, ONVIF-Port und Profile-Token werden pro Instanz
+übergeben (Coordinator reicht sie durch). Werden keine übergeben, gelten die
+hardcodierten Defaults für die WJG XM-3820 als Fallback.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
-# ── Hardcodierte Kamera-Konstanten ───────────────────────────────────────────
+# ── Hardcodierte Kamera-Defaults (Fallback, wenn nichts übergeben wird) ───────
 
 CAMERA_HOST = "192.168.178.49"
 CAMERA_USERNAME = "admin"
@@ -80,9 +82,16 @@ def _wsse_header(username: str = CAMERA_USERNAME, password: str = CAMERA_PASSWOR
 </wsse:Security>"""
 
 
-def _envelope(body: str, auth: bool = True) -> str:
+def _envelope(
+    body: str,
+    auth: bool = True,
+    username: str = CAMERA_USERNAME,
+    password: str = CAMERA_PASSWORD,
+) -> str:
     """Wraps body in SOAP Envelope. auth=False für GetCapabilities (kein Auth nötig)."""
-    header = f"<s:Header>{_wsse_header()}</s:Header>" if auth else ""
+    header = (
+        f"<s:Header>{_wsse_header(username, password)}</s:Header>" if auth else ""
+    )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
             xmlns:trt="http://www.onvif.org/ver10/media/wsdl"
@@ -105,11 +114,38 @@ class XMSoapClient:
     Asynchroner SOAP-Client für WJG XM-3820.
     Ersetzt ONVIFCamera aus python-onvif-zeep komplett.
     Alle Methoden sind async und HA-kompatibel (kein Executor nötig).
+
+    Multi-Device: host/username/password/onvif_port/profile_token werden pro
+    Instanz übergeben. Ohne Angabe gelten die Modul-Defaults (WJG XM-3820).
     """
 
-    def __init__(self, session: aiohttp.ClientSession | None = None) -> None:
+    def __init__(
+        self,
+        session: aiohttp.ClientSession | None = None,
+        *,
+        host: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        onvif_port: int | None = None,
+        profile_token: str | None = None,
+    ) -> None:
         self._session = session
         self._owns_session = session is None
+
+        # Per-Instanz-Zugangsdaten (Fallback auf Modul-Defaults)
+        self._host = host or CAMERA_HOST
+        self._username = username if username is not None else CAMERA_USERNAME
+        self._password = password if password is not None else CAMERA_PASSWORD
+        self._port = onvif_port or ONVIF_PORT
+        self._profile_token = profile_token or PROFILE_TOKEN
+
+        # Endpunkte aus Host + Port aufbauen
+        base = f"http://{self._host}:{self._port}"
+        self._ep_device = f"{base}/onvif/device_service"
+        self._ep_media = f"{base}/onvif/Media"
+        self._ep_ptz = f"{base}/onvif/PTZ"
+        self._ep_events = f"{base}/onvif/Events"
+        self._ep_imaging = f"{base}/onvif/imaging"
 
     async def __aenter__(self) -> "XMSoapClient":
         if self._owns_session:
@@ -125,7 +161,7 @@ class XMSoapClient:
 
     async def _post(self, endpoint: str, body: str, auth: bool = True) -> ET.Element | None:
         """Sendet SOAP-Request und gibt geparsten XML-Root zurück."""
-        soap = _envelope(body, auth=auth)
+        soap = _envelope(body, auth=auth, username=self._username, password=self._password)
         try:
             assert self._session is not None
             async with self._session.post(endpoint, data=soap.encode("utf-8")) as resp:
@@ -148,7 +184,7 @@ class XMSoapClient:
         body = """<tds:GetCapabilities>
   <tds:Category>All</tds:Category>
 </tds:GetCapabilities>"""
-        return await self._post(ENDPOINT_DEVICE, body, auth=False)
+        return await self._post(self._ep_device, body, auth=False)
 
     async def ping(self) -> bool:
         """Schneller Erreichbarkeits-Check ohne Auth."""
@@ -160,7 +196,7 @@ class XMSoapClient:
     async def get_profiles(self) -> list[dict[str, str]]:
         """Gibt Liste der Profile zurück: [{token, name}, ...]"""
         body = "<trt:GetProfiles/>"
-        root = await self._post(ENDPOINT_MEDIA, body)
+        root = await self._post(self._ep_media, body)
         if root is None:
             return []
         ns = {"trt": "http://www.onvif.org/ver10/media/wsdl",
@@ -173,8 +209,9 @@ class XMSoapClient:
             })
         return profiles
 
-    async def get_stream_uri(self, token: str = PROFILE_TOKEN) -> str | None:
+    async def get_stream_uri(self, token: str | None = None) -> str | None:
         """Gibt RTSP-URI vom Gerät zurück."""
+        token = token or self._profile_token
         body = f"""<trt:GetStreamUri>
   <trt:StreamSetup>
     <tt:Stream>RTP-Unicast</tt:Stream>
@@ -182,7 +219,7 @@ class XMSoapClient:
   </trt:StreamSetup>
   <trt:ProfileToken>{token}</trt:ProfileToken>
 </trt:GetStreamUri>"""
-        root = await self._post(ENDPOINT_MEDIA, body)
+        root = await self._post(self._ep_media, body)
         if root is None:
             return RTSP_MAIN
         ns = {"trt": "http://www.onvif.org/ver10/media/wsdl",
@@ -197,9 +234,10 @@ class XMSoapClient:
         pan: float = 0.0,
         tilt: float = 0.0,
         zoom: float = 0.0,
-        token: str = PROFILE_TOKEN,
+        token: str | None = None,
     ) -> bool:
         """Startet kontinuierliche PTZ-Bewegung. Werte: -1.0 bis 1.0."""
+        token = token or self._profile_token
         body = f"""<tptz:ContinuousMove>
   <tptz:ProfileToken>{token}</tptz:ProfileToken>
   <tptz:Velocity>
@@ -207,17 +245,18 @@ class XMSoapClient:
     <tt:Zoom x="{zoom:.2f}"/>
   </tptz:Velocity>
 </tptz:ContinuousMove>"""
-        result = await self._post(ENDPOINT_PTZ, body)
+        result = await self._post(self._ep_ptz, body)
         return result is not None
 
-    async def ptz_stop(self, token: str = PROFILE_TOKEN) -> bool:
+    async def ptz_stop(self, token: str | None = None) -> bool:
         """Stoppt alle PTZ-Bewegungen."""
+        token = token or self._profile_token
         body = f"""<tptz:Stop>
   <tptz:ProfileToken>{token}</tptz:ProfileToken>
   <tptz:PanTilt>true</tptz:PanTilt>
   <tptz:Zoom>true</tptz:Zoom>
 </tptz:Stop>"""
-        result = await self._post(ENDPOINT_PTZ, body)
+        result = await self._post(self._ep_ptz, body)
         return result is not None
 
     async def ptz_relative_move(
@@ -225,9 +264,10 @@ class XMSoapClient:
         pan: float = 0.0,
         tilt: float = 0.0,
         zoom: float = 0.0,
-        token: str = PROFILE_TOKEN,
+        token: str | None = None,
     ) -> bool:
         """Relative PTZ-Bewegung (Translation)."""
+        token = token or self._profile_token
         body = f"""<tptz:RelativeMove>
   <tptz:ProfileToken>{token}</tptz:ProfileToken>
   <tptz:Translation>
@@ -235,7 +275,7 @@ class XMSoapClient:
     <tt:Zoom x="{zoom:.2f}"/>
   </tptz:Translation>
 </tptz:RelativeMove>"""
-        result = await self._post(ENDPOINT_PTZ, body)
+        result = await self._post(self._ep_ptz, body)
         return result is not None
 
     # ── Convenience PTZ-Shortcuts ─────────────────────────────────────────────
@@ -299,31 +339,34 @@ class XMSoapClient:
             await self.ptz_stop()
         return ok
 
-    async def ptz_goto_home(self, speed: float = PTZ_SPEED, token: str = PROFILE_TOKEN) -> bool:
+    async def ptz_goto_home(self, speed: float = PTZ_SPEED, token: str | None = None) -> bool:
         """Fährt zur gespeicherten Home-Position."""
+        token = token or self._profile_token
         body = (
             f"<tptz:GotoHomePosition>"
             f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
             f'<tptz:Speed><tt:PanTilt x="{speed:.2f}" y="{speed:.2f}"/></tptz:Speed>'
             f"</tptz:GotoHomePosition>"
         )
-        result = await self._post(ENDPOINT_PTZ, body)
+        result = await self._post(self._ep_ptz, body)
         return result is not None
 
-    async def ptz_set_home(self, token: str = PROFILE_TOKEN) -> bool:
+    async def ptz_set_home(self, token: str | None = None) -> bool:
         """Speichert aktuelle Position als Home."""
+        token = token or self._profile_token
         body = (
             f"<tptz:SetHomePosition>"
             f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
             f"</tptz:SetHomePosition>"
         )
-        result = await self._post(ENDPOINT_PTZ, body)
+        result = await self._post(self._ep_ptz, body)
         return result is not None
 
     async def ptz_goto_preset(
-        self, preset_token: str, speed: float = PTZ_SPEED, token: str = PROFILE_TOKEN
+        self, preset_token: str, speed: float = PTZ_SPEED, token: str | None = None
     ) -> bool:
         """Fährt zu einem gespeicherten Preset."""
+        token = token or self._profile_token
         body = (
             f"<tptz:GotoPreset>"
             f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
@@ -332,13 +375,14 @@ class XMSoapClient:
             f'<tt:Zoom x="{speed:.2f}"/></tptz:Speed>'
             f"</tptz:GotoPreset>"
         )
-        result = await self._post(ENDPOINT_PTZ, body)
+        result = await self._post(self._ep_ptz, body)
         return result is not None
 
     async def ptz_set_preset(
-        self, name: str, preset_token: str | None = None, token: str = PROFILE_TOKEN
+        self, name: str, preset_token: str | None = None, token: str | None = None
     ) -> str | None:
         """Speichert aktuelle Position als Preset. Gibt PresetToken zurück."""
+        token = token or self._profile_token
         tok_xml = f"<tptz:PresetToken>{preset_token}</tptz:PresetToken>" if preset_token else ""
         body = (
             f"<tptz:SetPreset>"
@@ -347,7 +391,7 @@ class XMSoapClient:
             f"{tok_xml}"
             f"</tptz:SetPreset>"
         )
-        root = await self._post(ENDPOINT_PTZ, body)
+        root = await self._post(self._ep_ptz, body)
         if root is None:
             return None
         for el in root.iter():
@@ -355,14 +399,15 @@ class XMSoapClient:
                 return el.text.strip()
         return None
 
-    async def ptz_get_presets(self, token: str = PROFILE_TOKEN) -> dict[str, str]:
+    async def ptz_get_presets(self, token: str | None = None) -> dict[str, str]:
         """Gibt alle gespeicherten Presets zurück: {preset_token: name}."""
+        token = token or self._profile_token
         body = (
             f"<tptz:GetPresets>"
             f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
             f"</tptz:GetPresets>"
         )
-        root = await self._post(ENDPOINT_PTZ, body)
+        root = await self._post(self._ep_ptz, body)
         presets: dict[str, str] = {}
         if root is None:
             return presets
@@ -385,7 +430,7 @@ class XMSoapClient:
         body = """<tev:CreatePullPointSubscription xmlns:tev="http://www.onvif.org/ver10/events/wsdl">
   <tev:InitialTerminationTime>PT600S</tev:InitialTerminationTime>
 </tev:CreatePullPointSubscription>"""
-        root = await self._post(ENDPOINT_EVENTS, body)
+        root = await self._post(self._ep_events, body)
         if root is None:
             return None
         addr = root.find(".//{http://www.w3.org/2005/08/addressing}Address")

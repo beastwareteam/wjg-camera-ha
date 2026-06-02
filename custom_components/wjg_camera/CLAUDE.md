@@ -45,13 +45,28 @@ Die XM-3820-Kamera (Firmware Xiongmai) verwendet **IP-basiertes Session-Caching*
 **Datei:** `xm_soap.py` → `class XMSoapClient`
 
 ```python
-# RICHTIG: Immer so verwenden — async context manager erstellt NEUE aiohttp.ClientSession
-async with _XMSoapClient() as soap:
+# RICHTIG: self._soap() erstellt einen frischen XMSoapClient FÜR DIESE KAMERA.
+# Der async context manager erstellt eine NEUE aiohttp.ClientSession pro Befehl.
+async with self._soap() as soap:
     ok = await soap.ptz_command(cmd, speed=spd)
 
 # FALSCH: Niemals self._session (die persistente Coordinator-Session) für PTZ-ONVIF-SOAP nutzen
 resp = await self._onvif_soap_for(ONVIF_SERVICE_PTZ, body)  # → HTTP 400 nach Lockout
 ```
+
+### Multi-Device (Fix v2.2.34 — Juni 2026)
+**Problem:** `_XMSoapClient()` wurde ohne Argumente erzeugt und nutzte die
+hardcodierten Modul-Konstanten (`CAMERA_HOST = "192.168.178.49"` usw.). Dadurch
+gingen PTZ **und** Motion-PullPoint bei JEDER Kamera an dieselbe IP — Steuerung
+mehrerer Geräte unmöglich.
+
+**Lösung:** `coordinator._soap()` reicht `host/username/password/onvif_port/
+profile_token` aus dem jeweiligen Coordinator an `XMSoapClient(...)` durch.
+`XMSoapClient.__init__` baut die ONVIF-Endpunkte pro Instanz aus Host+Port.
+Die Modul-Konstanten bleiben nur noch als Fallback bestehen.
+
+**Regel:** PTZ-/Event-Aufrufe IMMER über `async with self._soap() as soap:` —
+nie wieder `_XMSoapClient()` ohne Argumente (verdrahtet sonst wieder auf .49).
 
 ### Warum frische Sessions funktionieren
 Eine neue `aiohttp.ClientSession` pro PTZ-Befehl erstellt eine neue TCP-Verbindung ohne Session-History.
@@ -104,7 +119,7 @@ WSSE funktioniert trotzdem — die Kamera akzeptiert diese Zeitdifferenz.
 
 1. **`async_ptz_command` und alle anderen `async_ptz_*` Methoden** dürfen NICHT auf `self._onvif_soap_for()` / `self._session` zurückwechseln.
 2. **`xm_soap.py`** darf NICHT in `xm-soap.py` umbenannt werden (Python kann Module mit Bindestrichen nicht importieren).
-3. **Der `async with _XMSoapClient() as soap:` Pattern** muss beibehalten werden — kein globaler oder geteilter Client.
+3. **Der `async with self._soap() as soap:` Pattern** muss beibehalten werden — kein globaler oder geteilter Client. `self._soap()` erzeugt pro Befehl einen frischen, kameraspezifischen `XMSoapClient`. NICHT durch `_XMSoapClient()` ohne Argumente ersetzen (sonst wieder auf 192.168.178.49 verdrahtet).
 
 ---
 
@@ -116,9 +131,9 @@ Falls PTZ wieder mit HTTP 400 fehlschlägt:
 
 ---
 
-## Hardcodierte Konstanten (xm_soap.py)
+## Konstanten in xm_soap.py (seit v2.2.34 nur noch FALLBACK)
 ```python
-CAMERA_HOST = "192.168.178.49"
+CAMERA_HOST = "192.168.178.49"   # Fallback, falls _soap() keinen host übergibt
 CAMERA_USERNAME = "admin"
 CAMERA_PASSWORD = ""
 ONVIF_PORT = 8899
@@ -126,4 +141,8 @@ PROFILE_TOKEN = "000"
 PTZ_SPEED = 0.4       # Default-Geschwindigkeit
 PTZ_STOP_DELAY = 0.8  # Sekunden Auto-Stop
 ```
-Für Änderungen der Kamera-IP oder Credentials: diese Konstanten in `xm_soap.py` anpassen.
+**Wichtig:** Host/Credentials/Port kommen im Normalbetrieb aus dem Config-Entry
+(`coordinator._soap()` → `XMSoapClient(host=..., username=..., ...)`). Die
+Konstanten greifen nur, wenn `XMSoapClient()` ohne diese Argumente erzeugt wird
+(z. B. der Schnelltest `_test()`). Kamera-IP/Credentials NICHT mehr hier ändern,
+sondern über den HA-Config-Flow je Kamera.

@@ -91,11 +91,24 @@ _SVC_SCHEMA_ZOOM = vol.Schema({
 
 
 def _get_coordinator(hass: HomeAssistant, entity_id: str) -> WJGCameraCoordinator | None:
-    """Coordinator für eine entity_id aus hass.data suchen."""
+    """Coordinator für eine entity_id finden (Multi-Device-fähig).
+
+    Ordnet die entity_id über die Entity-Registry dem zugehörigen Config-Entry
+    zu, damit bei mehreren Kameras die richtige angesprochen wird. Fällt nur dann
+    auf den ersten Coordinator zurück, wenn keine Zuordnung möglich ist.
+    """
+    from homeassistant.helpers import entity_registry as er  # pylint: disable=import-outside-toplevel
+
+    registry = er.async_get(hass)
+    entry = registry.async_get(entity_id)
+    if entry and entry.config_entry_id:
+        coord = hass.data.get(DOMAIN, {}).get(entry.config_entry_id)
+        if isinstance(coord, WJGCameraCoordinator):
+            return coord
+
+    # Fallback: erster Coordinator (z. B. wenn nur eine Kamera existiert)
     for coord in hass.data.get(DOMAIN, {}).values():
         if isinstance(coord, WJGCameraCoordinator):
-            # Kamera-Entity-ID hat Format "<domain>.<entry_id>_camera" oder ähnlich
-            # Einfachster Weg: ersten Coordinator zurückgeben wenn nur einer existiert
             return coord
     return None
 
