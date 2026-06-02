@@ -1341,15 +1341,37 @@ class WjgCameraCard extends HTMLElement {
   }
 
   // ── PTZ ────────────────────────────────────────────────────────────────────
+  // device_id der konfigurierten Kamera aus der Entity-Registry holen
+  _camDeviceId() {
+    const reg = this._hass?.entities;
+    const cam = this._config?.entity;
+    return (reg && cam && reg[cam]) ? reg[cam].device_id : null;
+  }
+
+  // Eine Entity auf DEMSELBEN Gerät wie die Kamera finden, deren entity_id auf
+  // baseSuffix endet (optional gefolgt von _<Zahl> bei HA-Auto-Suffix _2/_3/_4).
+  // So wird pro Karte garantiert die EIGENE Kamera angesteuert — egal ob die
+  // Geräte umbenannt (camera.cam_dachboden) oder auto-nummeriert (camera.x_2) sind.
+  _findOnDevice(domain, baseSuffix) {
+    const reg = this._hass?.entities;
+    const devId = this._camDeviceId();
+    if (!reg || !devId) return null;
+    const re = new RegExp(baseSuffix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(_\\d+)?$');
+    for (const eid in reg) {
+      const ent = reg[eid];
+      if (ent && ent.device_id === devId && eid.startsWith(domain + '.') && re.test(eid))
+        return eid;
+    }
+    return null;
+  }
+
   _speedEntity() {
     // 1. Explizit konfiguriert → IMMER diese Entity verwenden.
-    //    Bei mehreren Kameras MUSS ptz_speed_entity pro Karte gesetzt sein.
     if (this._config?.ptz_speed_entity) return this._config.ptz_speed_entity;
-    // 2. Aus der Kamera-Entity ableiten, ABER nur zurückgeben, wenn die
-    //    abgeleitete Entity wirklich existiert. Bei umbenannten Geräten
-    //    (camera.hof → number.hof_ptz_geschwindigkeit) klappt das. Bei
-    //    Auto-Suffix (camera.x_2 ↔ number.x_ptz_geschwindigkeit_2) ist es NICHT
-    //    ableitbar → dann liefern wir null und steuern KEINE fremde Kamera.
+    // 2. Robust: die Geschwindigkeits-Number auf demselben Gerät wie die Kamera.
+    const viaDevice = this._findOnDevice('number', '_ptz_geschwindigkeit');
+    if (viaDevice) return viaDevice;
+    // 3. Fallback: String-Ableitung, nur wenn die Entity existiert.
     const cam = this._config?.entity;
     if (cam && this._hass) {
       const derived = cam.replace(/^camera\./, 'number.') + '_ptz_geschwindigkeit';
@@ -1399,37 +1421,38 @@ class WjgCameraCard extends HTMLElement {
   _callPTZ(direction) {
     if (!this._hass || !this._config) return;
 
-    // Modus 1: ptz_entities Map → ruft button.press auf der jeweiligen Entity auf
-    // Konfiguration in YAML:
-    //   ptz_entities:
-    //     up:        button.wjg_xm_3820_ptz_up
-    //     down:      button.wjg_xm_3820_ptz_down
-    //     left:      button.wjg_xm_3820_ptz_left
-    //     right:     button.wjg_xm_3820_ptz_right
-    //     up_left:   button.wjg_xm_3820_ptz_up        # optional Diagonalen
-    //     up_right:  button.wjg_xm_3820_ptz_up
-    //     down_left: button.wjg_xm_3820_ptz_down
-    //     down_right:button.wjg_xm_3820_ptz_down
-    //     home:      button.wjg_xm_3820_ptz_home
-    //     zoom_in:   button.wjg_xm_3820_ptz_zoom_in   # optional
-    //     zoom_out:  button.wjg_xm_3820_ptz_zoom_out  # optional
-    if (this._config.ptz_entities) {
-      const entityId = this._config.ptz_entities[direction];
-      if (!entityId) return; // Richtung nicht konfiguriert → ignorieren
-      this._hass.callService('button', 'press', {
-        entity_id: entityId,
-      }).catch(() => {});
+    // Modus 1: explizite ptz_entities-Map hat Vorrang (manuelle Übersteuerung).
+    let entityId = this._config.ptz_entities?.[direction];
+
+    // Modus 2: automatisch aus dem KAMERA-GERÄT auflösen (Entity-Registry).
+    //   So zeigt jede Karte garantiert auf ihre eigene Kamera — ohne dass man
+    //   pro Karte Button-Entities pflegen muss. Diagonalen → vertikale Richtung.
+    if (!entityId) {
+      const map = {
+        up: '_ptz_up', down: '_ptz_down', left: '_ptz_left', right: '_ptz_right',
+        zoom_in: '_ptz_zoom_in', zoom_out: '_ptz_zoom_out', home: '_ptz_home',
+        up_left: '_ptz_up', up_right: '_ptz_up',
+        down_left: '_ptz_down', down_right: '_ptz_down',
+      };
+      const suffix = map[direction];
+      if (suffix) entityId = this._findOnDevice('button', suffix);
+    }
+
+    if (entityId) {
+      this._hass.callService('button', 'press', { entity_id: entityId }).catch(() => {});
       return;
     }
 
-    // Modus 2: ptz_service (Legacy) → ruft einen einzelnen Service mit move-Parameter auf
-    const service = this._config.ptz_service || 'wjg_camera.ptz';
-    const [domain, svc] = service.split('.');
-    this._hass.callService(domain, svc, {
-      entity_id: this._config.entity,
-      move: direction,
-      speed: this._ptzSpeed,
-    }).catch(() => {});
+    // Modus 3: Legacy ptz_service NUR wenn explizit konfiguriert (kein Default,
+    // damit nie versehentlich ein nicht existenter Service/eine fremde Kamera).
+    if (this._config.ptz_service) {
+      const [domain, svc] = this._config.ptz_service.split('.');
+      this._hass.callService(domain, svc, {
+        entity_id: this._config.entity,
+        move: direction,
+        speed: this._ptzSpeed,
+      }).catch(() => {});
+    }
   }
 
   // ── Keyboard Help Panel ────────────────────────────────────────────────────

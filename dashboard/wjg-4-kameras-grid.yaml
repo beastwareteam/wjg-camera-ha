@@ -1,27 +1,27 @@
 # ============================================================================
-#  WJG XM-3820 — 4 Kameras im 2×2-Grid
+#  WJG XM-3820 — 4 Kameras im 2×2-Grid  (vollständig getrennt pro Kamera)
 # ============================================================================
 #  Voraussetzung:
-#   1. Lovelace-Ressource registriert:
-#        Einstellungen → Dashboards → Ressourcen → + Hinzufügen
+#   1. Card-Version >= 2.2.36 als Lovelace-Ressource registriert:
+#        Einstellungen → Dashboards → Ressourcen
 #        URL:  /wjg_camera/wjg-camera-card.js     Typ: JavaScript-Modul
-#   2. Alle 4 Kameras als eigene Integration-Einträge hinzugefügt
-#        (Einstellungen → Geräte & Dienste → Integration hinzufügen → WJG Camera,
-#         für jede der 4 IP-Adressen einmal).
+#      Nach Update: Browser-Cache leeren / Strg+F5.
+#   2. Alle 4 Kameras als eigene WJG-Camera-Einträge hinzugefügt und jeweils
+#      eindeutig benannt (Gerät → ⚙ → Umbenennen), z. B. "Cam Dachboden".
 #
-#  WICHTIG — Entity-IDs anpassen:
-#  Bei 4 identischen Kameras vergibt HA automatisch Suffixe (_2, _3, _4).
-#  EMPFEHLUNG: Benenne jede Kamera in HA um (Gerät → ⚙ → Umbenennen, z. B.
-#  "Hof", "Einfahrt", "Garten", "Garage"). Dann werden die Entity-IDs sauber
-#  (camera.hof, button.hof_ptz_up …) statt camera.wjg_xm_3820_2 usw.
+#  WICHTIG — pro Karte nur EINE Zeile anpassen:
+#  Es genügt `entity: camera.<deine_kamera>`. Die Karte löst PTZ-Buttons UND die
+#  PTZ-Geschwindigkeit automatisch aus DEMSELBEN Gerät auf (über die Entity-
+#  Registry). Dadurch steuert jeder Slider/Button garantiert nur SEINE Kamera —
+#  keine manuelle Button-/Speed-Liste mehr nötig, keine Querverbindung.
 #
-#  Prüfe deine echten IDs unter:  Entwicklerwerkzeuge → Zustände → Filter "wjg"
-#  und ersetze unten die camera.* / button.* / binary_sensor.* / switch.* IDs.
+#  Deine echten camera.*-IDs findest du unter:
+#    Entwicklerwerkzeuge → Zustände → Filter "camera."
+#  (Beispiel unten: camera.cam_dachboden — die anderen 3 entsprechend ersetzen.)
 # ============================================================================
 
-# Diese Datei beschreibt EINE View (ein Reiter im Dashboard).
-# Einbau: entweder als Inhalt eines Eintrags unter "views:" deines Dashboards,
-# oder den "cards:"-Block in eine bestehende View kopieren.
+# Diese Datei beschreibt EINE View (ein Reiter). Einbau: als Eintrag unter
+# "views:" deines Dashboards, oder den "cards:"-Block in eine View kopieren.
 title: WJG Kameras
 path: wjg-kameras
 icon: mdi:cctv
@@ -33,92 +33,47 @@ cards:
 
       # ── Kamera 1 ───────────────────────────────────────────────────────
       - type: custom:wjg-camera-card
-        entity: camera.wjg_xm_3820
-        title: Kamera 1
+        entity: camera.cam_dachboden       # ← einzige Pflichtangabe
+        title: Cam Dachboden
         show_ptz: true
         show_zoom_bar: true
         aspect_ratio: "16/9"
-        ptz_speed_entity: number.wjg_xm_3820_ptz_geschwindigkeit
-        ptz_entities:
-          up:       button.wjg_xm_3820_ptz_up
-          down:     button.wjg_xm_3820_ptz_down
-          left:     button.wjg_xm_3820_ptz_left
-          right:    button.wjg_xm_3820_ptz_right
-          home:     button.wjg_xm_3820_ptz_home
-          zoom_in:  button.wjg_xm_3820_ptz_zoom_in
-          zoom_out: button.wjg_xm_3820_ptz_zoom_out
+        # PTZ-Buttons + Geschwindigkeit werden automatisch aufgelöst.
+        # Badges sind optional und beziehen sich auf dieselbe Kamera:
         badges:
-          - entity: binary_sensor.wjg_xm_3820_bewegung
+          - entity: binary_sensor.cam_dachboden_bewegung
             icon: mdi:motion-sensor
-          - entity: switch.wjg_xm_3820_aufnahme
+          - entity: switch.cam_dachboden_aufnahme
             icon: mdi:record-circle
             action: switch.toggle
 
       # ── Kamera 2 ───────────────────────────────────────────────────────
       - type: custom:wjg-camera-card
-        entity: camera.wjg_xm_3820_2
+        entity: camera.KAMERA_2            # ← hier deine 2. Kamera eintragen
         title: Kamera 2
         show_ptz: true
         show_zoom_bar: true
         aspect_ratio: "16/9"
-        ptz_speed_entity: number.wjg_xm_3820_ptz_geschwindigkeit_2
-        ptz_entities:
-          up:       button.wjg_xm_3820_ptz_up_2
-          down:     button.wjg_xm_3820_ptz_down_2
-          left:     button.wjg_xm_3820_ptz_left_2
-          right:    button.wjg_xm_3820_ptz_right_2
-          home:     button.wjg_xm_3820_ptz_home_2
-          zoom_in:  button.wjg_xm_3820_ptz_zoom_in_2
-          zoom_out: button.wjg_xm_3820_ptz_zoom_out_2
-        badges:
-          - entity: binary_sensor.wjg_xm_3820_bewegung_2
-            icon: mdi:motion-sensor
-          - entity: switch.wjg_xm_3820_aufnahme_2
-            icon: mdi:record-circle
-            action: switch.toggle
+        # badges optional — Entity-Slugs an Kamera 2 anpassen:
+        # badges:
+        #   - entity: binary_sensor.KAMERA_2_bewegung
+        #     icon: mdi:motion-sensor
+        #   - entity: switch.KAMERA_2_aufnahme
+        #     icon: mdi:record-circle
+        #     action: switch.toggle
 
       # ── Kamera 3 ───────────────────────────────────────────────────────
       - type: custom:wjg-camera-card
-        entity: camera.wjg_xm_3820_3
+        entity: camera.KAMERA_3            # ← hier deine 3. Kamera eintragen
         title: Kamera 3
         show_ptz: true
         show_zoom_bar: true
         aspect_ratio: "16/9"
-        ptz_speed_entity: number.wjg_xm_3820_ptz_geschwindigkeit_3
-        ptz_entities:
-          up:       button.wjg_xm_3820_ptz_up_3
-          down:     button.wjg_xm_3820_ptz_down_3
-          left:     button.wjg_xm_3820_ptz_left_3
-          right:    button.wjg_xm_3820_ptz_right_3
-          home:     button.wjg_xm_3820_ptz_home_3
-          zoom_in:  button.wjg_xm_3820_ptz_zoom_in_3
-          zoom_out: button.wjg_xm_3820_ptz_zoom_out_3
-        badges:
-          - entity: binary_sensor.wjg_xm_3820_bewegung_3
-            icon: mdi:motion-sensor
-          - entity: switch.wjg_xm_3820_aufnahme_3
-            icon: mdi:record-circle
-            action: switch.toggle
 
       # ── Kamera 4 ───────────────────────────────────────────────────────
       - type: custom:wjg-camera-card
-        entity: camera.wjg_xm_3820_4
+        entity: camera.KAMERA_4            # ← hier deine 4. Kamera eintragen
         title: Kamera 4
         show_ptz: true
         show_zoom_bar: true
         aspect_ratio: "16/9"
-        ptz_speed_entity: number.wjg_xm_3820_ptz_geschwindigkeit_4
-        ptz_entities:
-          up:       button.wjg_xm_3820_ptz_up_4
-          down:     button.wjg_xm_3820_ptz_down_4
-          left:     button.wjg_xm_3820_ptz_left_4
-          right:    button.wjg_xm_3820_ptz_right_4
-          home:     button.wjg_xm_3820_ptz_home_4
-          zoom_in:  button.wjg_xm_3820_ptz_zoom_in_4
-          zoom_out: button.wjg_xm_3820_ptz_zoom_out_4
-        badges:
-          - entity: binary_sensor.wjg_xm_3820_bewegung_4
-            icon: mdi:motion-sensor
-          - entity: switch.wjg_xm_3820_aufnahme_4
-            icon: mdi:record-circle
-            action: switch.toggle

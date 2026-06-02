@@ -115,20 +115,25 @@ WSSE funktioniert trotzdem — die Kamera akzeptiert diese Zeitdifferenz.
 - **Default seit v2.2.35: `self._ptz_speed = 1`** (langsamste Stufe). Pro Coordinator/
   Kamera getrennt — NICHT auf 5 o. ä. zurücksetzen.
 
-### Multi-Device Geschwindigkeit / Lovelace-Card (Fix v2.2.35)
+### Multi-Device Geschwindigkeit / Lovelace-Card (Fix v2.2.35 → robust v2.2.36)
 **Nicht-offensichtliche Falle:** HA hängt das Kollisions-Suffix bei gleichnamigen
 Geräten an unterschiedlichen Positionen an:
 - Kamera 2: `camera.wjg_xm_3820_2` ABER `number.wjg_xm_3820_ptz_geschwindigkeit_2`
   (Suffix am ENDE der jeweils ganzen entity_id).
-Daher lässt sich die Speed-Number NICHT zuverlässig per String-Manipulation aus der
-Kamera-entity_id ableiten. `wjg-camera-card.js` → `_speedEntity()`:
-1. nutzt `ptz_speed_entity` aus der Karten-Config, wenn gesetzt (bei mehreren Kameras
-   PFLICHT pro Karte);
-2. leitet sonst nur ab, wenn die abgeleitete Entity in `hass.states` existiert
-   (klappt bei umbenannten Geräten wie `camera.hof`);
-3. liefert sonst `null` → Slider steuert NICHTS (früher: harter Fallback auf
-   `number.wjg_xm_3820_ptz_geschwindigkeit` = Kamera 1 → Querverbindung!).
-KEINEN harten Default-Entity-Fallback wieder einbauen.
+Daher lässt sich die Speed-/Button-Entity NICHT zuverlässig per String-Manipulation
+aus der Kamera-entity_id ableiten.
+
+**Lösung v2.2.36 (`wjg-camera-card.js`):** Auflösung über die **Entity-Registry**
+(`hass.entities`). `_findOnDevice(domain, baseSuffix)` sucht eine Entity auf
+DEMSELBEN `device_id` wie die Kamera, deren entity_id auf `baseSuffix` endet
+(Regex `baseSuffix(_\d+)?$` → deckt umbenannte UND auto-nummerierte Geräte ab).
+- `_speedEntity()`: Config `ptz_speed_entity` → `_findOnDevice('number','_ptz_geschwindigkeit')`
+  → String-Ableitung nur wenn existent → sonst `null`.
+- `_callPTZ()`: Config `ptz_entities[dir]` → `_findOnDevice('button', '_ptz_<dir>')`
+  → Legacy `ptz_service` NUR wenn explizit gesetzt (kein Default mehr).
+Dadurch genügt im Dashboard `entity: camera.<cam>` pro Karte; jede Karte steuert
+garantiert ihre EIGENE Kamera. KEINEN harten Default-Entity-Fallback (z. B. auf
+`number.wjg_xm_3820_ptz_geschwindigkeit`) wieder einbauen.
 
 ---
 
