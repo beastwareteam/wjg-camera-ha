@@ -1411,13 +1411,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     ok = await soap.ptz_command(cmd, speed=spd)
                 if ok:
                     self._last_ptz_fault = ""
-                    _LOGGER.info("PTZ '%s' OK via XMSoapClient", cmd)
+                    _LOGGER.info("PTZ '%s' OK via XMSoapClient (%s)", cmd, self.host)
                     return True
                 self._last_ptz_fault = f"XMSoapClient PTZ fehlgeschlagen: {cmd}"
-                _LOGGER.warning("XMSoapClient PTZ '%s' nicht erfolgreich", cmd)
+                _LOGGER.warning("XMSoapClient PTZ '%s' nicht erfolgreich (%s)", cmd, self.host)
             except Exception as soap_exc:
                 self._last_ptz_fault = f"XMSoapClient Fehler: {soap_exc}"
-                _LOGGER.warning("XMSoapClient PTZ '%s' Exception: %s", cmd, soap_exc)
+                _LOGGER.warning("XMSoapClient PTZ '%s' Exception (%s): %s", cmd, self.host, soap_exc)
 
         # ONVIF: Direct-SOAP ContinuousMove als primärer Weg
         if self.protocol == PROTOCOL_ONVIF:

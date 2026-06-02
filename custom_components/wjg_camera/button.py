@@ -96,7 +96,11 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
                 self.coordinator.host,
             )
         else:
-            _LOGGER.warning("PTZ-Befehl '%s' fehlgeschlagen", self._direction)
+            _LOGGER.warning(
+                "PTZ-Befehl '%s' fehlgeschlagen an %s",
+                self._direction,
+                self.coordinator.host,
+            )
             detail = str(getattr(self.coordinator, "last_ptz_fault", "") or "").strip()
             wsse_state = getattr(self.coordinator, "onvif_wsse_enabled", None)
             suffix = "build=2.2.2"
