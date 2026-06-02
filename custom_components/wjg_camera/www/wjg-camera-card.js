@@ -1342,15 +1342,27 @@ class WjgCameraCard extends HTMLElement {
 
   // ── PTZ ────────────────────────────────────────────────────────────────────
   _speedEntity() {
-    return this._config?.ptz_speed_entity
-        || (this._config?.entity
-              ? this._config.entity.replace(/^camera\./, 'number.') + '_ptz_geschwindigkeit'
-              : 'number.wjg_xm_3820_ptz_geschwindigkeit');
+    // 1. Explizit konfiguriert → IMMER diese Entity verwenden.
+    //    Bei mehreren Kameras MUSS ptz_speed_entity pro Karte gesetzt sein.
+    if (this._config?.ptz_speed_entity) return this._config.ptz_speed_entity;
+    // 2. Aus der Kamera-Entity ableiten, ABER nur zurückgeben, wenn die
+    //    abgeleitete Entity wirklich existiert. Bei umbenannten Geräten
+    //    (camera.hof → number.hof_ptz_geschwindigkeit) klappt das. Bei
+    //    Auto-Suffix (camera.x_2 ↔ number.x_ptz_geschwindigkeit_2) ist es NICHT
+    //    ableitbar → dann liefern wir null und steuern KEINE fremde Kamera.
+    const cam = this._config?.entity;
+    if (cam && this._hass) {
+      const derived = cam.replace(/^camera\./, 'number.') + '_ptz_geschwindigkeit';
+      if (this._hass.states[derived]) return derived;
+    }
+    return null;
   }
 
   _syncSpeedFromEntity() {
     if (!this._hass) return;
-    const st  = this._hass.states[this._speedEntity()];
+    const ent = this._speedEntity();
+    if (!ent) return;
+    const st  = this._hass.states[ent];
     if (!st)  return;
     const val = Math.round(parseFloat(st.state));
     if (isNaN(val)) return;
@@ -1364,9 +1376,10 @@ class WjgCameraCard extends HTMLElement {
   }
 
   _setSpeedEntity(value) {
-    if (!this._hass) return;
+    const ent = this._speedEntity();
+    if (!this._hass || !ent) return;   // nie eine fremde Kamera steuern
     this._hass.callService('number', 'set_value', {
-      entity_id: this._speedEntity(),
+      entity_id: ent,
       value: String(value),
     }).catch(() => {});
   }

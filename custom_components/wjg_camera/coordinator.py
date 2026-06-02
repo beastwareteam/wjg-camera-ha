@@ -443,8 +443,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self.onvif_port: int = int(
             options.get("onvif_port", entry.data.get("onvif_port", 8899))
         )
-        # PTZ
-        self._ptz_speed: int = 5
+        # PTZ — Standardgeschwindigkeit 1 (langsamste Stufe), pro Kamera
+        self._ptz_speed: int = 1
         self._ptz_presets: dict[str, str] = {}  # token -> name
         # Digital Zoom (Pillow-Crop für Snapshots, CSS-Sync über Lovelace-Karte)
         self._digital_zoom: float = 1.0
