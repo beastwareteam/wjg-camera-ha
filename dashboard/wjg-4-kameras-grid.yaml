@@ -1,23 +1,18 @@
 # ============================================================================
-#  WJG XM-3820 — 4 Kameras im 2×2-Grid  (vollständig getrennt pro Kamera)
+#  WJG XM-3820 — Kameras im 2×2-Grid  (vollständig getrennt pro Kamera)
 # ============================================================================
 #  Voraussetzung:
 #   1. Card-Version >= 2.2.36 als Lovelace-Ressource registriert:
 #        Einstellungen → Dashboards → Ressourcen
 #        URL:  /wjg_camera/wjg-camera-card.js     Typ: JavaScript-Modul
 #      Nach Update: Browser-Cache leeren / Strg+F5.
-#   2. Alle 4 Kameras als eigene WJG-Camera-Einträge hinzugefügt und jeweils
-#      eindeutig benannt (Gerät → ⚙ → Umbenennen), z. B. "Cam Dachboden".
+#   2. Jede Kamera als eigener WJG-Camera-Eintrag, eindeutig benannt.
 #
-#  WICHTIG — pro Karte nur EINE Zeile anpassen:
-#  Es genügt `entity: camera.<deine_kamera>`. Die Karte löst PTZ-Buttons UND die
-#  PTZ-Geschwindigkeit automatisch aus DEMSELBEN Gerät auf (über die Entity-
-#  Registry). Dadurch steuert jeder Slider/Button garantiert nur SEINE Kamera —
-#  keine manuelle Button-/Speed-Liste mehr nötig, keine Querverbindung.
+#  Pro Karte genügt `entity: camera.<kamera>`. Die Karte löst PTZ-Buttons UND die
+#  PTZ-Geschwindigkeit automatisch aus DEMSELBEN Gerät auf (Entity-Registry) —
+#  jeder Slider/Button steuert garantiert nur SEINE Kamera, keine Querverbindung.
 #
-#  Deine echten camera.*-IDs findest du unter:
-#    Entwicklerwerkzeuge → Zustände → Filter "camera."
-#  (Beispiel unten: camera.cam_dachboden — die anderen 3 entsprechend ersetzen.)
+#  Konfiguriert für: cam_eingang · cam_dachboden · cam_schlafzimmer
 # ============================================================================
 
 # Diese Datei beschreibt EINE View (ein Reiter). Einbau: als Eintrag unter
@@ -27,19 +22,31 @@ path: wjg-kameras
 icon: mdi:cctv
 cards:
   - type: grid
-    columns: 2          # 2 Spalten → 2×2 bei 4 Karten
+    columns: 2          # 2 Spalten → 2×2-Raster
     square: false
     cards:
 
-      # ── Kamera 1 ───────────────────────────────────────────────────────
+      # ── Eingang ────────────────────────────────────────────────────────
       - type: custom:wjg-camera-card
-        entity: camera.cam_dachboden       # ← einzige Pflichtangabe
-        title: Cam Dachboden
+        entity: camera.cam_eingang
+        title: Eingang
         show_ptz: true
         show_zoom_bar: true
         aspect_ratio: "16/9"
-        # PTZ-Buttons + Geschwindigkeit werden automatisch aufgelöst.
-        # Badges sind optional und beziehen sich auf dieselbe Kamera:
+        badges:
+          - entity: binary_sensor.cam_eingang_bewegung
+            icon: mdi:motion-sensor
+          - entity: switch.cam_eingang_aufnahme
+            icon: mdi:record-circle
+            action: switch.toggle
+
+      # ── Dachboden ──────────────────────────────────────────────────────
+      - type: custom:wjg-camera-card
+        entity: camera.cam_dachboden
+        title: Dachboden
+        show_ptz: true
+        show_zoom_bar: true
+        aspect_ratio: "16/9"
         badges:
           - entity: binary_sensor.cam_dachboden_bewegung
             icon: mdi:motion-sensor
@@ -47,33 +54,32 @@ cards:
             icon: mdi:record-circle
             action: switch.toggle
 
-      # ── Kamera 2 ───────────────────────────────────────────────────────
+      # ── Schlafzimmer ───────────────────────────────────────────────────
       - type: custom:wjg-camera-card
-        entity: camera.KAMERA_2            # ← hier deine 2. Kamera eintragen
-        title: Kamera 2
+        entity: camera.cam_schlafzimmer
+        title: Schlafzimmer
         show_ptz: true
         show_zoom_bar: true
         aspect_ratio: "16/9"
-        # badges optional — Entity-Slugs an Kamera 2 anpassen:
-        # badges:
-        #   - entity: binary_sensor.KAMERA_2_bewegung
-        #     icon: mdi:motion-sensor
-        #   - entity: switch.KAMERA_2_aufnahme
-        #     icon: mdi:record-circle
-        #     action: switch.toggle
+        badges:
+          - entity: binary_sensor.cam_schlafzimmer_bewegung
+            icon: mdi:motion-sensor
+          - entity: switch.cam_schlafzimmer_aufnahme
+            icon: mdi:record-circle
+            action: switch.toggle
 
-      # ── Kamera 3 ───────────────────────────────────────────────────────
-      - type: custom:wjg-camera-card
-        entity: camera.KAMERA_3            # ← hier deine 3. Kamera eintragen
-        title: Kamera 3
-        show_ptz: true
-        show_zoom_bar: true
-        aspect_ratio: "16/9"
-
-      # ── Kamera 4 ───────────────────────────────────────────────────────
-      - type: custom:wjg-camera-card
-        entity: camera.KAMERA_4            # ← hier deine 4. Kamera eintragen
-        title: Kamera 4
-        show_ptz: true
-        show_zoom_bar: true
-        aspect_ratio: "16/9"
+      # ── 4. Kamera (optional) ───────────────────────────────────────────
+      # Wenn die 4. Kamera eingerichtet ist: entity-Zeile (und Badge-Slugs)
+      # auf deren Slug setzen und die Kommentarzeichen entfernen.
+      # - type: custom:wjg-camera-card
+      #   entity: camera.KAMERA_4
+      #   title: Kamera 4
+      #   show_ptz: true
+      #   show_zoom_bar: true
+      #   aspect_ratio: "16/9"
+      #   badges:
+      #     - entity: binary_sensor.KAMERA_4_bewegung
+      #       icon: mdi:motion-sensor
+      #     - entity: switch.KAMERA_4_aufnahme
+      #       icon: mdi:record-circle
+      #       action: switch.toggle
