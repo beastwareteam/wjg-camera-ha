@@ -55,6 +55,12 @@ SNAPSHOT_URL = f"http://{CAMERA_HOST}/webcapture.jpg?command=snap&channel=1"
 PTZ_SPEED = 0.4   # Geschwindigkeit 0.1–1.0
 PTZ_STOP_DELAY = 0.8  # Sekunden bis Auto-Stop
 
+# Puls-Stepping: XM-Kameras machen pro ContinuousMove einen festen kleinen
+# Schritt (Velocity UND Dauer werden ignoriert). Die HA-Geschwindigkeitsstufe
+# steuert daher die ANZAHL kurzer Pulse pro Tastendruck → zurückgelegte Strecke.
+PTZ_PULSE_DURATION = 0.35  # Sekunden Bewegung pro Puls
+PTZ_PULSE_GAP = 0.12       # Sekunden Pause zwischen zwei Pulsen
+
 # ── WSSE Auth ─────────────────────────────────────────────────────────────────
 
 def _wsse_header(username: str = CAMERA_USERNAME, password: str = CAMERA_PASSWORD) -> str:
@@ -298,45 +304,61 @@ class XMSoapClient:
     async def ptz_zoom_out(self, speed: float = PTZ_SPEED) -> bool:
         return await self.ptz_continuous_move(zoom=-speed)
 
-    async def ptz_command(self, direction: str, speed: float = PTZ_SPEED) -> bool:
+    async def ptz_command(
+        self, direction: str, speed: float = PTZ_SPEED, token: str | None = None
+    ) -> bool:
         """
         Einheitlicher PTZ-Aufruf für HA-Buttons.
         direction: right | left | up | down | zoom_in | zoom_out | stop
         speed: 0.0–1.0 (normalisiert aus HA-Stufe 1–8)
+        token: ONVIF Profile-Token (für Geräte, die nicht "000" nutzen)
 
-        XM-Firmware ignoriert Velocity häufig — Bewegungsdistanz wird daher
-        ZUSÄTZLICH über den Stop-Delay gesteuert (0.15s–1.5s linear zu speed).
-        So funktioniert die Geschwindigkeitsstufe auch ohne Velocity-Support.
+        XM-Firmware ignoriert sowohl Velocity ALS AUCH die Bewegungsdauer — pro
+        ContinuousMove macht die Kamera einen festen kleinen Schritt. Die
+        Geschwindigkeitsstufe steuert daher die ANZAHL kurzer Pulse pro Druck:
+        Stufe 1 → 1 Puls, Stufe 8 → 8 Pulse (∝ zurückgelegte Strecke).
         """
-        dispatch = {
-            "right":    (speed,   0.0,   0.0),
-            "left":     (-speed,  0.0,   0.0),
-            "up":       (0.0,     speed, 0.0),
-            "down":     (0.0,    -speed, 0.0),
-            "zoom_in":  (0.0,     0.0,   speed),
-            "zoom_out": (0.0,     0.0,  -speed),
-            "stop":     None,
-        }
+        token = token or self._profile_token
         if direction == "stop":
-            return await self.ptz_stop()
-        coords = dispatch.get(direction)
+            return await self.ptz_stop(token=token)
+
+        # Feste Magnitude (Velocity wird ohnehin ignoriert) — nur Richtung zählt.
+        dirs = {
+            "right":    (1.0,  0.0,  0.0),
+            "left":     (-1.0, 0.0,  0.0),
+            "up":       (0.0,  1.0,  0.0),
+            "down":     (0.0, -1.0,  0.0),
+            "zoom_in":  (0.0,  0.0,  1.0),
+            "zoom_out": (0.0,  0.0, -1.0),
+        }
+        coords = dirs.get(direction)
         if coords is None:
             _LOGGER.error("Unbekannte PTZ-Richtung: %s", direction)
             return False
         pan, tilt, zoom = coords
 
-        # Stop-Delay proportional zu speed: bei speed=PTZ_SPEED bleibt das
-        # bisherige PTZ_STOP_DELAY erhalten; bei kleinen Werten kurzer Delay,
-        # bei speed=1.0 maximal 1.5s. XM-Kameras ignorieren oft Velocity →
-        # dieser Delay ist die primäre Geschwindigkeitsregelung.
-        stop_delay = max(0.15, min(1.5, PTZ_STOP_DELAY * speed / PTZ_SPEED))
+        # Anzahl Pulse aus der Geschwindigkeitsstufe (1–8)
+        steps = max(1, min(8, round(speed * 8)))
+        _LOGGER.debug(
+            "PTZ '%s': speed=%.2f → %d Puls(e) à %.2fs (token=%s)",
+            direction, speed, steps, PTZ_PULSE_DURATION, token,
+        )
 
-        _LOGGER.debug("PTZ '%s': velocity=%.2f stop_delay=%.2fs", direction, speed, stop_delay)
+        ok = False
+        moved = False
+        for i in range(steps):
+            ok = await self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom, token=token)
+            if not ok:
+                break  # z. B. falscher Token → Coordinator probiert nächsten
+            moved = True
+            await asyncio.sleep(PTZ_PULSE_DURATION)
+            await self.ptz_stop(token=token)
+            if i < steps - 1:
+                await asyncio.sleep(PTZ_PULSE_GAP)
 
-        ok = await self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom)
-        if ok:
-            await asyncio.sleep(stop_delay)
-            await self.ptz_stop()
+        # Sicherheits-Stop nur, wenn überhaupt eine Bewegung lief
+        if moved:
+            await self.ptz_stop(token=token)
         return ok
 
     async def ptz_goto_home(self, speed: float = PTZ_SPEED, token: str | None = None) -> bool:

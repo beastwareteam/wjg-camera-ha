@@ -101,19 +101,29 @@ WSSE funktioniert trotzdem — die Kamera akzeptiert diese Zeitdifferenz.
 - `async_ptz_goto_preset` — Preset anfahren
 - `async_ptz_set_preset` — Preset speichern
 
-### Geschwindigkeitsregelung (doppelter Ansatz — seit v2.2.21)
-- `self._ptz_speed` in coordinator: int 1–8 (von Number-Entity gesetzt)
-- Normalisierung: `spd = self._ptz_speed / 8` → float 0.125–1.0 für XMSoapClient
-- `button.py` → `WJGPTZButton.async_press` übergibt `self.coordinator._ptz_speed` explizit
-- **XM ignoriert Velocity-Wert**: XM-Firmware akzeptiert ContinuousMove-SOAP, ignoriert aber
-  häufig die Velocity-Werte (bewegt sich immer mit Maximalgeschwindigkeit)
-- **Fix**: `ptz_command` in `xm_soap.py` variiert ZUSÄTZLICH den Stop-Delay proportional zur speed:
-  `stop_delay = max(0.15, min(1.5, PTZ_STOP_DELAY * speed / PTZ_SPEED))`
-  → speed=0.125 → ~0.15s; speed=0.4 → 0.8s; speed=1.0 → 1.5s
-  → Bewegungsdistanz ist proportional, egal ob Velocity honoriert wird oder nicht
-- Debug-Log zeigt velocity und stop_delay für jeden PTZ-Befehl
-- **Default seit v2.2.35: `self._ptz_speed = 1`** (langsamste Stufe). Pro Coordinator/
-  Kamera getrennt — NICHT auf 5 o. ä. zurücksetzen.
+### Geschwindigkeitsregelung — Puls-Stepping (seit v2.2.39)
+- `self._ptz_speed` in coordinator: int 1–8 (von Number-Entity gesetzt), pro Kamera.
+- Normalisierung: `spd = self._ptz_speed / 8` → float 0.125–1.0 für XMSoapClient.
+- `button.py` → `WJGPTZButton.async_press` übergibt `self.coordinator.ptz_speed`.
+- **WICHTIG (am realen Gerät 02.06.2026 verifiziert):** XM ignoriert **sowohl Velocity
+  ALS AUCH die Bewegungsdauer** — pro `ContinuousMove` macht die Kamera einen festen
+  kleinen Schritt und stoppt selbst. Der alte Stop-Delay-Ansatz (v2.2.21) hatte daher
+  KEINE Wirkung (Wert 1 und 8 bewegten gleich weit).
+- **Lösung:** `ptz_command` sendet jetzt **mehrere kurze Pulse**, Anzahl ∝ speed:
+  `steps = max(1, min(8, round(speed * 8)))` → Stufe 1 = 1 Puls, Stufe 8 = 8 Pulse.
+  Jeder Puls = `ContinuousMove` (feste Magnitude 1.0) → `PTZ_PULSE_DURATION` (0.35s) →
+  `Stop`, dazwischen `PTZ_PULSE_GAP` (0.12s). Abschließend ein Sicherheits-`Stop`.
+  → zurückgelegte Strecke pro Tastendruck ist proportional zur Stufe.
+- **NICHT** zum Stop-Delay-Ansatz zurückkehren (wirkungslos auf dieser Firmware).
+- **Default seit v2.2.35: `self._ptz_speed = 1`** (langsamste Stufe), pro Kamera getrennt.
+
+### PTZ Profile-Token-Retry (seit v2.2.39)
+- `async_ptz_command` probiert bei Fehlschlag der Reihe nach Tokens: konfigurierter
+  Token (`CONF_ONVIF_PROFILE_TOKEN`) → `000` → `001` → `002`.
+- Ein funktionierender Token wird in `self._preferred_onvif_profile_token` gemerkt
+  (künftig zuerst probiert). Behebt Kameras, die PTZ unter einem anderen Token
+  erwarten (Symptom: eine Kamera reagiert nicht aufs Steuerkreuz, andere baugleiche
+  schon — z. B. .49 vs .50/.51).
 
 ### Multi-Device Geschwindigkeit / Lovelace-Card (Fix v2.2.35 → robust v2.2.36)
 **Nicht-offensichtliche Falle:** HA hängt das Kollisions-Suffix bei gleichnamigen

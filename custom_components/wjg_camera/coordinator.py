@@ -1406,15 +1406,38 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # Primärweg: XMSoapClient mit eigener frischer Session (verifiziert 13.05)
         if self.protocol == PROTOCOL_ONVIF:
             spd = min(speed, 8) / 8
+            # Profile-Token-Kandidaten: konfigurierter Token zuerst, dann 000/001/002.
+            # So funktionieren auch Kameras, die nicht "000" für PTZ nutzen (z. B. .49).
+            pref = (self._preferred_onvif_profile_token or "").strip()
+            candidate_tokens: list[str] = []
+            for t in (pref, "000", "001", "002"):
+                if t and t not in candidate_tokens:
+                    candidate_tokens.append(t)
+            if not candidate_tokens:
+                candidate_tokens = ["000"]
             try:
-                async with self._soap() as soap:
-                    ok = await soap.ptz_command(cmd, speed=spd)
-                if ok:
-                    self._last_ptz_fault = ""
-                    _LOGGER.info("PTZ '%s' OK via XMSoapClient (%s)", cmd, self.host)
-                    return True
-                self._last_ptz_fault = f"XMSoapClient PTZ fehlgeschlagen: {cmd}"
-                _LOGGER.warning("XMSoapClient PTZ '%s' nicht erfolgreich (%s)", cmd, self.host)
+                for tok in candidate_tokens:
+                    async with self._soap() as soap:
+                        ok = await soap.ptz_command(cmd, speed=spd, token=tok)
+                    if ok:
+                        self._last_ptz_fault = ""
+                        if tok != pref:
+                            # Funktionierenden Token merken → künftig zuerst probieren
+                            self._preferred_onvif_profile_token = tok
+                            _LOGGER.info(
+                                "PTZ '%s' OK via XMSoapClient (%s, Token=%s gemerkt)",
+                                cmd, self.host, tok,
+                            )
+                        else:
+                            _LOGGER.info("PTZ '%s' OK via XMSoapClient (%s)", cmd, self.host)
+                        return True
+                self._last_ptz_fault = (
+                    f"XMSoapClient PTZ fehlgeschlagen: {cmd} (Tokens {','.join(candidate_tokens)})"
+                )
+                _LOGGER.warning(
+                    "XMSoapClient PTZ '%s' nicht erfolgreich (%s, Tokens %s)",
+                    cmd, self.host, ",".join(candidate_tokens),
+                )
             except Exception as soap_exc:
                 self._last_ptz_fault = f"XMSoapClient Fehler: {soap_exc}"
                 _LOGGER.warning("XMSoapClient PTZ '%s' Exception (%s): %s", cmd, self.host, soap_exc)
