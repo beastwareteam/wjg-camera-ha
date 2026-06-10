@@ -1,9 +1,9 @@
-"""Tests für Netzlast-Steuerung (Motion-Optionen, v2.2.40) und PTZ-Puls-Stepping.
+"""Tests für Netzlast-Steuerung (Motion-Optionen, v2.2.40) und PTZ-Puls-Verhalten.
 
 Hintergrund: Kanal 2 (RTSP-Bildvergleich) und die Auto-Aufnahme erzeugten eine
-dauerhafte Netzwerkflut; das Geschwindigkeits-Stepping ging verloren, sobald
-der XMSoapClient-Primärpfad fehlschlug (Fallback war ein einzelnes
-ContinuousMove ohne Pulse).
+dauerhafte Netzwerkflut (behoben in v2.2.40). In v2.2.41 wurde das
+N-Pulse-Stepping durch 1 Puls mit proportionaler Dauer ersetzt: 1 Tap = 1 Puls,
+Dauer ∝ Speed (Stufe 1 → kurz, Stufe 8 → lang).
 """
 import os
 import sys
@@ -164,10 +164,11 @@ async def test_motion_recording_cooldown_limits_restarts():
         stop_task.cancel()
 
 
-# ── Puls-Stepping: xm_soap (Primärpfad) ──────────────────────────────────────
+# ── PTZ: xm_soap (Primärpfad) ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_xmsoap_ptz_command_pulse_count_matches_speed_level():
+async def test_xmsoap_ptz_command_sends_single_pulse():
+    """1 Tap = immer genau 1 ContinuousMove, unabhängig von der Speed-Stufe."""
     client = XMSoapClient(host="192.168.1.61")
     moves = {"n": 0}
 
@@ -182,23 +183,24 @@ async def test_xmsoap_ptz_command_pulse_count_matches_speed_level():
     client.ptz_continuous_move = _fake_move  # type: ignore[method-assign]
     client.ptz_stop = _fake_stop  # type: ignore[method-assign]
 
+    # Sowohl bei Speed 3/8 als auch 1.0 genau 1 ContinuousMove
     assert await client.ptz_command("right", speed=3 / 8) is True
-    assert moves["n"] == 3  # Stufe 3 → 3 Pulse
+    assert moves["n"] == 1
+
+    moves["n"] = 0
+    assert await client.ptz_command("right", speed=1.0) is True
+    assert moves["n"] == 1
 
 
 @pytest.mark.asyncio
-async def test_xmsoap_ptz_command_no_token_retry_after_movement():
-    """Nach erfolgter Bewegung meldet ptz_command Erfolg, auch wenn ein
-    späterer Puls fehlschlägt — sonst pulst der Coordinator mit dem
-    nächsten Profile-Token erneut (unkontrollierte Extra-Bewegung)."""
+async def test_xmsoap_ptz_command_returns_true_on_success():
+    """Erfolgreiches ContinuousMove → ptz_command gibt True zurück."""
     client = XMSoapClient(host="192.168.1.61")
-    results = iter([True, False])
 
-    async def _fake_move(**_kwargs):
-        return next(results)
+    async def _fake_move(**_):
+        return True
 
-    async def _fake_stop(token=None):
-        _ = token
+    async def _fake_stop(**_):
         return True
 
     client.ptz_continuous_move = _fake_move  # type: ignore[method-assign]
@@ -219,12 +221,12 @@ async def test_xmsoap_ptz_command_fails_without_any_movement():
     assert await client.ptz_command("left", speed=1.0) is False
 
 
-# ── Puls-Stepping: Coordinator-Fallback (Direct-SOAP) ────────────────────────
+# ── PTZ: Coordinator-Fallback (Direct-SOAP) ──────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_fallback_ptz_pulse_count_matches_speed_level():
-    """Schlägt der XMSoapClient-Primärpfad fehl (conftest-OfflineStub), muss
-    der Direct-SOAP-Fallback ebenfalls pulsen: Stufe N → N ContinuousMove."""
+async def test_fallback_ptz_sends_single_pulse():
+    """Schlägt der XMSoapClient-Primärpfad fehl (conftest-OfflineStub), sendet
+    der Direct-SOAP-Fallback genau 1 ContinuousMove (proportionale Dauer)."""
     coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
     bodies: list[str] = []
 
@@ -246,5 +248,5 @@ async def test_fallback_ptz_pulse_count_matches_speed_level():
 
     move_bodies = [b for b in bodies if "ContinuousMove" in b]
     stop_bodies = [b for b in bodies if "tptz:Stop" in b]
-    assert len(move_bodies) == 4  # Stufe 4 → 4 Pulse
-    assert len(stop_bodies) == 4  # jeder Puls wird gestoppt
+    assert len(move_bodies) == 1  # 1 Tap = 1 Puls
+    assert len(stop_bodies) == 1  # Puls wird gestoppt

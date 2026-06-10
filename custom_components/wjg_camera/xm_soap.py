@@ -313,16 +313,13 @@ class XMSoapClient:
         speed: 0.0–1.0 (normalisiert aus HA-Stufe 1–8)
         token: ONVIF Profile-Token (für Geräte, die nicht "000" nutzen)
 
-        XM-Firmware ignoriert sowohl Velocity ALS AUCH die Bewegungsdauer — pro
-        ContinuousMove macht die Kamera einen festen kleinen Schritt. Die
-        Geschwindigkeitsstufe steuert daher die ANZAHL kurzer Pulse pro Druck:
-        Stufe 1 → 1 Puls, Stufe 8 → 8 Pulse (∝ zurückgelegte Strecke).
+        1 Tap = 1 ContinuousMove. Die Puls-Dauer ist proportional zur Speed-Stufe:
+        speed 0.125 (Stufe 1) → kurze Bewegung; speed 1.0 (Stufe 8) → maximale Bewegung.
         """
         token = token or self._profile_token
         if direction == "stop":
             return await self.ptz_stop(token=token)
 
-        # Feste Magnitude (Velocity wird ohnehin ignoriert) — nur Richtung zählt.
         dirs = {
             "right":    (1.0,  0.0,  0.0),
             "left":     (-1.0, 0.0,  0.0),
@@ -337,37 +334,19 @@ class XMSoapClient:
             return False
         pan, tilt, zoom = coords
 
-        # Anzahl Pulse aus der Geschwindigkeitsstufe (1–8)
-        steps = max(1, min(8, round(speed * 8)))
+        # Proportionale Puls-Dauer: Stufe 1 (0.125) → minimale Strecke,
+        # Stufe 8 (1.0) → maximale Strecke (PTZ_PULSE_DURATION).
+        duration = max(0.05, speed) * PTZ_PULSE_DURATION
         _LOGGER.debug(
-            "PTZ '%s': speed=%.2f → %d Puls(e) à %.2fs (token=%s)",
-            direction, speed, steps, PTZ_PULSE_DURATION, token,
+            "PTZ '%s': speed=%.2f → 1 Puls, Dauer=%.3fs (token=%s)",
+            direction, speed, duration, token,
         )
 
-        ok = False
-        moved = False
-        for i in range(steps):
-            ok = await self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom, token=token)
-            if not ok:
-                break  # z. B. falscher Token → Coordinator probiert nächsten
-            moved = True
-            await asyncio.sleep(PTZ_PULSE_DURATION)
+        ok = await self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom, token=token)
+        if ok:
+            await asyncio.sleep(duration)
             await self.ptz_stop(token=token)
-            if i < steps - 1:
-                await asyncio.sleep(PTZ_PULSE_GAP)
-
-        # Sicherheits-Stop nur, wenn überhaupt eine Bewegung lief
-        if moved:
-            await self.ptz_stop(token=token)
-        if moved and not ok:
-            _LOGGER.warning(
-                "PTZ '%s': Puls-Sequenz nach Bewegung abgebrochen (Token=%s) — "
-                "melde Erfolg, damit kein weiterer Token probiert wird",
-                direction, token,
-            )
-        # moved statt ok: Hat die Kamera sich bewegt, darf der Coordinator NICHT
-        # mit dem nächsten Profile-Token erneut pulsen (sonst Extra-Bewegung).
-        return moved
+        return ok
 
     async def ptz_goto_home(self, speed: float = PTZ_SPEED, token: str | None = None) -> bool:
         """Fährt zur gespeicherten Home-Position."""

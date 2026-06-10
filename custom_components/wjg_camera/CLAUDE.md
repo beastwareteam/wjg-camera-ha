@@ -1,5 +1,38 @@
 # WJG XM-3820 Camera Bridge — Kritisches Wissen für Claude
 
+## Kamera-Uhrzeit-Spam + PTZ-Bewegungsgröße (Fix v2.2.41 — Juni 2026)
+
+### Problem 1: Aktivitätslog-Spam durch Kamera-Uhrzeit-Sensor
+`WJGCameraTimeSensor` gibt `coordinator.camera_time` zurück — ein String
+`"YYYY-MM-DD HH:MM:SS"`. Da sich dieser String jede Sekunde ändert, erzeugte
+jede Koordinator-Abfrage (alle 60 s) einen HA-State-Change → Logbuch-Eintrag
+jede Minute. **Fix:** Polling von `% 6` (60 s) auf `% 180` (30 min) geändert.
+Imaging-Settings-Fetch wurde dabei von der Kamerazeit-Abfrage entkoppelt und
+läuft weiterhin alle 5 Minuten (`% 30`).
+
+### Problem 2: PTZ-Bewegungsgröße (1 Tap = zu viel Bewegung)
+v2.2.40 steuerte die Strecke über die Anzahl der Pulse (N Pulse pro Tap). Selbst
+bei Stufe 1 (= 1 Puls × 0.35 s) war die Bewegung zu groß.
+
+**Lösung v2.2.41:** 1 Tap = immer genau 1 ContinuousMove; **Dauer proportional
+zur Speed-Stufe:** `duration = max(0.05, speed) * PTZ_PULSE_DURATION`
+- Speed 0.125 (Stufe 1): Dauer ≈ 0.044 s → minimale Schrittweite
+- Speed 1.0 (Stufe 8): Dauer = 0.35 s → maximale Schrittweite
+
+Dies gilt sowohl für `XMSoapClient.ptz_command()` (xm_soap.py) als auch für
+`_async_fallback_ptz_pulse()` (coordinator.py).
+
+**NICHT** zum Anzahl-Pulse-Ansatz (v2.2.40) zurückkehren — der Nutzer will
+1 Tap = 1 kleine Bewegung. Der alte Ansatz mit proportionaler Dauer war bereits
+in der Firmware-Analyse als Hypothese vorhanden; v2.2.41 nutzt ihn konsequent.
+
+**Offene Frage (live zu verifizieren):** Reagiert die XM-3820-Firmware auf
+kürzere ContinuousMove-Dauern mit weniger Bewegung, oder macht sie immer den
+gleichen festen Schritt? Falls alle Dauern denselben Schritt erzeugen →
+Folgeproblem melden.
+
+---
+
 ## Netzwerkflut + Stepping-Verlust (Fix v2.2.40 — Juni 2026)
 
 ### Problem 1: Dauerhafte Netzwerkflut sobald die Integration läuft

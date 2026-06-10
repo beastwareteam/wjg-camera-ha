@@ -73,7 +73,6 @@ def _offline_network(monkeypatch):
     """XMSoapClient-Primärpfad offline stellen, Puls-Timing nullen."""
     monkeypatch.setattr(coordinator_module, "_XMSoapClient", OfflineXMSoapStub)
     monkeypatch.setattr(coordinator_module, "_PTZ_PULSE_DURATION", 0.0)
-    monkeypatch.setattr(coordinator_module, "_PTZ_PULSE_GAP", 0.0)
     monkeypatch.setattr(xm_soap_module, "PTZ_PULSE_DURATION", 0.0)
     monkeypatch.setattr(xm_soap_module, "PTZ_PULSE_GAP", 0.0)
     monkeypatch.setattr(
