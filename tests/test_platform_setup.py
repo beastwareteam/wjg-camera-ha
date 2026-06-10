@@ -124,7 +124,9 @@ async def test_button_platform_setup_adds_ptz_buttons():
 
     await setup_button(_as_any(hass), _as_any(entry), _make_add_entities_callback(added))
 
-    assert len(added) == 20
+    # 6 Richtungen + Home/SetHome/Stop + 4×Set-Preset + 4×Goto-Preset
+    # + ZoomReset/Snapshot/Reboot/NTP/FileListRefresh = 22
+    assert len(added) == 22
     assert any(isinstance(e, WJGPTZButton) for e in added)
 
 

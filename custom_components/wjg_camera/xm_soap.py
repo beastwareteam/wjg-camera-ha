@@ -359,7 +359,15 @@ class XMSoapClient:
         # Sicherheits-Stop nur, wenn überhaupt eine Bewegung lief
         if moved:
             await self.ptz_stop(token=token)
-        return ok
+        if moved and not ok:
+            _LOGGER.warning(
+                "PTZ '%s': Puls-Sequenz nach Bewegung abgebrochen (Token=%s) — "
+                "melde Erfolg, damit kein weiterer Token probiert wird",
+                direction, token,
+            )
+        # moved statt ok: Hat die Kamera sich bewegt, darf der Coordinator NICHT
+        # mit dem nächsten Profile-Token erneut pulsen (sonst Extra-Bewegung).
+        return moved
 
     async def ptz_goto_home(self, speed: float = PTZ_SPEED, token: str | None = None) -> bool:
         """Fährt zur gespeicherten Home-Position."""

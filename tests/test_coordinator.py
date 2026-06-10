@@ -11,6 +11,7 @@ from tests_helpers import (
     call_private_async as _call_private_async,
     get_private_attr as _get_private_attr,
     make_coordinator as _make_coordinator,
+    mark_port_open as _mark_port_open,
     private_name as _private_name,
     set_private_attr as _set_private_attr,
 )
@@ -764,6 +765,7 @@ async def test_async_ptz_command_onvif_failure_falls_back_to_http_cgi():
     _set_private_attr(coordinator, "_onvif", None)
     _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
     _set_private_attr(coordinator, "_session", DummySession())
+    _mark_port_open(coordinator, 80)
 
     assert await coordinator.async_ptz_command("right") is True
     assert coordinator.last_ptz_fault == ""
@@ -1194,7 +1196,12 @@ def test_rtsp_url_uses_username_and_password():
     )
     coordinator = _make_coordinator(MagicMock(), entry)
 
-    assert coordinator.rtsp_url == "rtsp://user1:secret@192.168.1.51:554/user=admin&password=&channel=1&stream=1.sdp?real_stream"
+    # Design seit Multi-Device-Fix: Authority ist immer der Kamera-Standard
+    # admin:@ (Cloud-Credentials werden nicht in die RTSP-URL gecacht);
+    # konfigurierte Credentials kommen nur als Fallback-Variante zum Einsatz.
+    assert coordinator.rtsp_url == "rtsp://admin:@192.168.1.51:554/user=admin&password=&channel=1&stream=1.sdp?real_stream"
+    authorities = coordinator._credential_authorities()
+    assert "user1:secret@" in authorities
 
 
 def test_rtsp_url_uses_default_admin_when_username_missing():
@@ -1226,7 +1233,9 @@ def test_rtsp_url_supports_explicit_username_password_placeholders():
     )
     coordinator = _make_coordinator(MagicMock(), entry)
 
-    assert coordinator.rtsp_url == "rtsp://user1:secret@192.168.1.53:554/user=user1&password=secret&channel=1&stream=0.sdp?real_stream"
+    # Platzhalter im PFAD werden mit den konfigurierten Credentials gefüllt;
+    # die URL-Authority bleibt designbedingt der Kamera-Standard admin:@.
+    assert coordinator.rtsp_url == "rtsp://admin:@192.168.1.53:554/user=user1&password=secret&channel=1&stream=0.sdp?real_stream"
 
 
 @pytest.mark.asyncio
@@ -1547,7 +1556,9 @@ async def test_async_setup_onvif_skips_http_probe(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_update_data_snapshot_success_sets_available_and_bytes():
+async def test_update_data_sets_available_via_tcp_port_check():
+    """update_data prüft Verfügbarkeit per TCP-Check — bewusst KEIN Snapshot-
+    Abruf pro Zyklus (Netzlast)."""
     entry = DummyEntry(
         {
             "host": "192.168.1.50",
@@ -1560,34 +1571,21 @@ async def test_update_data_snapshot_success_sets_available_and_bytes():
     )
     coordinator = _make_coordinator(DummyHass(), entry)
 
-    class DummyResp:
-        status = 200
-        headers = {"Content-Type": "image/jpeg"}
+    async def _fake_port_reachable(_port, timeout=2.0):
+        _ = timeout
+        return True
 
-        async def read(self):
-            return b"jpeg"
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-    class DummySession:
-        def get(self, _url, **_kwargs):
-            return DummyResp()
-
-    _set_private_attr(coordinator, "_session", DummySession())
+    _set_private_attr(coordinator, "_tcp_port_reachable", _fake_port_reachable)
     _set_private_attr(coordinator, "_xm", None)
 
     data = await _call_private_async(coordinator, "_async_update_data")
 
     assert data["available"] is True
-    assert data["snapshot_bytes"] == b"jpeg"
+    assert "snapshot_bytes" not in data
 
 
 @pytest.mark.asyncio
-async def test_update_data_snapshot_exception_is_handled():
+async def test_update_data_unreachable_ports_set_unavailable():
     entry = DummyEntry(
         {
             "host": "192.168.1.50",
@@ -1600,11 +1598,11 @@ async def test_update_data_snapshot_exception_is_handled():
     )
     coordinator = _make_coordinator(DummyHass(), entry)
 
-    class BrokenSession:
-        def get(self, _url, **_kwargs):
-            raise RuntimeError("snapshot failed")
+    async def _fake_port_reachable(_port, timeout=2.0):
+        _ = timeout
+        return False
 
-    _set_private_attr(coordinator, "_session", BrokenSession())
+    _set_private_attr(coordinator, "_tcp_port_reachable", _fake_port_reachable)
     _set_private_attr(coordinator, "_xm", None)
 
     data = await _call_private_async(coordinator, "_async_update_data")
@@ -1753,18 +1751,19 @@ async def test_async_onvif_create_pullpoint_uses_address_path():
     )
     coordinator = _make_coordinator(DummyHass(), entry)
 
-    async def _fake_soap(_service_path, _body, use_auth=True, timeout_seconds=5):
-        _ = use_auth
-        _ = timeout_seconds
-        return (
-            "<CreatePullPointSubscriptionResponse>"
-            "<SubscriptionReference>"
-            "<Address>http://192.168.1.90:8899/onvif/Subscription?Idx=2</Address>"
-            "</SubscriptionReference>"
-            "</CreatePullPointSubscriptionResponse>"
-        )
+    # Seit v2.2.25 läuft die Subscription über einen frischen XMSoapClient
+    # (WSSE-Auth); der Test ersetzt daher die _soap()-Factory.
+    class FakeSoap:
+        async def __aenter__(self):
+            return self
 
-    _set_private_attr(coordinator, "_onvif_soap", _fake_soap)
+        async def __aexit__(self, *exc):
+            return False
+
+        async def create_pull_point_subscription(self):
+            return "http://192.168.1.90:8899/onvif/Subscription?Idx=2"
+
+    _set_private_attr(coordinator, "_soap", lambda: FakeSoap())
 
     assert await coordinator.async_onvif_create_pullpoint() is True
     assert _get_private_attr(coordinator, "_event_pullpoint_path") == "/onvif/Subscription"
@@ -1868,7 +1867,8 @@ async def test_async_onvif_pull_messages_once_updates_motion_tamper_and_signal()
     assert coordinator.tamper_detected is True
     assert coordinator.signal_loss is True
     assert listener_calls["value"] == 1
-    assert seen_use_auth == [False]
+    # Seit v2.2.25: PullMessages MIT WSSE-Auth (Kamera verlangt Auth für Events)
+    assert seen_use_auth == [True]
 
 
 @pytest.mark.asyncio

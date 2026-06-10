@@ -8,11 +8,26 @@ def as_any(value: object) -> Any:
 
 
 def make_coordinator(hass: object, entry: object) -> WJGCameraCoordinator:
+    # DataUpdateCoordinator (HA ≥2025) registriert sich am Config-Entry —
+    # Dummy-Entries der Tests bekommen die nötige Methode nachgerüstet.
+    if not hasattr(entry, "async_on_unload"):
+        setattr(entry, "async_on_unload", lambda _func: None)
     return WJGCameraCoordinator(as_any(hass), as_any(entry))
 
 
 def set_private_attr(obj: object, name: str, value: Any) -> None:
     setattr(obj, name, value)
+
+
+def mark_port_open(coordinator: Any, port: int) -> None:
+    """Port im TCP-Status-Cache als offen markieren.
+
+    Nötig in Tests mit Fake-Sessions: Der Coordinator prüft vor XM-/HTTP-
+    Fallbacks per echtem TCP-Connect, ob der Port erreichbar ist.
+    """
+    import time
+
+    coordinator._port_state_cache[port] = (True, time.time())
 
 
 def get_private_attr(obj: object, name: str) -> Any:

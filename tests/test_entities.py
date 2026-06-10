@@ -41,6 +41,14 @@ class DummyCoordinator:
         self.async_set_microphone_enabled = AsyncMock(return_value=True)
         self.async_get_file_list = AsyncMock(return_value=[{"name": "a.h264"}, {"name": "b.h264"}])
         self.async_snapshot = AsyncMock(return_value=b"live-image")
+        # Digital-Zoom-Status (camera.py nutzt ihn für Crop + Attribute)
+        self.digital_zoom = 1.0
+        self.digital_zoom_center = (0.5, 0.5)
+        # PTZ-Geschwindigkeitsstufe (button.py reicht sie an async_ptz_command durch)
+        self.ptz_speed = 3
+        # Lokale FFmpeg-Aufnahme (RecordingSwitch nutzt diese statt async_set_recording)
+        self.async_start_local_recording = AsyncMock(return_value="/media/camera/test.mkv")
+        self.async_stop_local_recording = AsyncMock(return_value=None)
 
     def async_add_listener(self, update_callback):
         self._listeners.append(update_callback)
@@ -139,7 +147,8 @@ async def test_ptz_button_calls_coordinator():
 
     await button.async_press()
 
-    coordinator.async_ptz_command.assert_awaited_once_with("left")
+    # Button reicht die PTZ-Geschwindigkeitsstufe des Coordinators durch
+    coordinator.async_ptz_command.assert_awaited_once_with("left", 3)
     assert button.icon == "mdi:arrow-left-bold-circle"
 
 
@@ -154,7 +163,7 @@ async def test_ptz_button_handles_failed_command_and_device_info():
         await button.async_press()
     info = button.device_info
 
-    coordinator.async_ptz_command.assert_awaited_once_with("up")
+    coordinator.async_ptz_command.assert_awaited_once_with("up", 3)
     assert info.get("identifiers") is not None
 
 
@@ -168,6 +177,7 @@ def test_button_sync_press_raises_not_implemented():
 
 @pytest.mark.asyncio
 async def test_recording_switch_toggles_recording():
+    """Recording-Switch steuert die lokale FFmpeg-Aufnahme."""
     coordinator = DummyCoordinator()
     switch = WJGRecordingSwitch(_as_any(coordinator), _as_any(DummyEntry()))
     switch.async_write_ha_state = MagicMock()
@@ -175,16 +185,15 @@ async def test_recording_switch_toggles_recording():
     await switch.async_turn_on()
     await switch.async_turn_off()
 
-    coordinator.async_set_recording.assert_any_await(True)
-    coordinator.async_set_recording.assert_any_await(False)
+    coordinator.async_start_local_recording.assert_awaited_once()
+    coordinator.async_stop_local_recording.assert_awaited_once()
     assert switch.async_write_ha_state.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_recording_switch_failure_and_sync_methods_and_properties():
+async def test_recording_switch_state_and_sync_methods_and_properties():
     coordinator = DummyCoordinator()
     coordinator.is_recording = True
-    coordinator.async_set_recording = AsyncMock(return_value=False)
     switch = WJGRecordingSwitch(_as_any(coordinator), _as_any(DummyEntry(entry_id="sw-1")))
     switch.async_write_ha_state = MagicMock()
 
@@ -193,7 +202,7 @@ async def test_recording_switch_failure_and_sync_methods_and_properties():
 
     assert switch.is_on is True
     assert info.get("identifiers") is not None
-    coordinator.async_set_recording.assert_awaited_once_with(True)
+    coordinator.async_start_local_recording.assert_awaited_once()
     with pytest.raises(NotImplementedError):
         switch.turn_on()
     with pytest.raises(NotImplementedError):
@@ -235,16 +244,19 @@ def test_motion_sensor_reads_motion_state_and_timestamp():
     assert sensor.device_info.get("identifiers") is not None
 
 
-@pytest.mark.asyncio
-async def test_file_list_sensor_updates_attributes():
+def test_file_list_sensor_reads_files_from_coordinator_data():
+    """Dateilisten-Sensor liest aus coordinator.data (kein eigener Abruf)."""
     coordinator = DummyCoordinator()
+    coordinator.data = {
+        "available": True,
+        "files": [{"name": "a.h264"}, {"name": "b.h264"}],
+    }
     sensor = WJGFileListSensor(_as_any(coordinator), _as_any(DummyEntry()))
 
-    await sensor.async_update()
     attributes = sensor.extra_state_attributes
 
-    coordinator.async_get_file_list.assert_awaited_once()
     assert sensor.native_value == 2
+    assert sensor.available is True
     assert attributes is not None
     assert attributes["files"][0]["name"] == "a.h264"
     assert sensor.device_info.get("identifiers") is not None

@@ -51,6 +51,10 @@ CONF_ONVIF_TAMPER_ITEM_KEYS: Final = "onvif_tamper_item_keys"
 CONF_ONVIF_TAMPER_TOPIC_KEYWORDS: Final = "onvif_tamper_topic_keywords"
 CONF_ONVIF_SIGNAL_ITEM_KEYS: Final = "onvif_signal_item_keys"
 CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS: Final = "onvif_signal_topic_keywords"
+CONF_MOTION_RTSP_DIFF: Final = "motion_rtsp_diff"
+CONF_MOTION_RTSP_INTERVAL: Final = "motion_rtsp_interval"
+CONF_MOTION_AUTO_RECORD: Final = "motion_auto_record"
+CONF_MOTION_RECORD_COOLDOWN: Final = "motion_record_cooldown"
 
 PROTOCOL_RTSP: Final = "rtsp"
 PROTOCOL_HTTP: Final = "http_only"
@@ -64,6 +68,10 @@ DEFAULT_ONVIF_PORT: Final = 8899
 DEFAULT_USERNAME: Final = "admin"
 DEFAULT_PASSWORD: Final = ""
 DEFAULT_HTTP_RETRIES: Final = 1
+DEFAULT_MOTION_RTSP_DIFF: Final = False
+DEFAULT_MOTION_RTSP_INTERVAL: Final = 30
+DEFAULT_MOTION_AUTO_RECORD: Final = True
+DEFAULT_MOTION_RECORD_COOLDOWN: Final = 30
 
 # Standard RTSP-Pfad für XM-basierte Kameras
 DEFAULT_RTSP_PATH: Final = (

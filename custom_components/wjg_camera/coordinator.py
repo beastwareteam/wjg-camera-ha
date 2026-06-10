@@ -36,7 +36,11 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNA
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .xm_soap import XMSoapClient as _XMSoapClient
+from .xm_soap import (
+    PTZ_PULSE_DURATION as _PTZ_PULSE_DURATION,
+    PTZ_PULSE_GAP as _PTZ_PULSE_GAP,
+    XMSoapClient as _XMSoapClient,
+)
 
 # Konstanten lokal definieren, um zirkulären Import zu vermeiden
 CONF_PROTOCOL = "protocol"
@@ -57,8 +61,16 @@ CONF_ONVIF_TAMPER_ITEM_KEYS = "onvif_tamper_item_keys"
 CONF_ONVIF_TAMPER_TOPIC_KEYWORDS = "onvif_tamper_topic_keywords"
 CONF_ONVIF_SIGNAL_ITEM_KEYS = "onvif_signal_item_keys"
 CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS = "onvif_signal_topic_keywords"
+CONF_MOTION_RTSP_DIFF = "motion_rtsp_diff"
+CONF_MOTION_RTSP_INTERVAL = "motion_rtsp_interval"
+CONF_MOTION_AUTO_RECORD = "motion_auto_record"
+CONF_MOTION_RECORD_COOLDOWN = "motion_record_cooldown"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_HTTP_RETRIES = 1
+DEFAULT_MOTION_RTSP_DIFF = False
+DEFAULT_MOTION_RTSP_INTERVAL = 30
+DEFAULT_MOTION_AUTO_RECORD = True
+DEFAULT_MOTION_RECORD_COOLDOWN = 30
 DEFAULT_RTSP_PATH = "/user=admin&password=&channel=1&stream=1.sdp?real_stream"
 DEFAULT_SNAPSHOT_PATH = "/webcapture.jpg?command=snap&channel=1"
 DEFAULT_XM_PORT = 34567
@@ -393,11 +405,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 )
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        # config_entry explizit übergeben — der ContextVar-Fallback ist seit
+        # HA 2025.x deprecated und schlägt in Testumgebungen hart fehl.
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             update_interval=SCAN_INTERVAL,
+            config_entry=entry,
         )
         self.entry = entry
         options = getattr(entry, "options", {}) or {}
@@ -425,6 +440,36 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 entry.data.get(CONF_HTTP_RETRIES, DEFAULT_HTTP_RETRIES),
             )
         )
+        # Motion-Kanäle / Auto-Aufnahme (Netzlast-Steuerung).
+        # Kanal 2 (RTSP-Bildvergleich) ist default AUS: dreifach redundant zu
+        # ONVIF+UDP und größte Dauerlast-Quelle (ffmpeg-RTSP-Grab im Intervall).
+        self.motion_rtsp_diff_enabled: bool = bool(
+            options.get(
+                CONF_MOTION_RTSP_DIFF,
+                entry.data.get(CONF_MOTION_RTSP_DIFF, DEFAULT_MOTION_RTSP_DIFF),
+            )
+        )
+        self.motion_rtsp_interval: int = max(10, int(
+            options.get(
+                CONF_MOTION_RTSP_INTERVAL,
+                entry.data.get(CONF_MOTION_RTSP_INTERVAL, DEFAULT_MOTION_RTSP_INTERVAL),
+            )
+        ))
+        self.motion_auto_record_enabled: bool = bool(
+            options.get(
+                CONF_MOTION_AUTO_RECORD,
+                entry.data.get(CONF_MOTION_AUTO_RECORD, DEFAULT_MOTION_AUTO_RECORD),
+            )
+        )
+        self.motion_record_cooldown: int = max(0, int(
+            options.get(
+                CONF_MOTION_RECORD_COOLDOWN,
+                entry.data.get(CONF_MOTION_RECORD_COOLDOWN, DEFAULT_MOTION_RECORD_COOLDOWN),
+            )
+        ))
+        self._last_record_trigger: float = 0.0
+        # TCP-Port-Status-Cache (Port → (offen, geprüft_um)) gegen Fallback-Bursts
+        self._port_state_cache: dict[int, tuple[bool, float]] = {}
         self._session: aiohttp.ClientSession | None = None
         self._xm: XMClient | None = None
         self._recording: bool = False
@@ -433,6 +478,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._resolved_rtsp_url: str | None = None
         self._snapshot_url_working: str | None = None  # erste funktionierende URL cachen
         self._snapshot_error_logged: bool = False       # Fehler nur einmal loggen
+        # Negativ-Cache: HTTP-Snapshot-Kandidaten nicht bei jedem Thumbnail-Abruf
+        # gegen einen geschlossenen Port 80 feuern (XM-3820: Port 80 zu)
+        self._snapshot_http_blocked_until: float = 0.0
+        # RTSP-Einzelframe-Fallback mit Kurz-Cache (max. 1 ffmpeg-Grab / Fenster)
+        self._rtsp_frame_cache: bytes | None = None
+        self._rtsp_frame_cache_time: float = 0.0
+        self._rtsp_frame_lock: asyncio.Lock = asyncio.Lock()
         self._rtsp_motion_task: asyncio.Task | None = None
         self._udp_monitor_task: asyncio.Task | None = None
         self._recording_proc: asyncio.subprocess.Process | None = None
@@ -859,9 +911,18 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         if self.protocol == PROTOCOL_ONVIF:
             self._event_task = asyncio.create_task(self._async_onvif_event_loop())
-            self._rtsp_motion_task = asyncio.create_task(self._async_rtsp_motion_loop())
             self._udp_monitor_task = asyncio.create_task(self._async_udp_motion_monitor())
-            _LOGGER.info("Motion-Detection: 3 Kanäle aktiv (ONVIF + RTSP + UDP)")
+            if self.motion_rtsp_diff_enabled:
+                self._rtsp_motion_task = asyncio.create_task(self._async_rtsp_motion_loop())
+                _LOGGER.info(
+                    "Motion-Detection: 3 Kanäle aktiv (ONVIF + RTSP alle %ds + UDP)",
+                    self.motion_rtsp_interval,
+                )
+            else:
+                _LOGGER.info(
+                    "Motion-Detection: ONVIF + UDP aktiv "
+                    "(RTSP-Bildvergleich per Option deaktiviert — keine Dauerlast)"
+                )
 
         await self.async_refresh()
 
@@ -893,6 +954,30 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             return True
         except Exception:
             return False
+
+    async def _async_port_open_cached(
+        self, port: int, ttl_closed: float = 600.0, ttl_open: float = 120.0
+    ) -> bool:
+        """TCP-Erreichbarkeit mit Cache.
+
+        Verhindert, dass Fallback-Ketten (XM-SDK 34567, HTTP 80) bei jedem
+        PTZ-Tastendruck erneut gegen bekannte geschlossene Ports anrennen.
+        """
+        now = time.time()
+        cached = self._port_state_cache.get(port)
+        if cached is not None:
+            is_open, checked_at = cached
+            ttl = ttl_open if is_open else ttl_closed
+            if now - checked_at < ttl:
+                return is_open
+        is_open = await self._tcp_port_reachable(port, timeout=1.5)
+        self._port_state_cache[port] = (is_open, now)
+        if not is_open:
+            _LOGGER.debug(
+                "Port %s auf %s geschlossen — Fallback dorthin für %.0fs pausiert",
+                port, self.host, ttl_closed,
+            )
+        return is_open
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Kamera-Status aktualisieren."""
@@ -1076,34 +1161,84 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return files
 
     async def async_snapshot(self) -> bytes | None:
-        """Aktuelles Bild von der Kamera laden — direkt, kein Retry-Loop."""
+        """Aktuelles Bild von der Kamera laden — direkt, kein Retry-Loop.
+
+        HTTP zuerst (falls verfügbar); auf Geräten mit geschlossenem Port 80
+        (XM-3820) liefert der ffmpeg-RTSP-Fallback ein echtes Einzelbild.
+        Negativ-Cache verhindert HTTP-Verbindungs-Bursts pro Thumbnail-Abruf.
+        """
         if not self._session:
             return None
 
-        # Gecachte URL zuerst probieren (kein Kandidaten-Loop nach erstem Erfolg)
-        urls_to_try: list[str] = []
-        if self._snapshot_url_working:
-            urls_to_try.append(self._snapshot_url_working)
-        else:
-            urls_to_try = self._candidate_snapshot_urls()
+        now = time.time()
+        if now >= self._snapshot_http_blocked_until:
+            # Gecachte URL zuerst probieren (kein Kandidaten-Loop nach erstem Erfolg)
+            urls_to_try: list[str] = []
+            if self._snapshot_url_working:
+                urls_to_try.append(self._snapshot_url_working)
+            else:
+                urls_to_try = self._candidate_snapshot_urls()
 
-        for url in urls_to_try:
+            for url in urls_to_try:
+                try:
+                    async with async_timeout.timeout(5):
+                        async with self._session.get(url, allow_redirects=True) as resp:
+                            if resp.status == 200:
+                                payload = await resp.read()
+                                if payload:
+                                    self._snapshot_url_working = url
+                                    self._snapshot_error_logged = False
+                                    return bytes(payload)
+                except Exception:
+                    pass
+
+            # Alle HTTP-Kandidaten tot → 5 Minuten nicht erneut anklopfen
+            self._snapshot_http_blocked_until = now + 300
+            if not self._snapshot_error_logged:
+                _LOGGER.info(
+                    "Snapshot via HTTP nicht verfügbar (Port %s) — nutze "
+                    "RTSP-Einzelframe; nächster HTTP-Versuch in 5 Minuten",
+                    self.http_port,
+                )
+                self._snapshot_error_logged = True
+
+        return await self._async_rtsp_frame_snapshot()
+
+    async def _async_rtsp_frame_snapshot(self) -> bytes | None:
+        """Einzelbild via ffmpeg aus dem RTSP-Stream (für Geräte ohne HTTP).
+
+        Kurz-Cache (10 s) + Lock begrenzen die Netzlast auf höchstens einen
+        RTSP-Grab pro Fenster — und nur, wenn tatsächlich ein Bild angefragt wird.
+        """
+        now = time.time()
+        if self._rtsp_frame_cache and now - self._rtsp_frame_cache_time < 10:
+            return self._rtsp_frame_cache
+        if self._rtsp_frame_lock.locked():
+            # Paralleler Grab läuft bereits → auf dessen Ergebnis warten
+            async with self._rtsp_frame_lock:
+                return self._rtsp_frame_cache
+        async with self._rtsp_frame_lock:
             try:
-                async with async_timeout.timeout(5):
-                    async with self._session.get(url, allow_redirects=True) as resp:
-                        if resp.status == 200:
-                            payload = await resp.read()
-                            if payload:
-                                self._snapshot_url_working = url
-                                self._snapshot_error_logged = False
-                                return bytes(payload)
-            except Exception:
-                pass
-
-        if not self._snapshot_error_logged:
-            _LOGGER.debug("Snapshot nicht verfügbar (Port %s nicht erreichbar)", self.http_port)
-            self._snapshot_error_logged = True
-        return None
+                cmd = [
+                    "ffmpeg", "-loglevel", "error",
+                    "-rtsp_transport", "tcp",
+                    "-i", self.rtsp_url,
+                    "-frames:v", "1",
+                    "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                frame, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+            except Exception as exc:
+                _LOGGER.debug("RTSP-Einzelframe fehlgeschlagen: %s", exc)
+                return self._rtsp_frame_cache
+            if frame and len(frame) >= 500:
+                self._rtsp_frame_cache = bytes(frame)
+                self._rtsp_frame_cache_time = now
+            return self._rtsp_frame_cache
 
     @staticmethod
     def _ptz_http_payload_looks_ok(payload: bytes) -> bool:
@@ -1421,15 +1556,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         ok = await soap.ptz_command(cmd, speed=spd, token=tok)
                     if ok:
                         self._last_ptz_fault = ""
+                        pulse_count = max(1, min(8, int(speed)))
                         if tok != pref:
                             # Funktionierenden Token merken → künftig zuerst probieren
                             self._preferred_onvif_profile_token = tok
                             _LOGGER.info(
-                                "PTZ '%s' OK via XMSoapClient (%s, Token=%s gemerkt)",
-                                cmd, self.host, tok,
+                                "PTZ '%s' OK via XMSoapClient (%s, Stufe %d → %d Pulse, "
+                                "Token=%s gemerkt)",
+                                cmd, self.host, pulse_count, pulse_count, tok,
                             )
                         else:
-                            _LOGGER.info("PTZ '%s' OK via XMSoapClient (%s)", cmd, self.host)
+                            _LOGGER.info(
+                                "PTZ '%s' OK via XMSoapClient (%s, Stufe %d → %d Pulse)",
+                                cmd, self.host, pulse_count, pulse_count,
+                            )
                         return True
                 self._last_ptz_fault = (
                     f"XMSoapClient PTZ fehlgeschlagen: {cmd} (Tokens {','.join(candidate_tokens)})"
@@ -1442,21 +1582,23 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 self._last_ptz_fault = f"XMSoapClient Fehler: {soap_exc}"
                 _LOGGER.warning("XMSoapClient PTZ '%s' Exception (%s): %s", cmd, self.host, soap_exc)
 
-        # ONVIF: Direct-SOAP ContinuousMove als primärer Weg
+        # ONVIF: Direct-SOAP-Fallback — MIT Puls-Stepping wie im Primärpfad.
+        # XM-Firmware ignoriert Velocity UND Bewegungsdauer; nur die Anzahl der
+        # Pulse steuert die Strecke. Ein einzelnes ContinuousMove würde die
+        # Geschwindigkeitsstufe hier wirkungslos machen.
         if self.protocol == PROTOCOL_ONVIF:
             if cmd == "stop":
                 return await self.async_ptz_stop()
-            spd = f"{min(speed, 8) / 8:.2f}"
-            # xm-soap.py bestaetigt: Velocity braucht IMMER beide Elemente.
-            # Kamera gibt SOAP-Fault wenn PanTilt oder Zoom fehlt.
+            # Feste Magnitude 1.0 — Velocity wird von der Firmware ohnehin ignoriert.
             soap_velocity_map: dict[str, str] = {
-                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
-                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
-                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
-                "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
+                "up":       '<tt:PanTilt x="0.00" y="1.00"/><tt:Zoom x="0.00"/>',
+                "down":     '<tt:PanTilt x="0.00" y="-1.00"/><tt:Zoom x="0.00"/>',
+                "left":     '<tt:PanTilt x="-1.00" y="0.00"/><tt:Zoom x="0.00"/>',
+                "right":    '<tt:PanTilt x="1.00" y="0.00"/><tt:Zoom x="0.00"/>',
+                "zoom_in":  '<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="1.00"/>',
+                "zoom_out": '<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-1.00"/>',
             }
+            spd = f"{min(speed, 8) / 8:.2f}"
             soap_translation_map: dict[str, str] = {
                 "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
                 "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
@@ -1466,34 +1608,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
             }
             if cmd in soap_velocity_map:
+                steps = max(1, min(8, int(speed)))
+                _LOGGER.warning(
+                    "PTZ '%s': XMSoapClient-Pfad fehlgeschlagen — Direct-SOAP-Fallback "
+                    "mit Puls-Stepping (Stufe %d → %d Pulse)",
+                    cmd, steps, steps,
+                )
                 tried_tokens = await self._async_candidate_ptz_profile_tokens()
-                for profile_token in tried_tokens:
-                    resp = await self._async_ptz_soap_request(
-                        "ContinuousMove",
-                        f"<tptz:ContinuousMove>"
-                        f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-                        f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
-                        f"</tptz:ContinuousMove>",
-                    )
-                    if self._ptz_response_ok(resp, "ContinuousMove"):
-                        self._onvif_profile_tokens[self._active_stream] = profile_token
-                        self._last_ptz_fault = ""
-                        return True
+                if await self._async_fallback_ptz_pulse(
+                    soap_velocity_map[cmd], tried_tokens, steps
+                ):
+                    return True
 
-                for profile_token in tried_tokens:
-                    resp = await self._async_ptz_soap_request(
-                        "ContinuousMove",
-                        f"<tptz:ContinuousMove>"
-                        f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-                        f"<tptz:Velocity>{soap_velocity_map[cmd]}</tptz:Velocity>"
-                        f"<tptz:Timeout>PT0.50S</tptz:Timeout>"
-                        f"</tptz:ContinuousMove>",
-                    )
-                    if self._ptz_response_ok(resp, "ContinuousMove"):
-                        self._onvif_profile_tokens[self._active_stream] = profile_token
-                        self._last_ptz_fault = ""
-                        return True
-
+                # Letzter Versuch: RelativeMove — einzelner Schritt, Stepping
+                # technisch nicht möglich → deutlich warnen.
                 for profile_token in tried_tokens:
                     resp = await self._async_ptz_soap_request(
                         "RelativeMove",
@@ -1505,6 +1633,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     if self._ptz_response_ok(resp, "RelativeMove"):
                         self._onvif_profile_tokens[self._active_stream] = profile_token
                         self._last_ptz_fault = ""
+                        _LOGGER.warning(
+                            "PTZ '%s' nur via RelativeMove erfolgreich — "
+                            "Geschwindigkeits-Stepping inaktiv", cmd,
+                        )
                         return True
 
                 # python-onvif-zeep Fallback entfernt (self._onvif ist None)
@@ -1522,8 +1654,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 _LOGGER.error("PTZ-Befehl fehlgeschlagen: %s", e)
 
         # XM-SDK-Fallback (Port 34567 auf XM-3820 geschlossen, aber Code bleibt für
-        # andere Geräte erhalten)
-        if self.protocol == PROTOCOL_ONVIF and not self._xm:
+        # andere Geräte erhalten). Port-Cache: nicht bei jedem Tastendruck gegen
+        # einen bekannten geschlossenen Port anrennen.
+        if (
+            self.protocol == PROTOCOL_ONVIF
+            and not self._xm
+            and await self._async_port_open_cached(self.xm_port)
+        ):
             code = ptz_map[cmd]
             xm_tmp = XMClient(self.host, self.xm_port, self.username or "", self.password or "")
             try:
@@ -1539,8 +1676,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             except Exception as xm_exc:
                 self._last_ptz_fault = f"PTZ XM-SDK-Fallback Fehler: {xm_exc}"
 
-        # HTTP-Fallback
-        if self._session:
+        # HTTP-Fallback (Port-Cache wie oben — Port 80 ist auf XM-3820 zu)
+        if self._session and await self._async_port_open_cached(self.http_port):
             for url in self._candidate_http_ptz_urls(cmd, speed):
                 data = await self._async_http_get_data(url, timeout_seconds=3)
                 ok = isinstance(data, (bytes, bytearray)) and self._ptz_http_payload_looks_ok(bytes(data))
@@ -1555,6 +1692,74 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return False
 
     # ── ONVIF Direct-SOAP helper ────────────────────────────────────────────
+
+    async def _async_fallback_ptz_pulse(
+        self, velocity_xml: str, tokens: list[str], steps: int
+    ) -> bool:
+        """Puls-Stepping über die Direct-SOAP-Session (Fallback-Pfad).
+
+        Der erste erfolgreiche ContinuousMove legt Token und Body-Variante fest;
+        alle weiteren Pulse laufen NUR damit (kein Token-Retry nach Bewegung —
+        sonst Extra-Strecke). Die Timeout-Variante deckt Geräte ab, die
+        ContinuousMove ohne Timeout-Element ablehnen.
+        """
+        def _move_body(token: str, with_timeout: bool) -> str:
+            timeout_xml = "<tptz:Timeout>PT0.50S</tptz:Timeout>" if with_timeout else ""
+            return (
+                f"<tptz:ContinuousMove>"
+                f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
+                f"<tptz:Velocity>{velocity_xml}</tptz:Velocity>"
+                f"{timeout_xml}"
+                f"</tptz:ContinuousMove>"
+            )
+
+        async def _stop(token: str) -> None:
+            await self._async_ptz_soap_request(
+                "Stop",
+                f"<tptz:Stop>"
+                f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
+                f"<tptz:PanTilt>true</tptz:PanTilt>"
+                f"<tptz:Zoom>true</tptz:Zoom>"
+                f"</tptz:Stop>",
+            )
+
+        # Funktionierende Token/Variante mit dem ERSTEN Puls ermitteln
+        active_token = ""
+        with_timeout = False
+        for use_timeout in (False, True):
+            for token in tokens:
+                resp = await self._async_ptz_soap_request(
+                    "ContinuousMove", _move_body(token, use_timeout)
+                )
+                if self._ptz_response_ok(resp, "ContinuousMove"):
+                    active_token = token
+                    with_timeout = use_timeout
+                    break
+            if active_token:
+                break
+        if not active_token:
+            return False
+
+        # Erster Puls läuft bereits → abschließen, dann restliche Pulse fahren
+        await asyncio.sleep(_PTZ_PULSE_DURATION)
+        await _stop(active_token)
+        for _ in range(1, steps):
+            await asyncio.sleep(_PTZ_PULSE_GAP)
+            resp = await self._async_ptz_soap_request(
+                "ContinuousMove", _move_body(active_token, with_timeout)
+            )
+            if not self._ptz_response_ok(resp, "ContinuousMove"):
+                _LOGGER.warning(
+                    "PTZ-Fallback: Puls-Sequenz vorzeitig beendet (Token=%s)",
+                    active_token,
+                )
+                break
+            await asyncio.sleep(_PTZ_PULSE_DURATION)
+            await _stop(active_token)
+
+        self._onvif_profile_tokens[self._active_stream] = active_token
+        self._last_ptz_fault = ""
+        return True
 
     def _wsse_header(self, utc_now: datetime.datetime | None = None) -> str:
         """WSSE PasswordDigest Header.
@@ -2680,11 +2885,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         return bool(resp)
 
     async def _async_rtsp_motion_loop(self) -> None:
-        """Kanal 2: RTSP Frame-Vergleich via FFmpeg + Pillow alle 8 Sekunden."""
+        """Kanal 2: RTSP Frame-Vergleich via FFmpeg + Pillow (Intervall per Option)."""
         prev_frame: bytes | None = None
         await asyncio.sleep(15)  # Startup-Delay damit RTSP-URL gecacht ist
         while True:
-            await asyncio.sleep(8)
+            await asyncio.sleep(self.motion_rtsp_interval)
             if not self._session:
                 continue
             try:
@@ -2826,7 +3031,21 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self.async_update_listeners()
 
     async def _trigger_motion_recording(self) -> None:
-        """Startet Aufnahme und plant automatischen Stop nach Bewegungsende."""
+        """Startet Aufnahme und plant automatischen Stop nach Bewegungsende.
+
+        Per Option abschaltbar; Cooldown verhindert, dass Daueralarme im
+        Sekundentakt neue ffmpeg-Streams starten (Netzwerkflut-Schutz).
+        """
+        if not self.motion_auto_record_enabled:
+            return
+        already_recording = bool(
+            self._recording_proc and self._recording_proc.returncode is None
+        )
+        if not already_recording:
+            now = time.time()
+            if now - self._last_record_trigger < self.motion_record_cooldown:
+                return
+            self._last_record_trigger = now
         await self.async_start_local_recording()
         if self._recording_stop_task and not self._recording_stop_task.done():
             self._recording_stop_task.cancel()

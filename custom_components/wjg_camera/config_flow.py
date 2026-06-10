@@ -19,7 +19,9 @@ from homeassistant.core import callback
 import homeassistant.helpers.config_validation as cv
 
 from . import (
-    CONF_HTTP_RETRIES, CONF_ONVIF_DEVICE_PATH, CONF_ONVIF_EVENTS_PATH,
+    CONF_HTTP_RETRIES, CONF_MOTION_AUTO_RECORD, CONF_MOTION_RECORD_COOLDOWN,
+    CONF_MOTION_RTSP_DIFF, CONF_MOTION_RTSP_INTERVAL,
+    CONF_ONVIF_DEVICE_PATH, CONF_ONVIF_EVENTS_PATH,
     CONF_ONVIF_IMAGING_PATH, CONF_ONVIF_MEDIA_PATH, CONF_ONVIF_MOTION_ITEM_KEYS,
     CONF_ONVIF_MOTION_TOPIC_KEYWORDS, CONF_ONVIF_PORT, CONF_ONVIF_PROFILE_TOKEN,
     CONF_ONVIF_PTZ_PATH,
@@ -27,7 +29,10 @@ from . import (
     CONF_ONVIF_TAMPER_ITEM_KEYS, CONF_ONVIF_TAMPER_TOPIC_KEYWORDS,
     CONF_ONVIF_VIDEO_SOURCE_TOKEN, CONF_PROTOCOL,
     CONF_RTSP_PATH, CONF_RTSP_PORT, CONF_SNAPSHOT_PATH,
-    DEFAULT_HTTP_PORT, DEFAULT_HTTP_RETRIES, DEFAULT_ONVIF_PORT, DEFAULT_PASSWORD,
+    DEFAULT_HTTP_PORT, DEFAULT_HTTP_RETRIES,
+    DEFAULT_MOTION_AUTO_RECORD, DEFAULT_MOTION_RECORD_COOLDOWN,
+    DEFAULT_MOTION_RTSP_DIFF, DEFAULT_MOTION_RTSP_INTERVAL,
+    DEFAULT_ONVIF_PORT, DEFAULT_PASSWORD,
     DEFAULT_RTSP_PATH, DEFAULT_RTSP_PORT,
     DEFAULT_SNAPSHOT_PATH, DEFAULT_USERNAME, DOMAIN,
     PROTOCOL_HTTP, PROTOCOL_RTSP, PROTOCOL_XM, PROTOCOL_ONVIF,
@@ -168,6 +173,43 @@ class WJGOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=merged)
 
         schema = vol.Schema({
+            # Motion-Kanäle / Auto-Aufnahme (Netzlast-Steuerung)
+            vol.Optional(
+                CONF_MOTION_RTSP_DIFF,
+                default=bool(self._config_entry.options.get(
+                    CONF_MOTION_RTSP_DIFF,
+                    self._config_entry.data.get(
+                        CONF_MOTION_RTSP_DIFF, DEFAULT_MOTION_RTSP_DIFF
+                    ),
+                )),
+            ): cv.boolean,
+            vol.Optional(
+                CONF_MOTION_RTSP_INTERVAL,
+                default=self._config_entry.options.get(
+                    CONF_MOTION_RTSP_INTERVAL,
+                    self._config_entry.data.get(
+                        CONF_MOTION_RTSP_INTERVAL, DEFAULT_MOTION_RTSP_INTERVAL
+                    ),
+                ),
+            ): vol.All(vol.Coerce(int), vol.Range(min=10, max=600)),
+            vol.Optional(
+                CONF_MOTION_AUTO_RECORD,
+                default=bool(self._config_entry.options.get(
+                    CONF_MOTION_AUTO_RECORD,
+                    self._config_entry.data.get(
+                        CONF_MOTION_AUTO_RECORD, DEFAULT_MOTION_AUTO_RECORD
+                    ),
+                )),
+            ): cv.boolean,
+            vol.Optional(
+                CONF_MOTION_RECORD_COOLDOWN,
+                default=self._config_entry.options.get(
+                    CONF_MOTION_RECORD_COOLDOWN,
+                    self._config_entry.data.get(
+                        CONF_MOTION_RECORD_COOLDOWN, DEFAULT_MOTION_RECORD_COOLDOWN
+                    ),
+                ),
+            ): vol.All(vol.Coerce(int), vol.Range(min=0, max=600)),
             vol.Optional(
                 CONF_RTSP_PATH,
                 default=self._config_entry.options.get(

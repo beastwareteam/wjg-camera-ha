@@ -1,5 +1,59 @@
 # WJG XM-3820 Camera Bridge — Kritisches Wissen für Claude
 
+## Netzwerkflut + Stepping-Verlust (Fix v2.2.40 — Juni 2026)
+
+### Problem 1: Dauerhafte Netzwerkflut sobald die Integration läuft
+**Ursache (Kettenreaktion):**
+- Motion-"Kanal 2" (`_async_rtsp_motion_loop`) startete ALLE 8 s einen
+  ffmpeg-Prozess mit voller RTSP-Verbindung zum Full-HD-Hauptstream.
+- Schwelle 2 % Pixeländerung → Fehlalarme (Licht, IR-Umschaltung, Rauschen).
+- JEDER Motion-Trigger startete via `_trigger_motion_recording` eine
+  ffmpeg-HD-Aufnahme → quasi Dauerstream.
+
+**Lösung (Optionen im Options-Flow, Funktionserhalt):**
+- `motion_rtsp_diff` (Default **AUS**): Kanal 2 ist dreifach redundant zu
+  ONVIF-PullPoint (Kanal 1, verifiziert) + UDP-Monitor (Kanal 3, passiv/lastfrei).
+- `motion_rtsp_interval` (Default 30 s, min. 10): Intervall, falls Kanal 2 aktiviert wird.
+- `motion_auto_record` (Default **AN**): Auto-Aufnahme bleibt erhalten — triggert
+  ohne Kanal 2 nur noch durch echte Kamera-Events.
+- `motion_record_cooldown` (Default 30 s): kein ffmpeg-Neustart im Sekundentakt.
+- Zusätzlich: `_async_port_open_cached` (TCP-Status-Cache) — XM-SDK-(34567)- und
+  HTTP-(80)-Fallbacks rennen nicht mehr bei jedem PTZ-Tastendruck gegen bekannte
+  geschlossene Ports. Snapshot hat einen 5-Min-Negativ-Cache für Port 80.
+
+### Problem 2: PTZ-Stepping wirkungslos, sobald der Primärpfad fehlschlägt
+Der Direct-SOAP-Fallback in `async_ptz_command` sendete ein EINZELNES
+`ContinuousMove` mit Velocity — XM ignoriert Velocity → fester Mini-Schritt,
+Stufe 1–8 ohne Wirkung. **Fix:** `_async_fallback_ptz_pulse` pulst jetzt auch im
+Fallback (Stufe N → N Pulse, gleiche Konstanten wie xm_soap). Außerdem gibt
+`XMSoapClient.ptz_command` jetzt `moved` zurück statt des letzten Puls-Status:
+Nach erfolgter Bewegung darf der Coordinator NICHT mit dem nächsten
+Profile-Token erneut pulsen (Extra-Strecke).
+
+### Snapshot ohne Port 80 (XM-3820: Port 80 ist ZU — live verifiziert 10.06.2026)
+`async_snapshot` → HTTP-Kandidaten (falls Port offen) → sonst
+`_async_rtsp_frame_snapshot`: ffmpeg-Einzelframe aus dem RTSP-Stream mit
+10-s-Kurz-Cache + Lock. Damit liefert die Kamera-Entity echte Bilder statt des
+1×1-Fallback-PNG.
+
+### Live-Diagnose .49 (10.06.2026)
+- Ports: 554 OFFEN, 8899 OFFEN, **80 ZU, 34567 ZU** (NETZWERK_DIAGNOSE-Doku vom
+  23.05. ist veraltet, README hatte recht).
+- WSSE mit lokaler Uhrzeit funktioniert trotz +2 h Kamera-Uhr-Offset.
+- Puls-Stepping am Gerät verifiziert: Stufe 1 = 1 Puls (~0,8 s), Stufe 8 = 8 Pulse (~5,9 s).
+- GetPresets liefert 127 vorbelegte Slots; Imaging-Endpoint ist `/onvif/imaging`
+  (klein geschrieben); Events: `tns1:RuleEngine/CellMotionDetector/Motion`.
+
+### Tests / CI
+- `tests/conftest.py` stellt den XMSoapClient-Primärpfad per autouse-Fixture
+  offline (`OfflineXMSoapStub`) und nullt die Puls-Wartezeiten. OHNE diesen Stub
+  würden die Unit-Tests REALE PTZ-Befehle an eine erreichbare Kamera senden
+  (Tests hardcoden 192.168.178.49) und die Kamera physisch bewegen!
+- `DataUpdateCoordinator` bekommt seit v2.2.40 `config_entry=entry` explizit
+  (HA ≥2025 Pflicht; Dummy-Entries in Tests brauchen `async_on_unload`).
+
+---
+
 ## Motion Detection via ONVIF PullPoint (Fix v2.2.25 — Mai 2026)
 
 ### Problem

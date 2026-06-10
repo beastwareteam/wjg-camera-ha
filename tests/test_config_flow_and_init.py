@@ -23,6 +23,10 @@ class DummyEntry:
         self.entry_id = entry_id
         self.options = options or {}
 
+    def async_on_unload(self, _func):
+        """DataUpdateCoordinator (HA ≥2025) registriert sich am Entry."""
+        return None
+
 
 class DummySocketConnection:
     def __enter__(self):

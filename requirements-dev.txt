@@ -4,3 +4,6 @@ homeassistant
 numpy
 onvif-zeep
 ffmpeg-python
+# Importabhängigkeiten von homeassistant.components.camera/stream in den Tests
+PyTurboJPEG
+av

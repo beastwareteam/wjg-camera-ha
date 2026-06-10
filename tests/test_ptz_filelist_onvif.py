@@ -39,95 +39,76 @@ async def test_async_get_file_list():
 
 @pytest.mark.asyncio
 async def test_async_onvif_ptz():
+    """async_onvif_ptz nutzt Direct-SOAP (python-onvif-zeep wurde entfernt)."""
     entry = DummyEntry({"host": "1.2.3.4", "rtsp_port": 554, "port": 80, "protocol": "rtsp"})
     coordinator = _make_coordinator(MagicMock(), entry)
-    class DummyMedia:
-        async def GetProfiles(self):
-            class Profile:
-                token = "t1"
-            return [Profile()]
-        def create_type(self, _):
-            class Req:
-                ProfileToken = "t1"
-                Velocity = {}
-            return Req()
-    class DummyPTZ:
-        def create_type(self, _):
-            class Req:
-                ProfileToken = "t1"
-                Velocity = {}
-            return Req()
-        ContinuousMove = AsyncMock(return_value=None)
-        Stop = AsyncMock(return_value=None)
-    class DummyONVIF:
-        def create_media_service(self): return DummyMedia()
-        def create_ptz_service(self): return DummyPTZ()
-    _set_private_attr(coordinator, "_onvif", DummyONVIF())
+    seen_bodies: list[str] = []
+
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        seen_bodies.append(body)
+        if "ContinuousMove" in body:
+            return "<tptz:ContinuousMoveResponse/>"
+        return ""
+
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+
+    class FakeSoap:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def ptz_stop(self, *args, **kwargs):
+            return True
+
+    _set_private_attr(coordinator, "_soap", lambda: FakeSoap())
+
     assert await coordinator.async_onvif_ptz("up") is True
     assert await coordinator.async_onvif_ptz("left") is True
     assert await coordinator.async_onvif_ptz("right") is True
     assert await coordinator.async_onvif_ptz("zoom_in") is True
     assert await coordinator.async_onvif_ptz("zoom_out") is True
     assert await coordinator.async_onvif_ptz("stop") is True
+    # seen_bodies enthält auch GetProfiles-Aufrufe der Token-Auflösung
+    move_bodies = [b for b in seen_bodies if "ContinuousMove" in b]
+    assert len(move_bodies) == 5  # up/left/right/zoom_in/zoom_out
 
 
 @pytest.mark.asyncio
-async def test_async_onvif_ptz_with_sync_profile_call_path():
+async def test_async_onvif_ptz_uses_active_profile_token():
     entry = DummyEntry({"host": "1.2.3.4", "rtsp_port": 554, "port": 80, "protocol": "rtsp"})
     coordinator = _make_coordinator(MagicMock(), entry)
+    seen_bodies: list[str] = []
 
-    class DummyMedia:
-        def GetProfiles(self):
-            class Profile:
-                token = "sync-token"
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        seen_bodies.append(body)
+        return "<tptz:ContinuousMoveResponse/>"
 
-            return [Profile()]
-
-    class DummyPTZ:
-        def create_type(self, _):
-            class Req:
-                ProfileToken = "sync-token"
-                Velocity = {}
-
-            return Req()
-
-        async def ContinuousMove(self, req):
-            _ = req
-            return None
-
-        async def Stop(self, req):
-            _ = req
-            return None
-
-    class DummyONVIF:
-        def create_media_service(self):
-            return DummyMedia()
-
-        def create_ptz_service(self):
-            return DummyPTZ()
-
-    _set_private_attr(coordinator, "_onvif", DummyONVIF())
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_onvif_profile_tokens", {"000": "sync-token"})
+    _set_private_attr(coordinator, "_active_stream", "000")
 
     assert await coordinator.async_onvif_ptz("down") is True
+    assert any("<tptz:ProfileToken>sync-token</tptz:ProfileToken>" in body for body in seen_bodies)
 
 @pytest.mark.asyncio
 async def test_async_onvif_stream_url():
     entry = DummyEntry({"host": "1.2.3.4", "rtsp_port": 554, "port": 80, "protocol": "rtsp"})
     coordinator = _make_coordinator(MagicMock(), entry)
-    class DummyMedia:
-        async def GetProfiles(self):
-            class Profile:
-                token = "t1"
-            return [Profile()]
-        def create_type(self, _):
-            class Req:
-                ProfileToken = "t1"
-                StreamSetup = {}
-            return Req()
-        GetStreamUri = AsyncMock(return_value=type("Uri", (), {"Uri": "rtsp://1.2.3.4/stream"})())
-    class DummyONVIF:
-        def create_media_service(self): return DummyMedia()
-    _set_private_attr(coordinator, "_onvif", DummyONVIF())
+
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        if "GetStreamUri" in body:
+            return "<trt:MediaUri><tt:Uri>rtsp://1.2.3.4/stream</tt:Uri></trt:MediaUri>"
+        return ""
+
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
     url = await coordinator.async_onvif_stream_url()
     assert url == "rtsp://admin:@1.2.3.4:554/stream"
 

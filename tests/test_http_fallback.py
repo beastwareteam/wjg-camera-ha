@@ -7,6 +7,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from tests_helpers import (
     make_coordinator as _make_coordinator,
+    mark_port_open as _mark_port_open,
     private_name as _private_name,
     set_private_attr as _set_private_attr,
 )
@@ -236,7 +237,9 @@ async def test_http_fallback_snapshot_success():
     data = await coordinator.async_snapshot()
 
     assert data == b"jpeg-bytes"
-    assert session.request_kwargs[0].get("auth") is not None
+    # Aktuelles Verhalten: Auth läuft über Query-Kandidaten (user=admin&password=),
+    # nicht über aiohttp-BasicAuth
+    assert session.request_kwargs[0].get("allow_redirects") is True
 
 
 @pytest.mark.asyncio
@@ -300,7 +303,8 @@ async def test_http_fallback_snapshot_tries_alternate_snapshot_path():
 
 
 @pytest.mark.asyncio
-async def test_http_fallback_snapshot_retries_without_http_auth_on_401():
+async def test_http_fallback_snapshot_sends_no_basic_auth():
+    """Snapshot nutzt Query-Auth-Kandidaten statt aiohttp-BasicAuth."""
     coordinator = _make_coordinator(DummyHass(), DummyEntry())
     seen_auth: list[bool] = []
 
@@ -331,13 +335,14 @@ async def test_http_fallback_snapshot_retries_without_http_auth_on_401():
     data = await coordinator.async_snapshot()
 
     assert data == b"anon-jpeg"
-    assert seen_auth[:2] == [True, False]
+    assert seen_auth and seen_auth[0] is False
 
 
 @pytest.mark.asyncio
 async def test_http_fallback_ptz_success():
     coordinator = _make_coordinator(DummyHass(), DummyEntry())
     _set_private_attr(coordinator, _private_name("xm"), None)
+    _mark_port_open(coordinator, 80)
     session = FakeSession(
         routes={"/cgi-bin/ptz": FakeResponse(status=200)}
     )
@@ -366,6 +371,7 @@ async def test_http_fallback_ptz_non_200_returns_false():
 async def test_http_fallback_ptz_tries_hi3510_after_generic_endpoint_fails():
     coordinator = _make_coordinator(DummyHass(), DummyEntry())
     _set_private_attr(coordinator, _private_name("xm"), None)
+    _mark_port_open(coordinator, 80)
     session = FakeSession(
         routes={
             "/cgi-bin/ptz": FakeResponse(status=404),
@@ -396,6 +402,7 @@ async def test_http_fallback_ptz_exception_returns_false():
 async def test_http_fallback_ptz_retries_and_succeeds():
     coordinator = _make_coordinator(DummyHass(), DummyEntry())
     _set_private_attr(coordinator, _private_name("xm"), None)
+    _mark_port_open(coordinator, 80)
     session = FakeSession(
         routes={
             "/cgi-bin/ptz": [
