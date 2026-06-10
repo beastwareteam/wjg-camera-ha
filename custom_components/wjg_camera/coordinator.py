@@ -37,8 +37,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .xm_soap import (
-    PTZ_PULSE_DURATION as _PTZ_PULSE_DURATION,
     XMSoapClient as _XMSoapClient,
+    ptz_stop_delay_for_speed as _ptz_stop_delay_for_speed,
 )
 
 # Konstanten lokal definieren, um zirkulären Import zu vermeiden
@@ -1611,8 +1611,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 spd = min(speed, 8) / 8  # normalisiert 0.125–1.0
                 _LOGGER.warning(
                     "PTZ '%s': XMSoapClient-Pfad fehlgeschlagen — Direct-SOAP-Fallback "
-                    "(1 Puls, Dauer=%.3fs)",
-                    cmd, max(0.05, spd) * _PTZ_PULSE_DURATION,
+                    "(1 Move, Halt=%.2fs)",
+                    cmd, _ptz_stop_delay_for_speed(spd),
                 )
                 tried_tokens = await self._async_candidate_ptz_profile_tokens()
                 if await self._async_fallback_ptz_pulse(
@@ -1696,13 +1696,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def _async_fallback_ptz_pulse(
         self, velocity_xml: str, tokens: list[str], spd: float
     ) -> bool:
-        """1 Puls über Direct-SOAP (Fallback-Pfad) mit proportionaler Dauer.
+        """1 ContinuousMove über Direct-SOAP (Fallback-Pfad) mit Stop-Delay.
 
-        Der erste erfolgreiche ContinuousMove legt Token und Body-Variante fest.
-        Die Timeout-Variante deckt Geräte ab, die ContinuousMove ohne
-        Timeout-Element ablehnen.
+        Der erste erfolgreiche ContinuousMove legt Token und Body-Variante fest;
+        nach der proportionalen Haltedauer folgt ein Stop. Die Timeout-Variante
+        deckt Geräte ab, die ContinuousMove ohne Timeout-Element ablehnen.
         """
-        duration = max(0.05, spd) * _PTZ_PULSE_DURATION
+        duration = _ptz_stop_delay_for_speed(spd)
 
         def _move_body(token: str, with_timeout: bool) -> str:
             timeout_xml = "<tptz:Timeout>PT0.50S</tptz:Timeout>" if with_timeout else ""

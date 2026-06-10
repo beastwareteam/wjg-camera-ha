@@ -1,9 +1,10 @@
-"""Tests für Netzlast-Steuerung (Motion-Optionen, v2.2.40) und PTZ-Puls-Verhalten.
+"""Tests für Netzlast-Steuerung (Motion-Optionen, v2.2.40) und PTZ-Speed-Verhalten.
 
 Hintergrund: Kanal 2 (RTSP-Bildvergleich) und die Auto-Aufnahme erzeugten eine
-dauerhafte Netzwerkflut (behoben in v2.2.40). In v2.2.41 wurde das
-N-Pulse-Stepping durch 1 Puls mit proportionaler Dauer ersetzt: 1 Tap = 1 Puls,
-Dauer ∝ Speed (Stufe 1 → kurz, Stufe 8 → lang).
+dauerhafte Netzwerkflut (behoben in v2.2.40). Ab v2.2.42 steuert die
+Geschwindigkeitsstufe die HALTEDAUER eines einzelnen ContinuousMove (Kamera
+fährt bis Stop, live verifiziert): 1 Tap = 1 Move, Halt ∝ Speed (Stufe 1 → kurz
+0.2 s, Stufe 8 → lang 1.5 s).
 """
 import os
 import sys
@@ -14,7 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from custom_components.wjg_camera.xm_soap import XMSoapClient
+from custom_components.wjg_camera.xm_soap import XMSoapClient, ptz_stop_delay_for_speed
 from tests_helpers import (
     get_private_attr as _get_private_attr,
     make_coordinator as _make_coordinator,
@@ -219,6 +220,19 @@ async def test_xmsoap_ptz_command_fails_without_any_movement():
     client.ptz_continuous_move = _fake_move  # type: ignore[method-assign]
 
     assert await client.ptz_command("left", speed=1.0) is False
+
+
+def test_ptz_stop_delay_scales_monotonically_with_speed():
+    """Haltedauer steigt streng monoton mit der Stufe (Stufe 1 = min, 8 = max).
+
+    Explizite min/max, damit der Test unabhängig vom conftest-Nullen ist.
+    """
+    delays = [
+        ptz_stop_delay_for_speed(level / 8, 0.2, 1.5) for level in range(1, 9)
+    ]
+    assert delays[0] == pytest.approx(0.2)   # Stufe 1
+    assert delays[-1] == pytest.approx(1.5)  # Stufe 8
+    assert all(b > a for a, b in zip(delays, delays[1:]))  # streng steigend
 
 
 # ── PTZ: Coordinator-Fallback (Direct-SOAP) ──────────────────────────────────

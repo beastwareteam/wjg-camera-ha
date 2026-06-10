@@ -1,35 +1,48 @@
 # WJG XM-3820 Camera Bridge — Kritisches Wissen für Claude
 
-## Kamera-Uhrzeit-Spam + PTZ-Bewegungsgröße (Fix v2.2.41 — Juni 2026)
+## PTZ-Geschwindigkeit: Stop-Delay (Fix v2.2.42 — Juni 2026) ⭐ AKTUELL
 
-### Problem 1: Aktivitätslog-Spam durch Kamera-Uhrzeit-Sensor
+### LIVE VERIFIZIERT (10.06.2026, Diagnose `ptz_speed_diag.py` an der .49)
+**Die Kamera fährt bei ContinuousMove BIS ZUM Stop weiter** — langer Halt =
+weitere Strecke, kurzer Halt = kürzere. Konkret beobachtet: 2,0 s-Halt bewegte
+deutlich weiter als 0,2 s-Halt. Das **widerlegt** die frühere Annahme „Kamera
+macht festen Schritt und stoppt selbst" (die 02.06-Notiz war falsch). Nur der
+Velocity-WERT wird ignoriert, die **Dauer NICHT**.
+
+### Mechanismus (Stop-Delay-Stepping)
+1 Tap = **1 ContinuousMove + proportionaler Sleep + Stop**. Die Stufe (1–8)
+steuert die Haltedauer linear über `ptz_stop_delay_for_speed(speed)`:
+- `PTZ_MIN_STOP_DELAY = 0.2 s` (Stufe 1, kleiner Tipp)
+- `PTZ_MAX_STOP_DELAY = 1.5 s` (Stufe 8, große Schwenkung)
+- linear dazwischen (Stufe N → `0.2 + (N-1)/7 * 1.3` s)
+
+Gilt in **beiden** Pfaden: `XMSoapClient.ptz_command()` (xm_soap.py, Primär) und
+`_async_fallback_ptz_pulse()` (coordinator.py, Direct-SOAP-Fallback). Beide
+nutzen denselben Helper `ptz_stop_delay_for_speed` aus xm_soap.
+
+### Warum die Vorgänger scheiterten
+- **v2.2.40 (N Pulse):** Stufe 1 = 1 Puls × 0.35 s war als „Tipp" zu groß und
+  fühlte sich bei höheren Stufen wie Hold-to-Move an.
+- **v2.2.41 (1 Puls, Dauer 0.044–0.35 s):** richtiger Mechanismus, aber der
+  Bereich war viel zu klein/eng — bei so kurzen Dauern dominiert die
+  Netzwerk-Latenz, alle Stufen fühlten sich gleich an. v2.2.42 nutzt den großen,
+  klar getrennten Bereich 0.2–1.5 s (wie das alte v2.2.21).
+
+### Regeln
+- **Stop-Delay ist der richtige Ansatz** (entgegen der alten CLAUDE.md-Warnung).
+  Bei „alle Stufen gleich" zuerst den **Bereich vergrößern**, nicht den
+  Mechanismus wechseln.
+- Tuning nur über `PTZ_MIN_STOP_DELAY`/`PTZ_MAX_STOP_DELAY`.
+- RelativeMove ist als Alternative vorhanden (Kamera akzeptiert es, Bereich
+  −1…1, via `GetNodes` bestätigt) — bei Bedarf als noch präziserer Ersatz prüfbar.
+
+## Kamera-Uhrzeit-Spam (Fix v2.2.41 — Juni 2026)
 `WJGCameraTimeSensor` gibt `coordinator.camera_time` zurück — ein String
 `"YYYY-MM-DD HH:MM:SS"`. Da sich dieser String jede Sekunde ändert, erzeugte
 jede Koordinator-Abfrage (alle 60 s) einen HA-State-Change → Logbuch-Eintrag
 jede Minute. **Fix:** Polling von `% 6` (60 s) auf `% 180` (30 min) geändert.
 Imaging-Settings-Fetch wurde dabei von der Kamerazeit-Abfrage entkoppelt und
 läuft weiterhin alle 5 Minuten (`% 30`).
-
-### Problem 2: PTZ-Bewegungsgröße (1 Tap = zu viel Bewegung)
-v2.2.40 steuerte die Strecke über die Anzahl der Pulse (N Pulse pro Tap). Selbst
-bei Stufe 1 (= 1 Puls × 0.35 s) war die Bewegung zu groß.
-
-**Lösung v2.2.41:** 1 Tap = immer genau 1 ContinuousMove; **Dauer proportional
-zur Speed-Stufe:** `duration = max(0.05, speed) * PTZ_PULSE_DURATION`
-- Speed 0.125 (Stufe 1): Dauer ≈ 0.044 s → minimale Schrittweite
-- Speed 1.0 (Stufe 8): Dauer = 0.35 s → maximale Schrittweite
-
-Dies gilt sowohl für `XMSoapClient.ptz_command()` (xm_soap.py) als auch für
-`_async_fallback_ptz_pulse()` (coordinator.py).
-
-**NICHT** zum Anzahl-Pulse-Ansatz (v2.2.40) zurückkehren — der Nutzer will
-1 Tap = 1 kleine Bewegung. Der alte Ansatz mit proportionaler Dauer war bereits
-in der Firmware-Analyse als Hypothese vorhanden; v2.2.41 nutzt ihn konsequent.
-
-**Offene Frage (live zu verifizieren):** Reagiert die XM-3820-Firmware auf
-kürzere ContinuousMove-Dauern mit weniger Bewegung, oder macht sie immer den
-gleichen festen Schritt? Falls alle Dauern denselben Schritt erzeugen →
-Folgeproblem melden.
 
 ---
 
@@ -188,21 +201,19 @@ WSSE funktioniert trotzdem — die Kamera akzeptiert diese Zeitdifferenz.
 - `async_ptz_goto_preset` — Preset anfahren
 - `async_ptz_set_preset` — Preset speichern
 
-### Geschwindigkeitsregelung — Puls-Stepping (seit v2.2.39)
+### Geschwindigkeitsregelung — Stop-Delay (seit v2.2.42, siehe Top-Abschnitt)
 - `self._ptz_speed` in coordinator: int 1–8 (von Number-Entity gesetzt), pro Kamera.
 - Normalisierung: `spd = self._ptz_speed / 8` → float 0.125–1.0 für XMSoapClient.
 - `button.py` → `WJGPTZButton.async_press` übergibt `self.coordinator.ptz_speed`.
-- **WICHTIG (am realen Gerät 02.06.2026 verifiziert):** XM ignoriert **sowohl Velocity
-  ALS AUCH die Bewegungsdauer** — pro `ContinuousMove` macht die Kamera einen festen
-  kleinen Schritt und stoppt selbst. Der alte Stop-Delay-Ansatz (v2.2.21) hatte daher
-  KEINE Wirkung (Wert 1 und 8 bewegten gleich weit).
-- **Lösung:** `ptz_command` sendet jetzt **mehrere kurze Pulse**, Anzahl ∝ speed:
-  `steps = max(1, min(8, round(speed * 8)))` → Stufe 1 = 1 Puls, Stufe 8 = 8 Pulse.
-  Jeder Puls = `ContinuousMove` (feste Magnitude 1.0) → `PTZ_PULSE_DURATION` (0.35s) →
-  `Stop`, dazwischen `PTZ_PULSE_GAP` (0.12s). Abschließend ein Sicherheits-`Stop`.
-  → zurückgelegte Strecke pro Tastendruck ist proportional zur Stufe.
-- **NICHT** zum Stop-Delay-Ansatz zurückkehren (wirkungslos auf dieser Firmware).
+- **LIVE KORRIGIERT (10.06.2026):** Die frühere 02.06-Notiz „XM ignoriert auch die
+  Bewegungsdauer / Kamera stoppt selbst" ist **FALSCH**. Die Kamera fährt bis zum
+  Stop; nur der Velocity-WERT wird ignoriert. → Stop-Delay funktioniert.
+- **Aktuelle Lösung:** 1 Tap = 1 `ContinuousMove` + `ptz_stop_delay_for_speed(spd)`
+  Sleep + `Stop`. Stufe 1 → 0.2 s, Stufe 8 → 1.5 s (linear). KEIN N-Puls-Stepping
+  mehr (v2.2.39–v2.2.41 überholt).
 - **Default seit v2.2.35: `self._ptz_speed = 1`** (langsamste Stufe), pro Kamera getrennt.
+- Historie (überholt, NICHT wiederbeleben): v2.2.39–v2.2.40 = N Pulse (Stufe 1 zu groß);
+  v2.2.41 = 1 Puls mit Dauer 0.044–0.35 s (Bereich zu klein → alle Stufen gefühlt gleich).
 
 ### PTZ Profile-Token-Retry (seit v2.2.39)
 - `async_ptz_command` probiert bei Fehlschlag der Reihe nach Tokens: konfigurierter
