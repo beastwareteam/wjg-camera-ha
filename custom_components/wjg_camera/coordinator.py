@@ -3085,6 +3085,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     pass
             self._recording_proc = None
             self._recording = False
+            # Aufnahme lief bis zu diesem gewollten Stop durch -> Beweis dass die
+            # Pipeline gesund ist. Ohne diesen Reset bleibt der gestaffelte
+            # Backoff nach EINEM frueheren Fehlschlag dauerhaft eingefroren, weil
+            # _async_reap_dead_recording_process() (die einzige andere Reset-
+            # Stelle) hier nie den Erfolgsfall sieht -- der Prozess lebt ja noch,
+            # wenn wir ihn selbst beenden.
+            self._recording_failure_count = 0
             _LOGGER.info("Aufnahme gestoppt: %s", self._recording_file)
             self._recording_file = ""
             self.async_update_listeners()

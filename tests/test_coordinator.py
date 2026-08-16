@@ -2251,6 +2251,30 @@ async def test_stop_local_recording_graceful_path_unchanged():
 
 
 @pytest.mark.asyncio
+async def test_stop_local_recording_resets_failure_count_after_earlier_failure():
+    """Ein erfolgreicher, gewollter Stop muss den Backoff-Zaehler zuruecksetzen --
+    sonst bleibt die Auto-Aufnahme nach EINEM frueheren Fehlschlag dauerhaft im
+    120-600s-Backoff haengen, obwohl die Pipeline wieder gesund ist."""
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    proc = _FakeProc(returncode=None)
+    _set_private_attr(coordinator, "_recording_proc", proc)
+    _set_private_attr(coordinator, "_recording", True)
+    _set_private_attr(coordinator, "_recording_file", "/media/camera/running.mkv")
+    _set_private_attr(coordinator, "_recording_failure_count", 3)
+
+    async def _wait_then_finish():
+        proc.returncode = 0
+        proc._waited.set()
+        return 0
+
+    proc.wait = _wait_then_finish
+
+    await coordinator.async_stop_local_recording()
+
+    assert _get_private_attr(coordinator, "_recording_failure_count") == 0
+
+
+@pytest.mark.asyncio
 async def test_stop_local_recording_noop_when_nothing_to_stop():
     coordinator = _make_coordinator(DummyHass(), _recording_entry())
     _set_private_attr(coordinator, "_recording_proc", None)
