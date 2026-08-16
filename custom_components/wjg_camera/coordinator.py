@@ -2646,6 +2646,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             items = self._parse_event_items(block)
             if self._apply_onvif_event(topic, items):
                 changed = True
+            else:
+                _LOGGER.debug("ONVIF Event ohne Motion-Match: Topic=%s items=%s", topic, items)
 
         if changed:
             self.async_update_listeners()
@@ -2944,6 +2946,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 while True:
                     data, addr = await loop.sock_recvfrom(sock, 4096)
                     if addr[0] != self.host:
+                        _LOGGER.debug(
+                            "UDP Paket von fremder Quelle %s verworfen (erwartet %s): %s",
+                            addr[0], self.host, data[:120],
+                        )
                         continue
                     text = data.decode("utf-8", errors="ignore")
                     tl = text.lower()
@@ -2952,6 +2958,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         self._last_motion_time = time.time()
                         asyncio.ensure_future(self._trigger_motion_recording())
                         self.async_update_listeners()
+                    else:
+                        _LOGGER.debug(
+                            "UDP Paket von %s ohne Motion-Muster: %s", self.host, text[:120]
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
