@@ -68,7 +68,7 @@ CONF_MOTION_RECORD_COOLDOWN = "motion_record_cooldown"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_HTTP_RETRIES = 1
 DEFAULT_MOTION_RTSP_DIFF = False
-DEFAULT_MOTION_RTSP_INTERVAL = 30
+DEFAULT_MOTION_RTSP_INTERVAL = 2
 DEFAULT_MOTION_AUTO_RECORD = True
 DEFAULT_MOTION_RECORD_COOLDOWN = 30
 DEFAULT_RTSP_PATH = "/user=admin&password=&channel=1&stream=1.sdp?real_stream"
@@ -449,7 +449,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 entry.data.get(CONF_MOTION_RTSP_DIFF, DEFAULT_MOTION_RTSP_DIFF),
             )
         )
-        self.motion_rtsp_interval: int = max(10, int(
+        self.motion_rtsp_interval: int = max(1, int(
             options.get(
                 CONF_MOTION_RTSP_INTERVAL,
                 entry.data.get(CONF_MOTION_RTSP_INTERVAL, DEFAULT_MOTION_RTSP_INTERVAL),
@@ -925,7 +925,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             if self.motion_rtsp_diff_enabled:
                 self._rtsp_motion_task = asyncio.create_task(self._async_rtsp_motion_loop())
                 _LOGGER.info(
-                    "Motion-Detection: 3 Kanäle aktiv (ONVIF + RTSP alle %ds + UDP)",
+                    "Motion-Detection: 3 Kanäle aktiv (ONVIF + RTSP-Stream alle %ds + UDP)",
                     self.motion_rtsp_interval,
                 )
             else:
@@ -2872,56 +2872,100 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         resp = await self._onvif_soap_for(ONVIF_SERVICE_DEVICE, "<tds:GetNTP/>")
         return bool(resp)
 
+    def _process_rtsp_motion_frame(
+        self, frame: bytes, prev_frame: bytes | None
+    ) -> bytes | None:
+        """Vergleicht ein neu empfangenes Frame gegen das vorherige und triggert
+        bei Bedarf eine Aufnahme. Gibt das Frame zurück, das als neuer
+        Vergleichs-Referenzpunkt dienen soll (bei Fehlern: das alte)."""
+        if not frame or len(frame) < 200:
+            return prev_frame
+        if prev_frame is None:
+            return frame
+        try:
+            from PIL import Image, ImageChops  # pylint: disable=import-outside-toplevel
+            import io as _io  # pylint: disable=import-outside-toplevel
+            img1 = Image.open(_io.BytesIO(prev_frame)).convert("L")
+            img2 = Image.open(_io.BytesIO(frame)).convert("L")
+            diff = ImageChops.difference(img1, img2)
+            pixels = list(diff.getdata())
+            pct = sum(1 for p in pixels if p > 15) / len(pixels) * 100
+            if pct >= 2.0:
+                _LOGGER.info("RTSP Motion: %.1f%% Pixeländerung erkannt", pct)
+                self._last_motion_time = time.time()
+                asyncio.ensure_future(self._trigger_motion_recording())
+                self.async_update_listeners()
+            else:
+                _LOGGER.debug("RTSP Motion: %.1f%% Pixeländerung (unter 2%% Schwelle)", pct)
+        except Exception:
+            pass
+        return frame
+
     async def _async_rtsp_motion_loop(self) -> None:
-        """Kanal 2: RTSP Frame-Vergleich via FFmpeg + Pillow (Intervall per Option)."""
+        """Kanal 2: RTSP Frame-Vergleich via einem einzigen dauerhaften FFmpeg-
+        MJPEG-Stream statt eines pro Check neu gestarteten Prozesses.
+
+        Ein neuer Prozess + frische RTSP-Verbindung pro Check war die
+        urspruengliche Netzwerkflut-Ursache aus v2.2.40, sobald das Intervall
+        kurz genug ist, um Bewegung zuverlaessig einzufangen. Ein einziger
+        langlebiger Prozess mit `-vf fps=...,scale=80:60` liefert stattdessen
+        laufend kleine Frames ueber EINE Verbindung -- die Erkennungslatenz
+        sinkt von "bis zu einem vollen Intervall" auf "ein Frame-Abstand",
+        ohne wiederholte Reconnects.
+        """
         prev_frame: bytes | None = None
         await asyncio.sleep(15)  # Startup-Delay damit RTSP-URL gecacht ist
+        backoff_seconds = 1
         while True:
-            await asyncio.sleep(self.motion_rtsp_interval)
             if not self._session:
+                await asyncio.sleep(1)
                 continue
+            fps = max(1.0 / max(self.motion_rtsp_interval, 1), 1.0 / 30.0)
+            cmd = [
+                "ffmpeg", "-loglevel", "error",
+                "-rtsp_transport", "tcp",
+                "-i", self.rtsp_url,
+                "-vf", f"fps={fps:.4f},scale=80:60",
+                "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
+            ]
+            proc: asyncio.subprocess.Process | None = None
             try:
-                cmd = [
-                    "ffmpeg", "-loglevel", "error",
-                    "-rtsp_transport", "tcp",
-                    "-i", self.rtsp_url,
-                    "-frames:v", "1",
-                    "-f", "image2pipe", "-vcodec", "mjpeg", "pipe:1",
-                ]
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
                 )
-                frame, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
-            except Exception:
-                continue
-
-            if not frame or len(frame) < 500:
-                continue
-
-            if prev_frame is None:
-                prev_frame = frame
-                continue
-
-            try:
-                from PIL import Image, ImageChops  # pylint: disable=import-outside-toplevel
-                import io as _io  # pylint: disable=import-outside-toplevel
-                img1 = Image.open(_io.BytesIO(prev_frame)).convert("L").resize((80, 60))
-                img2 = Image.open(_io.BytesIO(frame)).convert("L").resize((80, 60))
-                diff = ImageChops.difference(img1, img2)
-                pixels = list(diff.getdata())
-                pct = sum(1 for p in pixels if p > 15) / len(pixels) * 100
-                prev_frame = frame
-                if pct >= 2.0:
-                    _LOGGER.info("RTSP Motion: %.1f%% Pixeländerung erkannt", pct)
-                    self._last_motion_time = time.time()
-                    asyncio.ensure_future(self._trigger_motion_recording())
-                    self.async_update_listeners()
-                else:
-                    _LOGGER.debug("RTSP Motion: %.1f%% Pixeländerung (unter 2%% Schwelle)", pct)
-            except Exception:
-                pass
+                assert proc.stdout is not None
+                buf = b""
+                while True:
+                    chunk = await proc.stdout.read(65536)
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while True:
+                        start = buf.find(b"\xff\xd8")
+                        if start < 0:
+                            break
+                        end = buf.find(b"\xff\xd9", start + 2)
+                        if end < 0:
+                            break
+                        frame = buf[start:end + 2]
+                        buf = buf[end + 2:]
+                        backoff_seconds = 1
+                        prev_frame = self._process_rtsp_motion_frame(frame, prev_frame)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                _LOGGER.debug("RTSP Motion Stream Fehler: %s", exc)
+            finally:
+                if proc and proc.returncode is None:
+                    try:
+                        proc.kill()
+                        await proc.wait()
+                    except Exception:
+                        pass
+            await asyncio.sleep(backoff_seconds)
+            backoff_seconds = min(backoff_seconds * 2, 30)
 
     async def _async_udp_motion_monitor(self) -> None:
         """Kanal 3: UDP 16658 Broadcast-Monitor — XM sendet Kamera-Status-Pakete.

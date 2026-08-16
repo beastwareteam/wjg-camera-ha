@@ -26,7 +26,7 @@
             "rtsp_path": "RTSP-Pfad",
             "snapshot_path": "Snapshot-Pfad",
             "motion_rtsp_diff": "Bewegung per RTSP-Bildvergleich (Kanal 2, erzeugt Dauerlast)",
-            "motion_rtsp_interval": "Intervall RTSP-Bildvergleich (Sekunden, 10-600)",
+            "motion_rtsp_interval": "Bildabstand RTSP-Bildvergleich (Sekunden, 1-30 — kleiner = schneller aber mehr Dauerlast)",
             "motion_auto_record": "Automatische Aufnahme bei Bewegung",
             "motion_record_cooldown": "Pause zwischen Auto-Aufnahmen (Sekunden, 0-600)"
           }

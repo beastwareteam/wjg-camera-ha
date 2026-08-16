@@ -6,17 +6,22 @@ Geschwindigkeitsstufe die HALTEDAUER eines einzelnen ContinuousMove (Kamera
 fährt bis Stop, live verifiziert): 1 Tap = 1 Move, Halt ∝ Speed (Stufe 1 → kurz
 0.2 s, Stufe 8 → lang 1.5 s).
 """
+import asyncio
+import io
 import os
 import sys
 import time
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+import custom_components.wjg_camera.coordinator as coordinator_module
 from custom_components.wjg_camera.xm_soap import XMSoapClient, ptz_stop_delay_for_speed
 from tests_helpers import (
+    call_private_async as _call_private_async,
     get_private_attr as _get_private_attr,
     make_coordinator as _make_coordinator,
     set_private_attr as _set_private_attr,
@@ -54,7 +59,7 @@ def test_motion_options_defaults():
 
     assert coordinator.motion_rtsp_diff_enabled is False
     assert coordinator.motion_auto_record_enabled is True
-    assert coordinator.motion_rtsp_interval == 30
+    assert coordinator.motion_rtsp_interval == 2
     assert coordinator.motion_record_cooldown == 30
 
 
@@ -74,10 +79,10 @@ def test_motion_options_read_from_entry_options():
 
 def test_motion_rtsp_interval_clamped_to_minimum():
     coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA), options={
-        "motion_rtsp_interval": 1,
+        "motion_rtsp_interval": 0,
     }))
 
-    assert coordinator.motion_rtsp_interval == 10
+    assert coordinator.motion_rtsp_interval == 1
 
 
 async def _setup_with_mocks(coordinator, monkeypatch):
@@ -133,6 +138,113 @@ async def test_async_setup_warns_but_does_not_fail_when_ffmpeg_missing(monkeypat
         assert "ffmpeg-Binary nicht im PATH gefunden" in caplog.text
     finally:
         await coordinator.async_shutdown()
+
+
+# ── Kanal 2: kontinuierlicher RTSP-Motion-Stream (statt Einzel-Frame/Intervall) ──
+
+def _make_jpeg(color: tuple) -> bytes:
+    img = Image.new("RGB", (80, 60), color)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+    return buf.getvalue()
+
+
+def test_process_rtsp_motion_frame_first_frame_sets_baseline_without_trigger():
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    coordinator._trigger_motion_recording = AsyncMock()
+    frame = _make_jpeg((10, 10, 10))
+
+    result = coordinator._process_rtsp_motion_frame(frame, None)
+
+    assert result == frame
+    coordinator._trigger_motion_recording.assert_not_called()
+
+
+def test_process_rtsp_motion_frame_no_trigger_below_threshold():
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    coordinator._trigger_motion_recording = AsyncMock()
+    frame = _make_jpeg((10, 10, 10))
+
+    result = coordinator._process_rtsp_motion_frame(frame, frame)
+
+    assert result == frame
+    coordinator._trigger_motion_recording.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_process_rtsp_motion_frame_triggers_on_large_diff():
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    coordinator._trigger_motion_recording = AsyncMock()
+    frame1 = _make_jpeg((0, 0, 0))
+    frame2 = _make_jpeg((255, 255, 255))
+
+    result = coordinator._process_rtsp_motion_frame(frame2, frame1)
+    await asyncio.sleep(0)  # geplanten ensure_future-Task laufen lassen
+
+    assert result == frame2
+    coordinator._trigger_motion_recording.assert_called_once()
+    assert _get_private_attr(coordinator, "_last_motion_time") > 0
+
+
+class _FakeRtspStdout:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def read(self, _n):
+        if self._chunks:
+            return self._chunks.pop(0)
+        raise asyncio.CancelledError
+
+
+class _FakeRtspProc:
+    def __init__(self, chunks):
+        self.stdout = _FakeRtspStdout(chunks)
+        self.returncode = None
+
+    def kill(self):
+        self.returncode = -9
+
+    async def wait(self):
+        return self.returncode
+
+
+@pytest.mark.asyncio
+async def test_rtsp_motion_loop_uses_single_persistent_stream_and_triggers_on_diff(monkeypatch):
+    """Kanal 2 darf pro Bewegungs-Erkennung nur EINEN ffmpeg-Prozess mit EINER
+    RTSP-Verbindung nutzen (kontinuierlicher Stream) statt wie vor v2.2.50 pro
+    Check einen neuen Prozess zu starten — das war die urspruengliche
+    Netzwerkflut-Ursache aus v2.2.40 bei kurzen Intervallen."""
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA), options={
+        "motion_rtsp_diff": True,
+        "motion_rtsp_interval": 1,
+    }))
+    _set_private_attr(coordinator, "_session", object())
+    _set_private_attr(coordinator, "_last_motion_time", 0.0)
+
+    async def _no_sleep(_secs):
+        return None
+
+    monkeypatch.setattr(coordinator_module.asyncio, "sleep", _no_sleep)
+
+    frame1 = _make_jpeg((0, 0, 0))
+    frame2 = _make_jpeg((255, 255, 255))
+    process_calls = {"n": 0}
+
+    async def _fake_create_subprocess_exec(*cmd, **_kwargs):
+        process_calls["n"] += 1
+        assert any(str(arg).startswith("fps=1.0000") for arg in cmd)
+        # beide Frames in einem einzigen Stream-Chunk, danach Stream-Ende
+        return _FakeRtspProc(chunks=[frame1 + frame2])
+
+    monkeypatch.setattr(
+        coordinator_module.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await _call_private_async(coordinator, "_async_rtsp_motion_loop")
+
+    assert process_calls["n"] == 1  # nur EIN Prozess/EINE Verbindung für beide Frames
+    assert coordinator.motion_detected is True
 
 
 # ── Auto-Aufnahme: Option + Cooldown ─────────────────────────────────────────

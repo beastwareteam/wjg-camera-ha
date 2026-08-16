@@ -191,7 +191,7 @@ class WJGOptionsFlow(config_entries.OptionsFlow):
                         CONF_MOTION_RTSP_INTERVAL, DEFAULT_MOTION_RTSP_INTERVAL
                     ),
                 ),
-            ): vol.All(vol.Coerce(int), vol.Range(min=10, max=600)),
+            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=30)),
             vol.Optional(
                 CONF_MOTION_AUTO_RECORD,
                 default=bool(self._config_entry.options.get(
