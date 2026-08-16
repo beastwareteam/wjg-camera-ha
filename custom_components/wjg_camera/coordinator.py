@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 import struct
 import time
@@ -489,6 +490,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._recording_proc: asyncio.subprocess.Process | None = None
         self._recording_file: str = ""
         self._recording_stop_task: asyncio.Task | None = None
+        self._recording_lock: asyncio.Lock = asyncio.Lock()
+        self._recording_failure_count: int = 0
+        self._last_recording_error: str = ""
+        self._last_recording_file: str = ""
+        self._recording_reason: str = ""
         self._onvif = None
         # ONVIF direkt (Options haben Vorrang vor entry.data)
         self.onvif_port: int = int(
@@ -851,6 +857,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_setup(self) -> None:
         """Verbindung herstellen und testen."""
+        if not shutil.which("ffmpeg"):
+            _LOGGER.warning(
+                "ffmpeg-Binary nicht im PATH gefunden — lokale Bewegungsaufnahmen "
+                "werden fehlschlagen (Snapshots/Streaming sind nicht betroffen)."
+            )
         self._session = aiohttp.ClientSession()
         session = self._session
         assert session is not None
@@ -2962,85 +2973,154 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     _RECORDING_DIR = "/media/camera"
     _RECORDING_TRAIL_SECS = 10  # Nachlaufzeit nach Bewegungsende
 
-    async def async_start_local_recording(self) -> str:
-        """Startet FFmpeg-Aufnahme nach /media/camera/ als MKV (nie korrupt)."""
-        if self._recording_proc and self._recording_proc.returncode is None:
-            return self._recording_file
-        import os as _os  # pylint: disable=import-outside-toplevel
-        _os.makedirs(self._RECORDING_DIR, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        # MKV statt MP4: frame-by-frame schreiben, kein moov-Atom nötig → nie korrupt
-        filepath = f"{self._RECORDING_DIR}/motion_{ts}.mkv"
-        cmd = [
-            "ffmpeg", "-loglevel", "error",
-            "-rtsp_transport", "tcp",
-            "-i", self.rtsp_url,
-            "-c:v", "copy",   # H.265 direkt kopieren
-            "-c:a", "aac",    # PCMA → AAC
-            "-f", "matroska", # MKV-Container
-            filepath,
-        ]
-        self._recording_proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,   # für graceful stop via 'q'
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        self._recording_file = filepath
-        self._recording = True
-        _LOGGER.info("Aufnahme gestartet: %s", filepath)
+    # Wartezeit vor dem nächsten Auto-Aufnahme-Versuch, indiziert über die Anzahl
+    # aufeinanderfolgender Fehlschläge (0/1 Fehlschläge -> normaler Cooldown reicht,
+    # ab 2 Fehlschlägen wird gestaffelt zurückgehalten, ab 4 beim Cap von 10 Min.):
+    _RECORDING_FAILURE_BACKOFF_SECS: tuple[int, ...] = (0, 0, 120, 300, 600)
+
+    def _current_recording_backoff_secs(self) -> int:
+        idx = min(self._recording_failure_count, len(self._RECORDING_FAILURE_BACKOFF_SECS) - 1)
+        return self._RECORDING_FAILURE_BACKOFF_SECS[idx]
+
+    async def _async_reap_dead_recording_process(self) -> bool:
+        """Prüft ob self._recording_proc bereits von selbst beendet ist; falls ja,
+        Zustand zurücksetzen und den Grund loggen (inkl. stderr-Ende bei Fehler).
+        Muss vor JEDEM Start- und Stop-Check aufgerufen werden — sonst bleibt
+        is_recording nach einem ffmpeg-Absturz dauerhaft auf True stehen (Bug bis
+        v2.2.42, siehe CLAUDE.md). Gibt True zurück, wenn ein toter Prozess
+        gefunden und aufgeräumt wurde."""
+        proc = self._recording_proc
+        if not proc or proc.returncode is None:
+            return False
+        if proc.returncode != 0:
+            stderr_tail = ""
+            if proc.stderr:
+                try:
+                    stderr_tail = (await proc.stderr.read()).decode(errors="replace")[-500:]
+                except Exception:
+                    pass
+            self._recording_failure_count += 1
+            self._last_recording_error = stderr_tail or f"Exit-Code {proc.returncode}"
+            _LOGGER.error(
+                "Aufnahme-Prozess unerwartet beendet (Exit-Code %s): %s\n%s",
+                proc.returncode, self._recording_file, stderr_tail,
+            )
+        else:
+            self._recording_failure_count = 0
+        self._recording_proc = None
+        self._recording = False
+        self._last_recording_file = self._recording_file or self._last_recording_file
+        self._recording_file = ""
         self.async_update_listeners()
-        return filepath
+        return True
+
+    async def async_start_local_recording(self, reason: str = "manual") -> str:
+        """Startet FFmpeg-Aufnahme nach /media/camera/ als MKV (nie korrupt)."""
+        async with self._recording_lock:
+            await self._async_reap_dead_recording_process()
+            if self._recording_proc and self._recording_proc.returncode is None:
+                return self._recording_file
+            try:
+                os.makedirs(self._RECORDING_DIR, exist_ok=True)
+            except OSError as err:
+                self._recording_failure_count += 1
+                _LOGGER.error("Aufnahmeverzeichnis %s nicht beschreibbar: %s", self._RECORDING_DIR, err)
+                raise
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            # MKV statt MP4: frame-by-frame schreiben, kein moov-Atom nötig → nie korrupt
+            filepath = f"{self._RECORDING_DIR}/motion_{ts}.mkv"
+            cmd = [
+                "ffmpeg", "-loglevel", "error",
+                "-rtsp_transport", "tcp",
+                "-i", self.rtsp_url,
+                "-map", "0:v:0", "-c:v", "copy",   # H.265 direkt kopieren
+                "-map", "0:a:0?", "-c:a", "aac",   # "?" = Audio nur falls vorhanden, kein Hard-Fail ohne Audiospur
+                "-f", "matroska", # MKV-Container
+                filepath,
+            ]
+            try:
+                self._recording_proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdin=asyncio.subprocess.PIPE,   # für graceful stop via 'q'
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except FileNotFoundError:
+                self._recording_failure_count += 1
+                _LOGGER.error("ffmpeg-Binary nicht gefunden — Aufnahme nicht möglich.")
+                raise
+            self._recording_file = filepath
+            self._last_recording_file = filepath
+            self._recording = True
+            self._recording_reason = reason
+            _LOGGER.info("Aufnahme gestartet: %s (Grund: %s)", filepath, reason)
+            self.async_update_listeners()
+            return filepath
 
     async def async_stop_local_recording(self) -> None:
         """Stoppt FFmpeg graceful via 'q' → MKV wird korrekt abgeschlossen."""
-        proc = self._recording_proc
-        if not proc or proc.returncode is not None:
-            return
-        try:
-            # 'q' sendet FFmpeg das Signal zum sauberen Stop (schreibt alle Frames)
-            if proc.stdin:
-                proc.stdin.write(b"q\n")
-                await proc.stdin.drain()
-            await asyncio.wait_for(proc.wait(), timeout=10.0)
-        except Exception:
+        async with self._recording_lock:
+            if await self._async_reap_dead_recording_process():
+                return
+            proc = self._recording_proc
+            if not proc:
+                return
             try:
-                proc.kill()
-                await proc.wait()
+                # 'q' sendet FFmpeg das Signal zum sauberen Stop (schreibt alle Frames)
+                if proc.stdin:
+                    proc.stdin.write(b"q\n")
+                    await proc.stdin.drain()
+                await asyncio.wait_for(proc.wait(), timeout=10.0)
             except Exception:
-                pass
-        self._recording_proc = None
-        self._recording = False
-        _LOGGER.info("Aufnahme gestoppt: %s", self._recording_file)
-        self._recording_file = ""
-        self.async_update_listeners()
+                try:
+                    proc.kill()
+                    await proc.wait()
+                except Exception:
+                    pass
+            self._recording_proc = None
+            self._recording = False
+            _LOGGER.info("Aufnahme gestoppt: %s", self._recording_file)
+            self._recording_file = ""
+            self.async_update_listeners()
 
     async def _trigger_motion_recording(self) -> None:
         """Startet Aufnahme und plant automatischen Stop nach Bewegungsende.
 
         Per Option abschaltbar; Cooldown verhindert, dass Daueralarme im
-        Sekundentakt neue ffmpeg-Streams starten (Netzwerkflut-Schutz).
+        Sekundentakt neue ffmpeg-Streams starten (Netzwerkflut-Schutz). Ein
+        gestaffelter Backoff hält nach wiederholten Fehlschlägen automatische
+        Versuche länger zurück, damit ein dauerhafter Defekt nicht alle 30s
+        einen scheiternden ffmpeg-Prozess neu startet.
         """
-        if not self.motion_auto_record_enabled:
-            return
-        already_recording = bool(
-            self._recording_proc and self._recording_proc.returncode is None
-        )
-        if not already_recording:
-            now = time.time()
-            if now - self._last_record_trigger < self.motion_record_cooldown:
+        try:
+            if not self.motion_auto_record_enabled:
                 return
-            self._last_record_trigger = now
-        await self.async_start_local_recording()
-        if self._recording_stop_task and not self._recording_stop_task.done():
-            self._recording_stop_task.cancel()
+            already_recording = bool(
+                self._recording_proc and self._recording_proc.returncode is None
+            )
+            if not already_recording:
+                now = time.time()
+                wait_secs = max(self.motion_record_cooldown, self._current_recording_backoff_secs())
+                if now - self._last_record_trigger < wait_secs:
+                    return
+                if self._recording_failure_count >= 2:
+                    _LOGGER.warning(
+                        "Automatische Aufnahme nach %d Fehlversuchen erneut versucht (Backoff %ds)",
+                        self._recording_failure_count, wait_secs,
+                    )
+                self._last_record_trigger = now
+            await self.async_start_local_recording(reason="motion")
+            if self._recording_stop_task and not self._recording_stop_task.done():
+                self._recording_stop_task.cancel()
 
-        async def _delayed_stop() -> None:
-            await asyncio.sleep(self._RECORDING_TRAIL_SECS)
-            if not self.motion_detected:
-                await self.async_stop_local_recording()
+            async def _delayed_stop() -> None:
+                await asyncio.sleep(self._RECORDING_TRAIL_SECS)
+                if not self.motion_detected:
+                    await self.async_stop_local_recording()
 
-        self._recording_stop_task = asyncio.create_task(_delayed_stop())
+            self._recording_stop_task = asyncio.create_task(_delayed_stop())
+        except Exception:
+            _LOGGER.exception("Fehler in _trigger_motion_recording")
 
     async def async_shutdown(self) -> None:
         """Verbindungen schließen."""

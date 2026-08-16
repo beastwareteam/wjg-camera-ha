@@ -1,11 +1,13 @@
+import asyncio
 import sys
 import os
 import types
 import re
+import time as _time_module
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 import custom_components.wjg_camera.coordinator as coordinator_module
 from tests_helpers import (
     call_private_async as _call_private_async,
@@ -2050,3 +2052,283 @@ async def test_async_set_microphone_enabled_sends_set_audio_output_configuration
     assert await coordinator.async_set_microphone_enabled(False) is True
     assert "<tt:OutputLevel>0</tt:OutputLevel>" in captured["body"]
     assert coordinator.microphone_enabled is False
+
+
+# ── Lokale Aufnahme: Reap-Helfer, Lock, gestaffelter Backoff (v2.2.43) ───────
+
+def _recording_entry():
+    return DummyEntry(
+        {
+            "host": "192.168.1.70",
+            "rtsp_port": 554,
+            "port": 80,
+            "username": "admin",
+            "password": "",
+            "protocol": "rtsp",
+        }
+    )
+
+
+class _FakeStdin:
+    def __init__(self):
+        self.written = b""
+
+    def write(self, data):
+        self.written += data
+
+    async def drain(self):
+        return None
+
+
+class _FakeStderr:
+    def __init__(self, text: bytes = b""):
+        self._text = text
+
+    async def read(self):
+        return self._text
+
+
+class _FakeProc:
+    def __init__(self, returncode=None, stderr_text: bytes = b""):
+        self.returncode = returncode
+        self.stdin = _FakeStdin()
+        self.stderr = _FakeStderr(stderr_text)
+        self.killed = False
+        self._waited = asyncio.Event()
+        if returncode is not None:
+            self._waited.set()
+
+    async def wait(self):
+        await self._waited.wait()
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+        self._waited.set()
+
+
+@pytest.mark.asyncio
+async def test_reap_dead_recording_process_marks_failure_and_logs(caplog):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    proc = _FakeProc(returncode=1, stderr_text=b"stream error: no audio")
+    _set_private_attr(coordinator, "_recording_proc", proc)
+    _set_private_attr(coordinator, "_recording", True)
+    _set_private_attr(coordinator, "_recording_file", "/media/camera/x.mkv")
+
+    with caplog.at_level("ERROR"):
+        reaped = await _call_private_async(coordinator, "_async_reap_dead_recording_process")
+
+    assert reaped is True
+    assert coordinator.is_recording is False
+    assert _get_private_attr(coordinator, "_recording_proc") is None
+    assert _get_private_attr(coordinator, "_recording_failure_count") == 1
+    assert "no audio" in _get_private_attr(coordinator, "_last_recording_error")
+    assert _get_private_attr(coordinator, "_last_recording_file") == "/media/camera/x.mkv"
+    assert "unerwartet beendet" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reap_dead_recording_process_resets_failure_count_on_clean_exit(caplog):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    proc = _FakeProc(returncode=0)
+    _set_private_attr(coordinator, "_recording_proc", proc)
+    _set_private_attr(coordinator, "_recording", True)
+    _set_private_attr(coordinator, "_recording_failure_count", 3)
+
+    with caplog.at_level("ERROR"):
+        reaped = await _call_private_async(coordinator, "_async_reap_dead_recording_process")
+
+    assert reaped is True
+    assert _get_private_attr(coordinator, "_recording_failure_count") == 0
+    assert "unerwartet beendet" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reap_dead_recording_process_noop_when_still_running():
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    proc = _FakeProc(returncode=None)
+    _set_private_attr(coordinator, "_recording_proc", proc)
+
+    reaped = await _call_private_async(coordinator, "_async_reap_dead_recording_process")
+
+    assert reaped is False
+    assert _get_private_attr(coordinator, "_recording_proc") is proc
+
+
+@pytest.mark.asyncio
+async def test_start_local_recording_returns_existing_file_if_still_running(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    proc = _FakeProc(returncode=None)
+    _set_private_attr(coordinator, "_recording_proc", proc)
+    _set_private_attr(coordinator, "_recording_file", "/media/camera/existing.mkv")
+
+    async def _must_not_be_called(*_a, **_k):
+        raise AssertionError("create_subprocess_exec darf nicht erneut aufgerufen werden")
+
+    monkeypatch.setattr(coordinator_module.asyncio, "create_subprocess_exec", _must_not_be_called)
+
+    result = await coordinator.async_start_local_recording()
+
+    assert result == "/media/camera/existing.mkv"
+
+
+@pytest.mark.asyncio
+async def test_start_local_recording_command_maps_optional_audio(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    monkeypatch.setattr(coordinator_module.os, "makedirs", lambda *_a, **_k: None)
+    captured = {}
+
+    async def _fake_create_subprocess_exec(*cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return _FakeProc(returncode=None)
+
+    monkeypatch.setattr(coordinator_module.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    filepath = await coordinator.async_start_local_recording(reason="motion")
+
+    assert filepath
+    cmd = captured["cmd"]
+    assert "-map" in cmd
+    assert "0:v:0" in cmd
+    assert "0:a:0?" in cmd
+    assert captured["kwargs"]["stderr"] == asyncio.subprocess.PIPE
+    assert _get_private_attr(coordinator, "_recording_reason") == "motion"
+
+
+@pytest.mark.asyncio
+async def test_start_local_recording_makedirs_oserror_propagates_and_counts_failure(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+
+    def _raise_oserror(*_a, **_k):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(coordinator_module.os, "makedirs", _raise_oserror)
+
+    with pytest.raises(OSError):
+        await coordinator.async_start_local_recording()
+
+    assert _get_private_attr(coordinator, "_recording_failure_count") == 1
+
+
+@pytest.mark.asyncio
+async def test_start_local_recording_filenotfound_propagates_and_counts_failure(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    monkeypatch.setattr(coordinator_module.os, "makedirs", lambda *_a, **_k: None)
+
+    async def _raise_filenotfound(*_a, **_k):
+        raise FileNotFoundError("ffmpeg")
+
+    monkeypatch.setattr(coordinator_module.asyncio, "create_subprocess_exec", _raise_filenotfound)
+
+    with pytest.raises(FileNotFoundError):
+        await coordinator.async_start_local_recording()
+
+    assert _get_private_attr(coordinator, "_recording_failure_count") == 1
+
+
+@pytest.mark.asyncio
+async def test_stop_local_recording_graceful_path_unchanged():
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    proc = _FakeProc(returncode=None)
+    _set_private_attr(coordinator, "_recording_proc", proc)
+    _set_private_attr(coordinator, "_recording", True)
+    _set_private_attr(coordinator, "_recording_file", "/media/camera/running.mkv")
+
+    async def _wait_then_finish():
+        proc.returncode = 0
+        proc._waited.set()
+        return 0
+
+    proc.wait = _wait_then_finish
+
+    await coordinator.async_stop_local_recording()
+
+    assert proc.stdin.written == b"q\n"
+    assert coordinator.is_recording is False
+    assert _get_private_attr(coordinator, "_recording_proc") is None
+
+
+@pytest.mark.asyncio
+async def test_stop_local_recording_noop_when_nothing_to_stop():
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    _set_private_attr(coordinator, "_recording_proc", None)
+
+    await coordinator.async_stop_local_recording()  # darf nicht werfen
+
+    assert coordinator.is_recording is False
+
+
+@pytest.mark.asyncio
+async def test_trigger_motion_recording_logs_exception_instead_of_swallowing(caplog):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+
+    async def _raise(*_a, **_k):
+        raise RuntimeError("boom")
+
+    coordinator.async_start_local_recording = _raise
+
+    with caplog.at_level("ERROR"):
+        await _call_private_async(coordinator, "_trigger_motion_recording")
+
+    assert "Fehler in _trigger_motion_recording" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_recording_lock_serializes_concurrent_starts(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    monkeypatch.setattr(coordinator_module.os, "makedirs", lambda *_a, **_k: None)
+    calls = {"n": 0}
+
+    async def _fake_create_subprocess_exec(*_cmd, **_kwargs):
+        calls["n"] += 1
+        await asyncio.sleep(0.05)
+        return _FakeProc(returncode=None)
+
+    monkeypatch.setattr(coordinator_module.asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
+
+    results = await asyncio.gather(
+        *[coordinator.async_start_local_recording() for _ in range(20)]
+    )
+
+    assert calls["n"] == 1
+    assert len(set(results)) == 1
+
+
+def test_recording_backoff_table_matches_expected_staggering():
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    expected = {0: 0, 1: 0, 2: 120, 3: 300, 4: 600, 10: 600}
+    for failure_count, expected_secs in expected.items():
+        _set_private_attr(coordinator, "_recording_failure_count", failure_count)
+        assert _get_private_attr(coordinator, "_current_recording_backoff_secs")() == expected_secs
+
+
+@pytest.mark.asyncio
+async def test_trigger_motion_recording_respects_staggered_backoff(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    _set_private_attr(coordinator, "_recording_failure_count", 2)  # -> 120s Backoff
+    fake_now = {"t": 1_000_000.0}
+    monkeypatch.setattr(coordinator_module.time, "time", lambda: fake_now["t"])
+    _set_private_attr(coordinator, "_last_record_trigger", fake_now["t"])
+
+    starts = {"n": 0}
+
+    async def _fake_start(reason="manual"):
+        starts["n"] += 1
+        return "/media/camera/x.mkv"
+
+    coordinator.async_start_local_recording = _fake_start
+
+    trigger = _get_private_attr(coordinator, "_trigger_motion_recording")
+
+    await trigger()  # innerhalb der 120s -> kein Start
+    assert starts["n"] == 0
+
+    fake_now["t"] += 121  # Backoff-Fenster verstrichen
+    await trigger()
+    assert starts["n"] == 1
+
+    stop_task = _get_private_attr(coordinator, "_recording_stop_task")
+    if stop_task:
+        stop_task.cancel()

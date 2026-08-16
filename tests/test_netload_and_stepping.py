@@ -122,6 +122,19 @@ async def test_async_setup_starts_rtsp_motion_loop_when_option_enabled(monkeypat
         await coordinator.async_shutdown()
 
 
+@pytest.mark.asyncio
+async def test_async_setup_warns_but_does_not_fail_when_ffmpeg_missing(monkeypatch, caplog):
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    try:
+        with caplog.at_level("WARNING"):
+            await _setup_with_mocks(coordinator, monkeypatch)
+
+        assert "ffmpeg-Binary nicht im PATH gefunden" in caplog.text
+    finally:
+        await coordinator.async_shutdown()
+
+
 # ── Auto-Aufnahme: Option + Cooldown ─────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -141,7 +154,7 @@ async def test_motion_recording_cooldown_limits_restarts():
     coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
     starts = {"n": 0}
 
-    async def _fake_start():
+    async def _fake_start(reason="manual"):
         starts["n"] += 1
         return "/media/camera/x.mkv"
 
