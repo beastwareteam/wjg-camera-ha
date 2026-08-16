@@ -67,7 +67,7 @@ CONF_MOTION_AUTO_RECORD = "motion_auto_record"
 CONF_MOTION_RECORD_COOLDOWN = "motion_record_cooldown"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_HTTP_RETRIES = 1
-DEFAULT_MOTION_RTSP_DIFF = False
+DEFAULT_MOTION_RTSP_DIFF = True
 DEFAULT_MOTION_RTSP_INTERVAL = 2
 DEFAULT_MOTION_AUTO_RECORD = True
 DEFAULT_MOTION_RECORD_COOLDOWN = 30
@@ -441,8 +441,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             )
         )
         # Motion-Kanäle / Auto-Aufnahme (Netzlast-Steuerung).
-        # Kanal 2 (RTSP-Bildvergleich) ist default AUS: dreifach redundant zu
-        # ONVIF+UDP und größte Dauerlast-Quelle (ffmpeg-RTSP-Grab im Intervall).
+        # Kanal 2 (RTSP-Bildvergleich) ist seit v2.2.51 default AN: ONVIF liefert
+        # bei manchen Kamera-Firmwares (bestätigt: XM-3820) dauerhaft ismotion=
+        # false, Kanal 2 ist dort der einzige tatsächlich funktionierende Weg.
+        # Seit dem Umbau auf einen dauerhaften Stream (v2.2.50, EINE
+        # RTSP-Verbindung statt Reconnect pro Check) ist die Dauerlast deutlich
+        # geringer als beim alten Pro-Check-Prozess, der 2.2.40 abgeschaltet hatte.
         self.motion_rtsp_diff_enabled: bool = bool(
             options.get(
                 CONF_MOTION_RTSP_DIFF,

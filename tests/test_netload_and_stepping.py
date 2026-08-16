@@ -54,10 +54,11 @@ ONVIF_DATA = {
 # ── Motion-Optionen ───────────────────────────────────────────────────────────
 
 def test_motion_options_defaults():
-    """Default: Kanal 2 AUS (Netzlast), Auto-Aufnahme AN (Funktionserhalt)."""
+    """Default seit v2.2.51: Kanal 2 AN (ONVIF liefert bei manchen Kamera-
+    Firmwares dauerhaft kein echtes Motion-Event), Auto-Aufnahme AN."""
     coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
 
-    assert coordinator.motion_rtsp_diff_enabled is False
+    assert coordinator.motion_rtsp_diff_enabled is True
     assert coordinator.motion_auto_record_enabled is True
     assert coordinator.motion_rtsp_interval == 2
     assert coordinator.motion_record_cooldown == 30
@@ -102,12 +103,12 @@ async def _setup_with_mocks(coordinator, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_async_setup_does_not_start_rtsp_motion_loop_by_default(monkeypatch):
+async def test_async_setup_starts_rtsp_motion_loop_by_default(monkeypatch):
     coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
     try:
         await _setup_with_mocks(coordinator, monkeypatch)
 
-        assert _get_private_attr(coordinator, "_rtsp_motion_task") is None
+        assert _get_private_attr(coordinator, "_rtsp_motion_task") is not None
         assert _get_private_attr(coordinator, "_event_task") is not None
         assert _get_private_attr(coordinator, "_udp_monitor_task") is not None
     finally:
@@ -115,14 +116,14 @@ async def test_async_setup_does_not_start_rtsp_motion_loop_by_default(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_async_setup_starts_rtsp_motion_loop_when_option_enabled(monkeypatch):
+async def test_async_setup_does_not_start_rtsp_motion_loop_when_option_disabled(monkeypatch):
     coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA), options={
-        "motion_rtsp_diff": True,
+        "motion_rtsp_diff": False,
     }))
     try:
         await _setup_with_mocks(coordinator, monkeypatch)
 
-        assert _get_private_attr(coordinator, "_rtsp_motion_task") is not None
+        assert _get_private_attr(coordinator, "_rtsp_motion_task") is None
     finally:
         await coordinator.async_shutdown()
 
