@@ -2930,7 +2930,18 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 pass
 
     async def _async_udp_motion_monitor(self) -> None:
-        """Kanal 3: UDP 16658 Broadcast-Monitor — XM sendet Kamera-Status-Pakete."""
+        """Kanal 3: UDP 16658 Broadcast-Monitor — XM sendet Kamera-Status-Pakete.
+
+        Nutzt loop.sock_recvfrom() statt run_in_executor(sock.recvfrom): ein
+        blockierender recvfrom() in einem Thread-Pool-Thread lässt sich beim
+        Cancel/Shutdown NICHT unterbrechen (Python-Threads sind nicht
+        abbrechbar) — beim Neuladen/Neustart blieb der Thread hängen, bis HA
+        den Prozess hart beendete, was den Socket mitten im blockierten Aufruf
+        ungültig machte (OSError: Bad file descriptor) und einen kompletten
+        Core-Absturz samt Supervisor-Neustart auslöste. sock_recvfrom() läuft
+        direkt im Event-Loop (kein Thread) und reagiert auf CancelledError
+        sofort und sauber.
+        """
         import socket as _socket  # pylint: disable=import-outside-toplevel
         while True:
             sock: _socket.socket | None = None
@@ -2938,24 +2949,19 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
                 sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
                 sock.bind(("", 16658))
-                sock.settimeout(30)
+                sock.setblocking(False)
                 loop = asyncio.get_running_loop()
                 while True:
-                    try:
-                        data, addr = await loop.run_in_executor(
-                            None, lambda: sock.recvfrom(4096)  # type: ignore[union-attr]
-                        )
-                        if addr[0] != self.host:
-                            continue
-                        text = data.decode("utf-8", errors="ignore")
-                        tl = text.lower()
-                        if "motion" in tl or "alarm" in tl or "detect" in tl:
-                            _LOGGER.info("UDP Motion von Kamera %s: %s", self.host, text[:120])
-                            self._last_motion_time = time.time()
-                            asyncio.ensure_future(self._trigger_motion_recording())
-                            self.async_update_listeners()
-                    except _socket.timeout:
-                        pass
+                    data, addr = await loop.sock_recvfrom(sock, 4096)
+                    if addr[0] != self.host:
+                        continue
+                    text = data.decode("utf-8", errors="ignore")
+                    tl = text.lower()
+                    if "motion" in tl or "alarm" in tl or "detect" in tl:
+                        _LOGGER.info("UDP Motion von Kamera %s: %s", self.host, text[:120])
+                        self._last_motion_time = time.time()
+                        asyncio.ensure_future(self._trigger_motion_recording())
+                        self.async_update_listeners()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

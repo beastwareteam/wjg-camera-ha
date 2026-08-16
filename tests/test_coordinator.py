@@ -2371,3 +2371,93 @@ async def test_async_simulate_motion_respects_auto_record_disabled():
 
     assert coordinator.motion_detected is True  # Sensor springt trotzdem an
     coordinator.async_start_local_recording.assert_not_awaited()
+
+
+# ── UDP-Motion-Monitor: kein Thread-Hang mehr beim Cancel/Shutdown (v2.2.44) ──
+#
+# Regression für einen echten, auf der Kamera beobachteten Absturz: recvfrom()
+# lief bisher über loop.run_in_executor() in einem Thread-Pool-Thread. Ein
+# blockierender Thread lässt sich beim Task-Cancel (Neuladen/Shutdown) NICHT
+# unterbrechen — HA wartete, gab auf und beendete den Prozess hart, was den
+# Socket mitten im blockierten recvfrom() ungültig machte
+# (OSError: Bad file descriptor) und einen kompletten Core-Absturz samt
+# Supervisor-Neustart auslöste. Der Fix läuft über loop.sock_recvfrom()
+# (nicht-blockierender Socket, direkt im Event-Loop, sauber abbrechbar).
+
+class _FakeUdpLoop:
+    def __init__(self, packets):
+        self._packets = list(packets)
+
+    async def sock_recvfrom(self, _sock, _bufsize):
+        if self._packets:
+            return self._packets.pop(0)
+        raise asyncio.CancelledError
+
+    def run_in_executor(self, *_a, **_k):
+        raise AssertionError(
+            "recvfrom() darf nicht mehr ueber run_in_executor (Thread) laufen "
+            "— das ist genau der Bug, der den HA-Core-Absturz ausgeloest hat."
+        )
+
+
+class _FakeUdpSocket:
+    def __init__(self):
+        self.closed = False
+
+    def setsockopt(self, *_a, **_k):
+        pass
+
+    def bind(self, *_a, **_k):
+        pass
+
+    def setblocking(self, *_a, **_k):
+        pass
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_udp_motion_monitor_detects_motion_via_sock_recvfrom_not_executor(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), DummyEntry({
+        "host": "192.168.1.80", "rtsp_port": 554, "port": 80,
+        "username": "admin", "password": "", "protocol": "onvif",
+    }))
+    _set_private_attr(coordinator, "_last_motion_time", 0.0)
+
+    fake_sock = _FakeUdpSocket()
+    monkeypatch.setattr("socket.socket", lambda *_a, **_k: fake_sock)
+    fake_loop = _FakeUdpLoop(packets=[(b"MOTION DETECTED", ("192.168.1.80", 5000))])
+    monkeypatch.setattr(coordinator_module.asyncio, "get_running_loop", lambda: fake_loop)
+
+    triggered = {"n": 0}
+
+    async def _fake_trigger():
+        triggered["n"] += 1
+
+    _set_private_attr(coordinator, "_trigger_motion_recording", _fake_trigger)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _call_private_async(coordinator, "_async_udp_motion_monitor")
+
+    assert coordinator.motion_detected is True
+    assert fake_sock.closed is True
+
+
+@pytest.mark.asyncio
+async def test_udp_motion_monitor_ignores_packets_from_other_hosts(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), DummyEntry({
+        "host": "192.168.1.80", "rtsp_port": 554, "port": 80,
+        "username": "admin", "password": "", "protocol": "onvif",
+    }))
+    _set_private_attr(coordinator, "_last_motion_time", 0.0)
+
+    fake_sock = _FakeUdpSocket()
+    monkeypatch.setattr("socket.socket", lambda *_a, **_k: fake_sock)
+    fake_loop = _FakeUdpLoop(packets=[(b"motion", ("10.0.0.99", 5000))])  # fremder Host
+    monkeypatch.setattr(coordinator_module.asyncio, "get_running_loop", lambda: fake_loop)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _call_private_async(coordinator, "_async_udp_motion_monitor")
+
+    assert coordinator.motion_detected is False
