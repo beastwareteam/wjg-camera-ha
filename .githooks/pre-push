@@ -1,0 +1,36 @@
+#!/bin/sh
+# Lokaler Pre-Push-Gate: Architektur-Regeln (CLAUDE.md) + volle Testsuite.
+#
+# Installation (einmalig pro Klon, siehe README/CLAUDE.md):
+#   cp .githooks/pre-push .git/hooks/pre-push   (oder: chmod +x .githooks/pre-push
+#   und in .git/hooks/pre-push symlinken)
+#
+# Absichtlich NICHT ueber "git config core.hooksPath" aktiviert, damit jeder
+# Klon bewusst zustimmt statt automatisch fremde Hooks auszufuehren.
+#
+# Notausstieg: git push --no-verify (nur im Notfall, siehe CLAUDE.md-Regeln
+# oben im Repo -- besser: den Verstoss/Testfehler beheben).
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+PYTHON="python"
+if [ -x "$REPO_ROOT/../wjg-camera-ha-main/.venv/Scripts/python.exe" ]; then
+    PYTHON="$REPO_ROOT/../wjg-camera-ha-main/.venv/Scripts/python.exe"
+fi
+
+echo "[pre-push] Pruefe Architektur-Regeln (custom_components/wjg_camera/CLAUDE.md)..."
+if ! "$PYTHON" scripts/check_architecture_rules.py; then
+    echo "[pre-push] ABGEBROCHEN: Architektur-Regel verletzt (siehe oben)." >&2
+    exit 1
+fi
+
+echo "[pre-push] Laufe komplette Testsuite (pytest)..."
+if ! "$PYTHON" -m pytest -q; then
+    echo "[pre-push] ABGEBROCHEN: Tests schlagen fehl." >&2
+    exit 1
+fi
+
+echo "[pre-push] Alle Checks bestanden."

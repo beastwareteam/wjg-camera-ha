@@ -2366,19 +2366,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             return False
 
     async def async_ptz_get_presets(self) -> dict[str, str]:
-        profile_token = await self._async_active_onvif_profile_token()
-        resp = await self._onvif_soap_for(
-            ONVIF_SERVICE_PTZ,
-            f"<tptz:GetPresets><tptz:ProfileToken>{profile_token}</tptz:ProfileToken></tptz:GetPresets>",
-        )
-        presets: dict[str, str] = {}
-        for m in re.finditer(
-            r'<[^>]*Preset[^>]*token=["\']([^"\']+)["\'][^>]*>(.*?)</[^>]*Preset>',
-            resp, re.DOTALL,
-        ):
-            token = m.group(1)
-            nm = re.search(r"<[^>]*Name[^>]*>([^<]+)<", m.group(2))
-            presets[token] = nm.group(1) if nm else f"Preset {token}"
+        try:
+            async with self._soap() as soap:
+                presets = await soap.ptz_get_presets()
+        except Exception as exc:
+            _LOGGER.warning("ptz_get_presets Fehler: %s", exc)
+            return dict(self._ptz_presets)
         self._ptz_presets = presets
         return presets
 
@@ -2404,15 +2397,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             return None
 
     async def async_ptz_delete_preset(self, token: str) -> bool:
-        profile_token = await self._async_active_onvif_profile_token()
-        resp = await self._onvif_soap_for(
-            ONVIF_SERVICE_PTZ,
-            f"<tptz:RemovePreset>"
-            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-            f"<tptz:PresetToken>{token}</tptz:PresetToken>"
-            f"</tptz:RemovePreset>",
-        )
-        ok = "RemovePresetResponse" in resp
+        try:
+            async with self._soap() as soap:
+                ok = await soap.ptz_remove_preset(preset_token=token)
+        except Exception as exc:
+            _LOGGER.warning("ptz_remove_preset Fehler: %s", exc)
+            return False
         if ok:
             self._ptz_presets.pop(token, None)
         return ok

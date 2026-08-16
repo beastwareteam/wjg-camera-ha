@@ -55,6 +55,9 @@ class OfflineXMSoapStub:
     async def ptz_get_presets(self, *args, **kwargs):
         return {}
 
+    async def ptz_remove_preset(self, *args, **kwargs):
+        return False
+
     async def create_pull_point_subscription(self):
         return None
 

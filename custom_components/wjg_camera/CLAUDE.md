@@ -251,6 +251,16 @@ garantiert ihre EIGENE Kamera. KEINEN harten Default-Entity-Fallback (z. B. auf
 2. **`xm_soap.py`** darf NICHT in `xm-soap.py` umbenannt werden (Python kann Module mit Bindestrichen nicht importieren).
 3. **Der `async with self._soap() as soap:` Pattern** muss beibehalten werden — kein globaler oder geteilter Client. `self._soap()` erzeugt pro Befehl einen frischen, kameraspezifischen `XMSoapClient`. NICHT durch `_XMSoapClient()` ohne Argumente ersetzen (sonst wieder auf 192.168.178.49 verdrahtet).
 
+### Automatisierte Durchsetzung (seit August 2026)
+Diese drei Regeln wurden wiederholt unbeabsichtigt verletzt (zuletzt: `async_ptz_get_presets`/`async_ptz_delete_preset` liefen über `_onvif_soap_for(ONVIF_SERVICE_PTZ, ...)` statt `self._soap()`). Deshalb geprüft von:
+- **`scripts/check_architecture_rules.py`** — eigenständig ausführbar (`python scripts/check_architecture_rules.py`), prüft alle drei Regeln per AST-Analyse von `coordinator.py`.
+- **CI** (`.github/workflows/ci.yml`) — läuft bei jedem Push/PR, kann nicht umgangen werden.
+- **Lokaler Pre-Push-Hook** (`.githooks/pre-push`) — prüft Architektur-Regeln + volle Testsuite VOR jedem `git push`. Einmalig pro Klon aktivieren:
+  ```
+  cp .githooks/pre-push .git/hooks/pre-push   # (Git Bash: zusätzlich chmod +x)
+  ```
+  Nicht über `git config core.hooksPath` global aktiviert — bewusste Opt-in-Installation pro Klon statt automatisch fremde Hooks auszuführen.
+
 ---
 
 ## Lockout-Recovery

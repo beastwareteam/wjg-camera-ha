@@ -455,6 +455,18 @@ class XMSoapClient:
                     presets[ptok] = pname or f"Preset {ptok}"
         return presets
 
+    async def ptz_remove_preset(self, preset_token: str, token: str | None = None) -> bool:
+        """Löscht ein gespeichertes Preset."""
+        token = token or self._profile_token
+        body = (
+            f"<tptz:RemovePreset>"
+            f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
+            f"<tptz:PresetToken>{preset_token}</tptz:PresetToken>"
+            f"</tptz:RemovePreset>"
+        )
+        result = await self._post(self._ep_ptz, body)
+        return result is not None
+
     # ── Events (Pull-Point) ───────────────────────────────────────────────────
 
     async def create_pull_point_subscription(self) -> str | None:
