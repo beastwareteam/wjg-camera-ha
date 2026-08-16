@@ -31,13 +31,21 @@ _LOGGER = logging.getLogger(__name__)
 
 def _integration_version() -> str:
     """Version aus manifest.json lesen — kein async_get_integration()/hass.data-
-    Integrations-Cache noetig, den synthetische Test-hass-Mocks nicht befuellen."""
+    Integrations-Cache noetig, den synthetische Test-hass-Mocks nicht befuellen.
+    Nur beim Modul-Import aufrufen (siehe _INTEGRATION_VERSION unten) — ein
+    Aufruf zur Laufzeit aus async_setup_entry blockiert den Event-Loop mit
+    Datei-I/O (HA meldet das als "Detected blocking call to read_text")."""
     try:
         import json  # pylint: disable=import-outside-toplevel
         manifest_path = pathlib.Path(__file__).parent / "manifest.json"
         return json.loads(manifest_path.read_text(encoding="utf-8")).get("version", "?")
     except Exception:  # pylint: disable=broad-except
         return "?"
+
+
+# Einmalig beim Modul-Import gelesen (läuft in HAs Import-Executor, nicht im
+# Event-Loop) und danach nur noch aus dem Cache verwendet.
+_INTEGRATION_VERSION: Final = _integration_version()
 
 
 DOMAIN: Final = "wjg_camera"
@@ -212,7 +220,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _LOGGER.info(
         "WJG XM-3820 Bridge v%s erfolgreich eingerichtet: %s",
-        _integration_version(), entry.data.get(CONF_HOST)
+        _INTEGRATION_VERSION, entry.data.get(CONF_HOST)
     )
     return True
 
