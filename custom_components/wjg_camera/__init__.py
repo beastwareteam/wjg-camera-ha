@@ -23,11 +23,22 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.components.persistent_notification import async_create as pn_async_create
-from homeassistant.loader import async_get_integration
 
 from .coordinator import WJGCameraCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _integration_version() -> str:
+    """Version aus manifest.json lesen — kein async_get_integration()/hass.data-
+    Integrations-Cache noetig, den synthetische Test-hass-Mocks nicht befuellen."""
+    try:
+        import json  # pylint: disable=import-outside-toplevel
+        manifest_path = pathlib.Path(__file__).parent / "manifest.json"
+        return json.loads(manifest_path.read_text(encoding="utf-8")).get("version", "?")
+    except Exception:  # pylint: disable=broad-except
+        return "?"
+
 
 DOMAIN: Final = "wjg_camera"
 MANUFACTURER: Final = "WJG / Tenganda"
@@ -199,10 +210,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             notification_id="wjg_camera_lovelace_hint",
         )
 
-    integration = await async_get_integration(hass, DOMAIN)
     _LOGGER.info(
         "WJG XM-3820 Bridge v%s erfolgreich eingerichtet: %s",
-        integration.version, entry.data.get(CONF_HOST)
+        _integration_version(), entry.data.get(CONF_HOST)
     )
     return True
 
