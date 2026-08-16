@@ -2373,6 +2373,77 @@ async def test_async_simulate_motion_respects_auto_record_disabled():
     coordinator.async_start_local_recording.assert_not_awaited()
 
 
+# ── Aufnahme-Stop nach Bewegungsende: Endlos-Aufnahme-Bug (Fix v2.2.45) ───────
+#
+# _delayed_stop() verglich bisher `motion_detected` (eigenes 30s-Debounce-
+# Fenster fuer den binary_sensor) gegen `_RECORDING_TRAIL_SECS` (10s). Da
+# motion_detected nach einer frischen Bewegung praktisch immer noch True war,
+# wurde der Stop uebersprungen — und danach nie erneut versucht. Die Aufnahme
+# lief dadurch unbegrenzt weiter. Fix: die seit `_last_motion_time` tatsaechlich
+# verstrichene Zeit in einer Schleife gegen `_RECORDING_TRAIL_SECS` pruefen.
+
+@pytest.mark.asyncio
+async def test_delayed_stop_stops_after_trail_secs_since_last_motion(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    fake_now = {"t": 1_000_000.0}
+    monkeypatch.setattr(coordinator_module.time, "time", lambda: fake_now["t"])
+
+    async def _fake_sleep(secs):
+        fake_now["t"] += secs
+
+    monkeypatch.setattr(coordinator_module.asyncio, "sleep", _fake_sleep)
+
+    coordinator.async_start_local_recording = AsyncMock(return_value="/media/camera/x.mkv")
+    stop_calls = {"n": 0}
+
+    async def _fake_stop():
+        stop_calls["n"] += 1
+
+    coordinator.async_stop_local_recording = _fake_stop
+    _set_private_attr(coordinator, "_last_motion_time", fake_now["t"])
+
+    trigger = _get_private_attr(coordinator, "_trigger_motion_recording")
+    await trigger()
+    await _get_private_attr(coordinator, "_recording_stop_task")
+
+    assert stop_calls["n"] == 1
+    assert fake_now["t"] - 1_000_000.0 >= coordinator._RECORDING_TRAIL_SECS
+
+
+@pytest.mark.asyncio
+async def test_delayed_stop_is_pushed_out_by_new_motion_during_trail_window(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    fake_now = {"t": 1_000_000.0}
+    monkeypatch.setattr(coordinator_module.time, "time", lambda: fake_now["t"])
+
+    sleep_calls: list[float] = []
+
+    async def _fake_sleep(secs):
+        sleep_calls.append(secs)
+        fake_now["t"] += secs
+        if len(sleep_calls) == 1:
+            # Neue Bewegung trifft waehrend des ersten Trail-Fensters ein.
+            _set_private_attr(coordinator, "_last_motion_time", fake_now["t"])
+
+    monkeypatch.setattr(coordinator_module.asyncio, "sleep", _fake_sleep)
+
+    coordinator.async_start_local_recording = AsyncMock(return_value="/media/camera/x.mkv")
+    stop_calls = {"n": 0}
+
+    async def _fake_stop():
+        stop_calls["n"] += 1
+
+    coordinator.async_stop_local_recording = _fake_stop
+    _set_private_attr(coordinator, "_last_motion_time", fake_now["t"])
+
+    trigger = _get_private_attr(coordinator, "_trigger_motion_recording")
+    await trigger()
+    await _get_private_attr(coordinator, "_recording_stop_task")
+
+    assert stop_calls["n"] == 1
+    assert len(sleep_calls) == 2  # zweites Fenster durch die neue Bewegung ausgeloest
+
+
 # ── UDP-Motion-Monitor: kein Thread-Hang mehr beim Cancel/Shutdown (v2.2.44) ──
 #
 # Regression für einen echten, auf der Kamera beobachteten Absturz: recvfrom()

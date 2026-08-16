@@ -23,6 +23,7 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.components.persistent_notification import async_create as pn_async_create
+from homeassistant.loader import async_get_integration
 
 from .coordinator import WJGCameraCoordinator
 
@@ -198,9 +199,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             notification_id="wjg_camera_lovelace_hint",
         )
 
+    integration = await async_get_integration(hass, DOMAIN)
     _LOGGER.info(
-        "WJG XM-3820 Bridge erfolgreich eingerichtet: %s",
-        entry.data.get(CONF_HOST)
+        "WJG XM-3820 Bridge v%s erfolgreich eingerichtet: %s",
+        integration.version, entry.data.get(CONF_HOST)
     )
     return True
 

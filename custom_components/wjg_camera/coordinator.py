@@ -3132,9 +3132,18 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 self._recording_stop_task.cancel()
 
             async def _delayed_stop() -> None:
-                await asyncio.sleep(self._RECORDING_TRAIL_SECS)
-                if not self.motion_detected:
-                    await self.async_stop_local_recording()
+                # motion_detected hat ein eigenes, groesseres 30s-Debounce-Fenster
+                # fuer den binary_sensor — dagegen zu pruefen liess die Aufnahme
+                # nach jeder Bewegung endlos weiterlaufen (Bug bis v2.2.44).
+                # Stattdessen die seit der letzten Bewegung verstrichene Zeit
+                # direkt gegen _RECORDING_TRAIL_SECS pruefen, in einer Schleife,
+                # damit zwischenzeitliche Bewegungen den Stop korrekt hinausschieben.
+                while True:
+                    remaining = self._RECORDING_TRAIL_SECS - (time.time() - self._last_motion_time)
+                    if remaining <= 0:
+                        await self.async_stop_local_recording()
+                        return
+                    await asyncio.sleep(remaining)
 
             self._recording_stop_task = asyncio.create_task(_delayed_stop())
         except Exception:
