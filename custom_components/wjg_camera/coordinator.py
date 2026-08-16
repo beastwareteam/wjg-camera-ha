@@ -2918,6 +2918,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     self._last_motion_time = time.time()
                     asyncio.ensure_future(self._trigger_motion_recording())
                     self.async_update_listeners()
+                else:
+                    _LOGGER.debug("RTSP Motion: %.1f%% Pixeländerung (unter 2%% Schwelle)", pct)
             except Exception:
                 pass
 
