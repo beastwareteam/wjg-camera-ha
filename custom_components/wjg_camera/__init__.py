@@ -97,6 +97,15 @@ _SVC_SCHEMA_ZOOM = vol.Schema({
     vol.Optional("cy", default=0.5): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
 })
 
+# Testhilfe: löst denselben Code-Pfad wie eine echte Bewegung aus (siehe
+# WJGCameraCoordinator.async_simulate_motion), ohne auf reale Kamera-Bewegung
+# warten zu müssen — nützlich um motion_auto_record/Cooldown/Backoff gezielt
+# zu testen.
+_SERVICE_SIMULATE_MOTION = "simulate_motion"
+_SVC_SCHEMA_SIMULATE_MOTION = vol.Schema({
+    vol.Required("entity_id"): cv.entity_id,
+})
+
 
 def _get_coordinator(hass: HomeAssistant, entity_id: str) -> WJGCameraCoordinator | None:
     """Coordinator für eine entity_id finden (Multi-Device-fähig).
@@ -164,6 +173,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
         hass.services.async_register(DOMAIN, _SERVICE_SET_ZOOM, _handle_set_zoom,
                                      schema=_SVC_SCHEMA_ZOOM)
+
+    # HA-Service registrieren: wjg_camera.simulate_motion (Testhilfe)
+    if not hass.services.has_service(DOMAIN, _SERVICE_SIMULATE_MOTION):
+        async def _handle_simulate_motion(call: ServiceCall) -> None:
+            coord = _get_coordinator(hass, call.data["entity_id"])
+            if coord:
+                await coord.async_simulate_motion()
+        hass.services.async_register(DOMAIN, _SERVICE_SIMULATE_MOTION, _handle_simulate_motion,
+                                     schema=_SVC_SCHEMA_SIMULATE_MOTION)
 
     # Einmalige Hinweis-Benachrichtigung für Lovelace-Ressource
     notif_key = f"{DOMAIN}_lovelace_hint"

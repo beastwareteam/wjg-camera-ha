@@ -48,3 +48,19 @@ set_digital_zoom:
           max: 1.0
           step: 0.05
           mode: slider
+
+simulate_motion:
+  name: Bewegung simulieren (Test)
+  description: >
+    Löst denselben Ablauf wie eine echte Bewegungserkennung aus (Cooldown,
+    Backoff, automatische Aufnahme falls aktiviert), ohne auf reale
+    Kamera-Bewegung warten zu müssen. Zum gezielten Testen der
+    Auto-Aufnahme-Pipeline.
+  fields:
+    entity_id:
+      name: Kamera-Entity
+      description: Die Kamera-Entity, für die Bewegung simuliert werden soll.
+      required: true
+      selector:
+        entity:
+          domain: camera

@@ -3083,6 +3083,18 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             self._recording_file = ""
             self.async_update_listeners()
 
+    async def async_simulate_motion(self) -> None:
+        """Testhilfe: löst denselben Pfad wie ein echtes Bewegungs-Event aus
+        (ONVIF-PullPoint/UDP/RTSP-Diff landen alle hier), ohne auf reale
+        Kamera-Bewegung warten zu müssen. Setzt `_last_motion_time` frisch
+        (→ `motion_detected` wird `True`, Bewegungssensor springt an) und ruft
+        danach exakt denselben Trigger auf wie die echten Kanäle — Cooldown,
+        gestaffelter Backoff und der Recording-Lock greifen unverändert.
+        """
+        self._last_motion_time = time.time()
+        self.async_update_listeners()
+        await self._trigger_motion_recording()
+
     async def _trigger_motion_recording(self) -> None:
         """Startet Aufnahme und plant automatischen Stop nach Bewegungsende.
 

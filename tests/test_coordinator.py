@@ -2332,3 +2332,42 @@ async def test_trigger_motion_recording_respects_staggered_backoff(monkeypatch):
     stop_task = _get_private_attr(coordinator, "_recording_stop_task")
     if stop_task:
         stop_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_async_simulate_motion_marks_motion_detected_and_triggers_recording():
+    coordinator = _make_coordinator(DummyHass(), _recording_entry())
+    _set_private_attr(coordinator, "_last_motion_time", 0.0)
+    assert coordinator.motion_detected is False
+    starts = {"n": 0}
+
+    async def _fake_start(reason="manual"):
+        starts["n"] += 1
+        assert reason == "motion"
+        return "/media/camera/x.mkv"
+
+    coordinator.async_start_local_recording = _fake_start
+
+    await coordinator.async_simulate_motion()
+
+    assert coordinator.motion_detected is True
+    assert starts["n"] == 1
+
+    stop_task = _get_private_attr(coordinator, "_recording_stop_task")
+    if stop_task:
+        stop_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_async_simulate_motion_respects_auto_record_disabled():
+    entry = DummyEntry(
+        _recording_entry().data,
+        options={"motion_auto_record": False},
+    )
+    coordinator = _make_coordinator(DummyHass(), entry)
+    coordinator.async_start_local_recording = AsyncMock()
+
+    await coordinator.async_simulate_motion()
+
+    assert coordinator.motion_detected is True  # Sensor springt trotzdem an
+    coordinator.async_start_local_recording.assert_not_awaited()
