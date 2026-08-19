@@ -2893,8 +2893,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             img2 = Image.open(_io.BytesIO(frame)).convert("L")
             diff = ImageChops.difference(img1, img2)
             pixels = list(diff.getdata())
-            pct = sum(1 for p in pixels if p > 15) / len(pixels) * 100
-            if pct >= 2.0:
+            pct = sum(1 for p in pixels if p > 30) / len(pixels) * 100
+            if pct >= 6.0:
                 _LOGGER.info("RTSP Motion: %.1f%% Pixeländerung erkannt", pct)
                 self._last_motion_time = time.time()
                 asyncio.ensure_future(self._trigger_motion_recording())
