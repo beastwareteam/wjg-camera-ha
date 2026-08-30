@@ -154,6 +154,13 @@ ONVIF_EVENT_OPTION_MAP: dict[str, dict[str, str]] = {
 
 _LOGGER = logging.getLogger(__name__)
 SCAN_INTERVAL = timedelta(seconds=10)
+# Mindestabstand zwischen zwei Geräte-Bootstrap-Versuchen (Fix v2.2.52).
+# Verhindert, dass eine halb antwortende Kamera im 10-Sekunden-Takt mit
+# RTSP-DESCRIBE- und ONVIF-Proben belegt wird.
+BOOTSTRAP_RETRY_INTERVAL = 60.0
+# Obergrenze, wenn der Bootstrap wiederholt ohne Beleg bleibt. Ohne sie
+# probt eine erreichbare, aber stumme Kamera dauerhaft im Minutentakt.
+BOOTSTRAP_MAX_BACKOFF = 600.0
 
 # XM SDK Message IDs
 XM_LOGIN_REQ       = 0x03E8  # 1000
@@ -537,6 +544,15 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._update_count: int = 0
         self._event_pullpoint_path: str = ""
         self._event_task: asyncio.Task | None = None
+        # Geräte-Bootstrap (Fix v2.2.52): die einmaligen Abfragen überleben
+        # keinen Kamera-Reset. Der Zustand wird deshalb verfolgt und bei
+        # Wiedererreichbarkeit erneut gefahren — früher ging das nur über das
+        # manuelle Neuladen der Integration.
+        self._bootstrapped: bool = False
+        self._bootstrap_task: asyncio.Task | None = None
+        self._last_bootstrap_attempt: float = 0.0
+        self._bootstrap_backoff: float = BOOTSTRAP_RETRY_INTERVAL
+        self._rtsp_probe_confirmed: bool = False
         # Motion-Warnung nur einmal pro Ausfall-Episode loggen (kein Log-Spam,
         # v. a. wenn eine Kamera offline ist oder keine ONVIF-Events liefert)
         self._motion_warn_suppressed: bool = False
@@ -775,6 +791,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if self.protocol not in (PROTOCOL_RTSP, PROTOCOL_ONVIF):
             return
 
+        # Beleg zurücksetzen: nur eine bestandene DESCRIBE-Probe zählt, nicht
+        # die am Ende gesetzte Fallback-URL (Fix v2.2.52).
+        self._rtsp_probe_confirmed = False
+
         if self.protocol == PROTOCOL_ONVIF:
             onvif_url = await self.async_onvif_stream_url()
             if onvif_url:
@@ -785,6 +805,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 )
                 if has_video:
                     self._resolved_rtsp_url = onvif_url
+                    self._rtsp_probe_confirmed = True
                     _LOGGER.info("ONVIF Stream-URL genutzt: %s", onvif_url)
                     return
 
@@ -797,6 +818,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             )
             if has_video:
                 self._resolved_rtsp_url = rtsp_url
+                self._rtsp_probe_confirmed = True
                 if rtsp_url != self._build_rtsp_url(self._render_rtsp_path()):
                     _LOGGER.info("RTSP-Fallback mit Video erkannt: %s", rtsp_url)
                 return
@@ -866,6 +888,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 "ffmpeg-Binary nicht im PATH gefunden — lokale Bewegungsaufnahmen "
                 "werden fehlschlagen (Snapshots/Streaming sind nicht betroffen)."
             )
+
+        # Erreichbarkeit ZUERST prüfen — noch bevor Session und Event-Tasks
+        # entstehen, damit im Fehlerfall nichts aufzuräumen ist.
+        # Antwortet die Kamera auf keinem Port, wird hier abgebrochen: __init__.py
+        # macht daraus ConfigEntryNotReady, und HA wiederholt das Setup von sich
+        # aus. Ohne diese Prüfung konnte async_setup() gar nicht fehlschlagen —
+        # der Entry galt als "geladen" und blieb bis zum manuellen Neuladen im
+        # halbfertigen Zustand stehen (Fix v2.2.52).
+        if not await self._async_any_port_reachable():
+            raise ConnectionError(
+                f"Kamera {self.host} antwortet auf keinem Port "
+                f"(RTSP {self.rtsp_port} / ONVIF {self.onvif_port} / HTTP {self.http_port})"
+            )
+
         self._session = aiohttp.ClientSession()
         session = self._session
         assert session is not None
@@ -898,30 +934,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             )
             # Läuft synchron, kein Executor nötig (setzt nur self._onvif = None)
             self._setup_onvif()
-            try:
-                await self._async_bootstrap_onvif_service_paths()
-            except Exception as exc:
-                _LOGGER.debug("ONVIF GetServices-Bootstrap fehlgeschlagen: %s", exc)
 
-        await self.async_resolve_rtsp_path()
-
-        # Einmalig Geräte-Infos und Bildeinstellungen laden
-        try:
-            await self.async_fetch_device_info()
-        except Exception as exc:
-            _LOGGER.debug("Geräte-Info nicht abrufbar: %s", exc)
-        try:
-            await self.async_fetch_imaging_settings()
-        except Exception as exc:
-            _LOGGER.debug("Imaging-Einstellungen nicht abrufbar: %s", exc)
-        try:
-            await self.async_ptz_get_presets()
-        except Exception as exc:
-            _LOGGER.debug("PTZ-Presets nicht abrufbar: %s", exc)
-        try:
-            await self.async_fetch_audio_settings()
-        except Exception as exc:
-            _LOGGER.debug("Audio-Einstellungen nicht abrufbar: %s", exc)
+        # Einmalige Geräteabfragen — ausgelagert nach async_bootstrap_device(),
+        # damit sie nach einem Kamera-Reset erneut laufen können (Fix v2.2.52).
+        await self.async_bootstrap_device()
 
         if self.protocol == PROTOCOL_ONVIF:
             self._event_task = asyncio.create_task(self._async_onvif_event_loop())
@@ -939,6 +955,109 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 )
 
         await self.async_refresh()
+
+    async def _async_any_port_reachable(self) -> bool:
+        """True, sobald einer der Kamera-Ports einen TCP-Connect annimmt."""
+        for port in (self.rtsp_port, self.onvif_port, self.http_port):
+            if port and await self._tcp_port_reachable(port, timeout=2.0):
+                return True
+        return False
+
+    async def async_bootstrap_device(self) -> bool:
+        """Alle einmaligen Geräteabfragen fahren und melden, ob sie trugen.
+
+        Läuft beim Setup UND erneut, sobald die Kamera nach Ausfall oder Reset
+        wieder antwortet. Vorher stand dieser Block fest in async_setup() — er
+        lief damit nur beim manuellen Neuladen der Integration erneut, was genau
+        das gemeldete Symptom erzeugte (Fix v2.2.52).
+        """
+        self._last_bootstrap_attempt = time.monotonic()
+
+        if self.protocol == PROTOCOL_ONVIF:
+            try:
+                await self._async_bootstrap_onvif_service_paths()
+            except Exception as exc:
+                _LOGGER.debug("ONVIF GetServices-Bootstrap fehlgeschlagen: %s", exc)
+
+        try:
+            await self.async_resolve_rtsp_path()
+        except Exception as exc:
+            _LOGGER.debug("RTSP-Pfad nicht auflösbar: %s", exc)
+
+        try:
+            await self.async_fetch_device_info()
+        except Exception as exc:
+            _LOGGER.debug("Geräte-Info nicht abrufbar: %s", exc)
+        try:
+            await self.async_fetch_imaging_settings()
+        except Exception as exc:
+            _LOGGER.debug("Imaging-Einstellungen nicht abrufbar: %s", exc)
+        try:
+            await self.async_ptz_get_presets()
+        except Exception as exc:
+            _LOGGER.debug("PTZ-Presets nicht abrufbar: %s", exc)
+        try:
+            await self.async_fetch_audio_settings()
+        except Exception as exc:
+            _LOGGER.debug("Audio-Einstellungen nicht abrufbar: %s", exc)
+
+        self._bootstrapped = self._bootstrap_succeeded()
+        if self._bootstrapped:
+            self._bootstrap_backoff = BOOTSTRAP_RETRY_INTERVAL
+        else:
+            self._bootstrap_backoff = min(
+                self._bootstrap_backoff * 2, BOOTSTRAP_MAX_BACKOFF,
+            )
+        return self._bootstrapped
+
+    def _bootstrap_succeeded(self) -> bool:
+        """Beleg prüfen, dass die Kamera wirklich geantwortet hat.
+
+        Die Einzelabfragen werfen nicht, wenn die Kamera stumm bleibt — sie
+        liefern leere SOAP-Antworten. "Kein Fehler" ist deshalb KEIN Beleg;
+        geprüft wird ein konkret gelesener Wert.
+        """
+        if self.protocol == PROTOCOL_ONVIF:
+            return bool(self._fw_version or self._serial_number or self._mac_address)
+        if self.protocol == PROTOCOL_RTSP:
+            return self._rtsp_probe_confirmed
+        # http_only und xm_sdk halten keinen ONVIF-Zustand, der einen Reset
+        # überdauern müsste — hier gibt es nichts nachzuholen.
+        return True
+
+    def _schedule_bootstrap(self) -> None:
+        """Bootstrap im Hintergrund nachholen — nie doppelt, nie im 10s-Takt."""
+        if self._bootstrap_task and not self._bootstrap_task.done():
+            return
+        if time.monotonic() - self._last_bootstrap_attempt < self._bootstrap_backoff:
+            return
+        # asyncio.create_task wie bei den drei Motion-Loops in async_setup;
+        # abgeraeumt wird der Task in async_shutdown().
+        self._bootstrap_task = asyncio.create_task(
+            self._async_bootstrap_and_notify()
+        )
+
+    async def _async_bootstrap_and_notify(self) -> None:
+        """Re-Initialisierung fahren und Entitäten über das Ergebnis informieren."""
+        _LOGGER.info("Kamera %s: Re-Initialisierung läuft", self.host)
+        try:
+            ok = await self.async_bootstrap_device()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _LOGGER.debug("Re-Initialisierung fehlgeschlagen: %s", exc)
+            return
+        if not ok:
+            _LOGGER.debug(
+                "Kamera %s: Re-Initialisierung ohne Beleg — nächster Versuch in %.0fs",
+                self.host, self._bootstrap_backoff,
+            )
+            return
+        # Die PullPoint-Subscription der Kamera ist nach deren Reset ungültig.
+        # Leeren lässt den Event-Loop eine neue anlegen (sein eigener Recovery-Pfad).
+        self._event_pullpoint_path = ""
+        _LOGGER.info("Kamera %s neu initialisiert", self.host)
+        self.async_update_listeners()
 
     def _setup_xm(self) -> None:
         """XM SDK Client initialisieren (blockierend, im executor)."""
@@ -1009,6 +1128,17 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             if port and await self._tcp_port_reachable(port, timeout=2.0):
                 data["available"] = True
                 break
+
+        # Re-Initialisierung nach Kamera-Reset/Ausfall (Fix v2.2.52).
+        if data["available"]:
+            if not self._bootstrapped:
+                self._schedule_bootstrap()
+        elif self._bootstrapped:
+            _LOGGER.info(
+                "Kamera %s nicht erreichbar — Re-Initialisierung bei Rückkehr",
+                self.host,
+            )
+            self._bootstrapped = False
 
         # XM Keepalive + Status
         if self._xm:
@@ -2870,7 +3000,21 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_reboot(self) -> bool:
         resp = await self._onvif_soap_for(ONVIF_SERVICE_DEVICE, "<tds:SystemReboot/>")
-        return "SystemRebootResponse" in resp
+        ok = "SystemRebootResponse" in resp
+        if ok:
+            # Nach dem Reset sind ONVIF-Service-Pfade, Profile-Tokens und die
+            # PullPoint-Subscription ungültig. Ohne diese Invalidierung blieb
+            # der alte Zustand bis zum manuellen Neuladen der Integration
+            # stehen (Fix v2.2.52).
+            self._bootstrapped = False
+            self._last_bootstrap_attempt = 0.0
+            self._bootstrap_backoff = BOOTSTRAP_RETRY_INTERVAL
+            self._event_pullpoint_path = ""
+            _LOGGER.info(
+                "Kamera %s startet neu — Re-Initialisierung folgt, sobald sie antwortet",
+                self.host,
+            )
+        return ok
 
     async def async_ntp_sync(self) -> bool:
         resp = await self._onvif_soap_for(ONVIF_SERVICE_DEVICE, "<tds:GetNTP/>")
@@ -3211,6 +3355,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         for task in (
             self._event_task, self._rtsp_motion_task,
             self._udp_monitor_task, self._recording_stop_task,
+            self._bootstrap_task,
         ):
             if task:
                 task.cancel()
@@ -3222,6 +3367,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._rtsp_motion_task = None
         self._udp_monitor_task = None
         self._recording_stop_task = None
+        self._bootstrap_task = None
+        self._bootstrapped = False
         await self.async_stop_local_recording()
         self._event_pullpoint_path = ""
         if self._session:

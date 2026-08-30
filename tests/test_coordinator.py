@@ -30,6 +30,15 @@ class DummyHass:
         return func(*args)
 
 
+async def _reachable_true() -> bool:
+    """Erreichbarkeits-Gate aus async_setup() umgehen (Fix v2.2.40).
+
+    Ohne diesen Ersatz wuerde jeder async_setup()-Test echte TCP-Connects
+    auf seine Testadresse fahren und mit ConnectionError abbrechen.
+    """
+    return True
+
+
 @pytest.mark.asyncio
 async def test_onvif_soap_omits_header_when_auth_disabled():
     entry = DummyEntry(
@@ -1106,6 +1115,7 @@ async def test_async_setup_continues_on_http_error_and_runs_refresh(monkeypatch)
         refresh_called["value"] = True
 
     coordinator.async_refresh = _fake_refresh
+    _set_private_attr(coordinator, "_async_any_port_reachable", _reachable_true)
 
     await coordinator.async_setup()
 
@@ -1153,6 +1163,7 @@ async def test_async_setup_xm_protocol_invokes_setup_xm(monkeypatch):
         return None
 
     coordinator.async_refresh = _fake_refresh
+    _set_private_attr(coordinator, "_async_any_port_reachable", _reachable_true)
 
     await coordinator.async_setup()
 
@@ -1509,6 +1520,7 @@ async def test_async_setup_onvif_failure_keeps_client_none(monkeypatch):
         return None
 
     coordinator.async_refresh = _fake_refresh
+    _set_private_attr(coordinator, "_async_any_port_reachable", _reachable_true)
 
     await coordinator.async_setup()
 
@@ -1551,6 +1563,7 @@ async def test_async_setup_onvif_skips_http_probe(monkeypatch):
 
     coordinator.async_refresh = _fake_refresh
     _set_private_attr(coordinator, "_async_bootstrap_onvif_service_paths", _fake_bootstrap)
+    _set_private_attr(coordinator, "_async_any_port_reachable", _reachable_true)
 
     await coordinator.async_setup()
 
@@ -1579,6 +1592,9 @@ async def test_update_data_sets_available_via_tcp_port_check():
 
     _set_private_attr(coordinator, "_tcp_port_reachable", _fake_port_reachable)
     _set_private_attr(coordinator, "_xm", None)
+    # Gerät gilt als initialisiert — sonst plänte _async_update_data hier die
+    # Re-Initialisierung ein (v2.2.52), die dieser Test nicht prüft.
+    _set_private_attr(coordinator, "_bootstrapped", True)
 
     data = await _call_private_async(coordinator, "_async_update_data")
 

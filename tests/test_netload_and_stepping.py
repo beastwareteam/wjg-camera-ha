@@ -86,6 +86,11 @@ def test_motion_rtsp_interval_clamped_to_minimum():
     assert coordinator.motion_rtsp_interval == 1
 
 
+async def _reachable_true() -> bool:
+    """Erreichbarkeits-Gate aus async_setup() umgehen (v2.2.52)."""
+    return True
+
+
 async def _setup_with_mocks(coordinator, monkeypatch):
     class NoopSession:
         async def close(self):
@@ -99,6 +104,10 @@ async def _setup_with_mocks(coordinator, monkeypatch):
     coordinator.async_fetch_audio_settings = AsyncMock()
     coordinator.async_refresh = AsyncMock()
     _set_private_attr(coordinator, "_async_bootstrap_onvif_service_paths", AsyncMock())
+    # conftest stellt _tcp_port_reachable auf immer-False (Offline-CI).
+    # async_setup() bricht seit v2.2.52 genau darauf mit ConnectionError ab,
+    # damit HA das Setup wiederholt — hier die Kamera als erreichbar melden.
+    _set_private_attr(coordinator, "_async_any_port_reachable", _reachable_true)
     await coordinator.async_setup()
 
 

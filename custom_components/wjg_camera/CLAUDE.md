@@ -100,6 +100,59 @@ Profile-Token erneut pulsen (Extra-Strecke).
 
 ---
 
+## Re-Initialisierung nach Reset (Fix v2.2.52 — August 2026)
+
+### Symptom
+Nach einem Reset (HA-Neustart mit noch bootender Kamera **oder** Kamera-Reboot) kam die
+Integration nicht von selbst zurück. Erst **Integration neu laden** von Hand stellte sie her.
+
+### Ursache 1 — `async_setup()` konnte gar nicht fehlschlagen
+Jede Abfrage darin war in `try/except` gefasst, und die ungefassten warfen ebenfalls nicht:
+`async_resolve_rtsp_path()` fällt am Ende auf eine gebaute URL zurück, `async_refresh()` der
+`DataUpdateCoordinator` schluckt Fehler grundsätzlich. Damit war das `ConfigEntryNotReady` in
+`__init__.py` **toter Code** für den Offline-Fall: HA hielt den Entry für *geladen* und
+wiederholte nichts.
+
+### Ursache 2 — die Einmal-Abfragen wurden nie wiederholt
+`_async_bootstrap_onvif_service_paths` · `async_resolve_rtsp_path` · `async_fetch_device_info`
+· `async_ptz_get_presets` · `async_fetch_audio_settings` hatten **je genau einen Aufrufer**:
+`async_setup()`. `_async_update_data()` prüfte nur TCP-Erreichbarkeit und XM-Keepalive.
+Kam die Kamera zurück, ging `available` wieder auf True — ONVIF-Service-Pfade, RTSP-URL,
+Firmware/Seriennummer, Presets und Audio-Token blieben aber auf dem Stand des Ausfalls.
+Genau deshalb half nur das Neuladen: es ist der einzige Weg, der `async_setup()` erneut fuhr.
+
+### Ursache 3 — `async_reboot()` räumte nichts ab
+Der Button "Kamera neu starten" schickte `SystemReboot` und war fertig. Der Coordinator lief
+mit dem alten Zustand samt toter PullPoint-Subscription weiter.
+
+### Lösung
+| Baustein | Wirkung |
+|---|---|
+| `_async_any_port_reachable()` als **erste** Zeile in `async_setup()` | Kamera stumm ⇒ `ConnectionError` ⇒ `ConfigEntryNotReady` ⇒ HA wiederholt das Setup selbständig. Steht vor `ClientSession()`/Tasks, also nichts aufzuräumen |
+| `async_bootstrap_device()` | Die fünf Einmal-Abfragen ausgelagert — aufrufbar auch außerhalb des Setups |
+| `_bootstrap_succeeded()` | Beleg statt Ausbleiben eines Fehlers: ONVIF ⇒ `_fw_version`/`_serial_number`/`_mac_address` gelesen; sonst `_rtsp_probe_confirmed` (nur eine bestandene DESCRIBE-Probe, **nicht** die Fallback-URL) |
+| Haken in `_async_update_data()` | `available` weg ⇒ `_bootstrapped = False`; `available` zurück ⇒ `_schedule_bootstrap()` |
+| `BOOTSTRAP_RETRY_INTERVAL = 60.0` + `_bootstrap_task` | Kein Doppellauf, kein 10-Sekunden-Takt gegen eine halb antwortende Kamera |
+| `_bootstrap_backoff` → `BOOTSTRAP_MAX_BACKOFF = 600.0` | Bleibt der Bootstrap ohne Beleg, verdoppelt sich der Abstand bis 10 min. Erreichbar-aber-stumm ist sonst ein Dauerprobe-Zustand; bei Erfolg **und** nach `async_reboot()` fällt er auf 60 s zurück |
+| `async_reboot()` | Setzt bei Erfolg `_bootstrapped=False`, `_last_bootstrap_attempt=0.0`, `_event_pullpoint_path=""` |
+
+`_event_pullpoint_path = ""` nach gelungener Re-Initialisierung ist bewusst **derselbe**
+Recovery-Pfad, den `_async_onvif_event_loop()` intern schon nutzt — die Schleife legt beim
+nächsten Durchlauf eine frische Subscription an.
+
+### Was NICHT geändert werden darf
+- Die Erreichbarkeitsprüfung muss **vor** `self._session = aiohttp.ClientSession()` stehen.
+  Danach würde jeder ConfigEntryNotReady-Retry Session und drei Event-Tasks lecken.
+- `_bootstrap_succeeded()` darf nicht auf "keine Exception" zurückfallen. Die ONVIF-Abfragen
+  werfen bei stummer Kamera nicht — sie liefern leere SOAP-Antworten, und
+  `_xml_text("")` gibt `""`. Ausbleiben eines Fehlers ist kein Beleg.
+- `_onvif_wsse_enabled` startet absichtlich auf `False` (Zeile ~563) und wird in
+  `_onvif_soap_for` nur ausgeschaltet, nie ein. Das ist **kein** Reset-Problem: der Wert ist
+  nach Neustart und nach Neuladen identisch. Nicht "reparieren", ohne den PTZ-Pfad
+  (`xm_soap.XMSoapClient`, eigene WSSE-Session) mitzudenken.
+
+---
+
 ## Motion Detection via ONVIF PullPoint (Fix v2.2.25 — Mai 2026)
 
 ### Problem
