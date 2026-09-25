@@ -1,35 +1,29 @@
 # WJG XM-3820 Camera Bridge — Kritisches Wissen für Claude
 
-## PTZ-Geschwindigkeit: Puls-Stepping (zurück ab v2.2.53 — September 2026) ⭐ AKTUELL
+## PTZ-Geschwindigkeit: Einzel-Klick mit Dauer + Velocity (v2.2.54 — September 2026) ⭐ AKTUELL
 
-### Warum zurück zum Pulsen
-Mit dem Stop-Delay-Verfahren (v2.2.41/v2.2.42: 1 ContinuousMove + Haltedauer
-0,2–1,5 s + Stop) fuhr die Kamera im Alltag **bei jeder Stufe gleich** — die
-Geschwindigkeitsstufe hatte keinen spürbaren Effekt mehr. Die Haltedauer eines
-einzelnen Moves ist bei dieser Firmware kein verlässlicher Stellhebel. Das
-Puls-Stepping aus v2.2.40 war dagegen am Gerät verifiziert einstellbar
-(Stufe 1 = 1 Puls ≈ 0,8 s, Stufe 8 = 8 Pulse ≈ 5,9 s) und ist wieder aktiv.
+### Gewünschtes Verhalten (Nutzer-Vorgabe)
+**1 Tastendruck = 1 Klick.** Stufe 1 = kurzer Klick, Stufe 8 = langer Klick.
+KEINE Serie von Einzelklicks (das war v2.2.53, vom Nutzer abgelehnt).
 
-### Mechanismus
-Stufe N (1–8) → **N Pulse** pro Tastendruck, jeder Puls =
-`ContinuousMove` + `PTZ_PULSE_DURATION` (0,35 s) + `Stop`, dazwischen
-`PTZ_PULSE_GAP` (0,12 s). Pulsanzahl über `ptz_pulse_count_for_speed(speed)`
-(xm_soap), `speed` = Stufe / 8.
+### Mechanismus (wie im funktionierenden v2.2.38)
+1 `ContinuousMove` mit **Velocity = Stufe/8** + Haltedauer + `Stop`.
+Haltedauer linear über `ptz_move_duration_for_speed(speed)`:
+`PTZ_MIN_MOVE_DURATION = 0.25 s` (Stufe 1) … `PTZ_MAX_MOVE_DURATION = 1.5 s` (Stufe 8).
+Gilt in `XMSoapClient.ptz_command()` (Primär) und `_async_fallback_ptz_pulse()`
+(Direct-SOAP-Fallback). Stop wird geprüft und bei Fehlschlag 1× wiederholt.
 
-Gilt in **beiden** Pfaden: `XMSoapClient.ptz_command()` (xm_soap.py, Primär) und
-`_async_fallback_ptz_pulse()` (coordinator.py, Direct-SOAP-Fallback). Der
-Fallback liest Dauer/Pause zur Laufzeit aus dem `xm_soap`-Modul.
+### Historie — was NICHT funktionierte
+- v2.2.39/40: N Pulse pro Druck → mehrere zu lange Einzelklicks.
+- v2.2.41: 1 Puls 0,044–0,35 s → Bereich zu klein, alle Stufen gleich.
+- v2.2.42–v2.2.52: 1 Klick 0,2–1,5 s, aber **Velocity fest 1.0** → Nutzer:
+  „bei jeder Stufe gleich schnell". Unterschied zu v2.2.38 war genau die
+  feste Velocity → Velocity muss mit der Stufe skalieren.
+- v2.2.53: N Pulse (wie v2.2.40) → abgelehnt, siehe oben.
 
 ### Regeln
-- `ptz_command` gibt `moved` zurück (nicht den Status des letzten Pulses): Nach
-  einer Bewegung darf der Coordinator NICHT mit dem nächsten Profile-Token
-  erneut pulsen (Extra-Strecke). Gleiches im Fallback: Token/Variante werden mit
-  dem ersten Puls festgelegt, danach kein Token-Wechsel.
-- Tuning nur über `PTZ_PULSE_DURATION` / `PTZ_PULSE_GAP`. Ist Stufe 1 als Tipp
-  zu groß, `PTZ_PULSE_DURATION` verkleinern — NICHT zurück auf Stop-Delay.
-- Historie: v2.2.39/40 = N Pulse (funktionierte, Stufe 1 etwas groß);
-  v2.2.41 = 1 Puls 0,044–0,35 s (alle Stufen gleich); v2.2.42–v2.2.52 =
-  Stop-Delay 0,2–1,5 s (alle Stufen gleich schnell) → verworfen.
+- Velocity NICHT wieder auf 1.0 festnageln.
+- Tuning nur über `PTZ_MIN_MOVE_DURATION` / `PTZ_MAX_MOVE_DURATION`.
 
 ## Kamera-Uhrzeit-Spam (Fix v2.2.41 — Juni 2026)
 `WJGCameraTimeSensor` gibt `coordinator.camera_time` zurück — ein String
@@ -87,7 +81,7 @@ Profile-Token erneut pulsen (Extra-Strecke).
 
 ### Tests / CI
 - `tests/conftest.py` stellt den XMSoapClient-Primärpfad per autouse-Fixture
-  offline (`OfflineXMSoapStub`), nullt die Puls-Wartezeiten und stubbt
+  offline (`OfflineXMSoapStub`), nullt die Klick-Dauer und stubbt
   `_tcp_port_reachable` / `_rtsp_url_has_video` (sonst echte Socket-Timeouts,
   vorher ~48 s pro `async_setup`-Test). OHNE diesen Stub
   würden die Unit-Tests REALE PTZ-Befehle an eine erreichbare Kamera senden
@@ -251,11 +245,11 @@ WSSE funktioniert trotzdem — die Kamera akzeptiert diese Zeitdifferenz.
 - `async_ptz_goto_preset` — Preset anfahren
 - `async_ptz_set_preset` — Preset speichern
 
-### Geschwindigkeitsregelung — Puls-Stepping (seit v2.2.53, siehe Top-Abschnitt)
+### Geschwindigkeitsregelung — Einzel-Klick (seit v2.2.54, siehe Top-Abschnitt)
 - `self._ptz_speed` in coordinator: int 1–8 (von Number-Entity gesetzt), pro Kamera.
 - Normalisierung: `spd = self._ptz_speed / 8` → float 0.125–1.0 für XMSoapClient.
 - `button.py` → `WJGPTZButton.async_press` übergibt `self.coordinator.ptz_speed`.
-- 1 Tap = N × (`ContinuousMove` + `PTZ_PULSE_DURATION` + `Stop`), N = Stufe.
+- 1 Tap = 1 `ContinuousMove` (Velocity = spd) + `ptz_move_duration_for_speed(spd)` + `Stop`.
 - **Default seit v2.2.35: `self._ptz_speed = 1`** (langsamste Stufe), pro Kamera getrennt.
 
 ### PTZ Profile-Token-Retry (seit v2.2.39)
@@ -322,8 +316,8 @@ CAMERA_PASSWORD = ""
 ONVIF_PORT = 8899
 PROFILE_TOKEN = "000"
 PTZ_SPEED = 0.4           # Default-Geschwindigkeit
-PTZ_PULSE_DURATION = 0.35 # Sekunden Bewegung pro Puls
-PTZ_PULSE_GAP = 0.12      # Sekunden Pause zwischen Pulsen
+PTZ_MIN_MOVE_DURATION = 0.25  # Klick-Dauer Stufe 1
+PTZ_MAX_MOVE_DURATION = 1.5   # Klick-Dauer Stufe 8
 ```
 **Wichtig:** Host/Credentials/Port kommen im Normalbetrieb aus dem Config-Entry
 (`coordinator._soap()` → `XMSoapClient(host=..., username=..., ...)`). Die

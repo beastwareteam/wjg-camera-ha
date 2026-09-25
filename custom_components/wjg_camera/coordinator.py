@@ -37,10 +37,10 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNA
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from . import xm_soap as _xm_soap
 from .xm_soap import (
     XMSoapClient as _XMSoapClient,
-    ptz_pulse_count_for_speed as _ptz_pulse_count_for_speed,
+    ptz_level_for_speed as _ptz_level_for_speed,
+    ptz_move_duration_for_speed as _ptz_move_duration_for_speed,
 )
 
 # Konstanten lokal definieren, um zirkulären Import zu vermeiden
@@ -1702,19 +1702,19 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         ok = await soap.ptz_command(cmd, speed=spd, token=tok)
                     if ok:
                         self._last_ptz_fault = ""
-                        pulse_count = max(1, min(8, int(speed)))
+                        level = _ptz_level_for_speed(spd)
                         if tok != pref:
                             # Funktionierenden Token merken → künftig zuerst probieren
                             self._preferred_onvif_profile_token = tok
                             _LOGGER.info(
-                                "PTZ '%s' OK via XMSoapClient (%s, Stufe %d → %d Pulse, "
+                                "PTZ '%s' OK via XMSoapClient (%s, Stufe %d, "
                                 "Token=%s gemerkt)",
-                                cmd, self.host, pulse_count, pulse_count, tok,
+                                cmd, self.host, level, tok,
                             )
                         else:
                             _LOGGER.info(
-                                "PTZ '%s' OK via XMSoapClient (%s, Stufe %d → %d Pulse)",
-                                cmd, self.host, pulse_count, pulse_count,
+                                "PTZ '%s' OK via XMSoapClient (%s, Stufe %d)",
+                                cmd, self.host, level,
                             )
                         return True
                 self._last_ptz_fault = (
@@ -1728,23 +1728,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 self._last_ptz_fault = f"XMSoapClient Fehler: {soap_exc}"
                 _LOGGER.warning("XMSoapClient PTZ '%s' Exception (%s): %s", cmd, self.host, soap_exc)
 
-        # ONVIF: Direct-SOAP-Fallback — MIT Puls-Stepping wie im Primärpfad.
-        # XM-Firmware ignoriert die Velocity; nur die Anzahl der Pulse steuert
-        # die Strecke. Ein einzelnes ContinuousMove würde die
-        # Geschwindigkeitsstufe hier wirkungslos machen.
+        # ONVIF: Direct-SOAP-Fallback — gleicher Einzel-Klick wie im Primärpfad
+        # (Velocity = Stufe/8, Haltedauer proportional zur Stufe).
         if self.protocol == PROTOCOL_ONVIF:
             if cmd == "stop":
                 return await self.async_ptz_stop()
-            # Feste Magnitude 1.0 — Velocity wird von der Firmware ohnehin ignoriert.
+            spd = f"{_ptz_level_for_speed(min(speed, 8) / 8) / 8:.2f}"
             soap_velocity_map: dict[str, str] = {
-                "up":       '<tt:PanTilt x="0.00" y="1.00"/><tt:Zoom x="0.00"/>',
-                "down":     '<tt:PanTilt x="0.00" y="-1.00"/><tt:Zoom x="0.00"/>',
-                "left":     '<tt:PanTilt x="-1.00" y="0.00"/><tt:Zoom x="0.00"/>',
-                "right":    '<tt:PanTilt x="1.00" y="0.00"/><tt:Zoom x="0.00"/>',
-                "zoom_in":  '<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="1.00"/>',
-                "zoom_out": '<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-1.00"/>',
+                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
+                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
+                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
+                "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
             }
-            spd = f"{min(speed, 8) / 8:.2f}"
             soap_translation_map: dict[str, str] = {
                 "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
                 "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
@@ -1757,8 +1754,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 spd = min(speed, 8) / 8  # normalisiert 0.125–1.0
                 _LOGGER.warning(
                     "PTZ '%s': XMSoapClient-Pfad fehlgeschlagen — Direct-SOAP-Fallback "
-                    "(%d Puls(e))",
-                    cmd, _ptz_pulse_count_for_speed(spd),
+                    "(1 Klick, %.2fs)",
+                    cmd, _ptz_move_duration_for_speed(spd),
                 )
                 tried_tokens = await self._async_candidate_ptz_profile_tokens()
                 if await self._async_fallback_ptz_pulse(
@@ -1842,17 +1839,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def _async_fallback_ptz_pulse(
         self, velocity_xml: str, tokens: list[str], spd: float
     ) -> bool:
-        """Puls-Stepping über Direct-SOAP (Fallback-Pfad): Stufe N → N Pulse.
+        """Einzel-Klick über Direct-SOAP (Fallback-Pfad): 1 ContinuousMove +
+        Haltedauer (proportional zur Stufe) + Stop.
 
-        Der erste erfolgreiche ContinuousMove legt Token und Body-Variante fest;
-        alle weiteren Pulse laufen NUR damit (kein Token-Retry nach Bewegung —
-        sonst Extra-Strecke). Die Timeout-Variante deckt Geräte ab, die
-        ContinuousMove ohne Timeout-Element ablehnen.
+        Der erste erfolgreiche ContinuousMove legt den Token fest (kein
+        Token-Retry nach Bewegung — sonst Extra-Strecke). Die Timeout-Variante
+        deckt Geräte ab, die ContinuousMove ohne Timeout-Element ablehnen.
         """
-        steps = _ptz_pulse_count_for_speed(spd)
-        # Zur Laufzeit aus dem Modul lesen (Tuning/Tests patchen xm_soap).
-        pulse_duration = _xm_soap.PTZ_PULSE_DURATION
-        pulse_gap = _xm_soap.PTZ_PULSE_GAP
+        duration = _ptz_move_duration_for_speed(spd)
 
         def _move_body(token: str, with_timeout: bool) -> str:
             timeout_xml = "<tptz:Timeout>PT0.50S</tptz:Timeout>" if with_timeout else ""
@@ -1880,14 +1874,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             if await _stop_once(token) or await _stop_once(token):
                 return True
             _LOGGER.warning(
-                "PTZ-Fallback: Stop fehlgeschlagen (Token=%s) — Puls-Sequenz abgebrochen",
+                "PTZ-Fallback: Stop fehlgeschlagen (Token=%s)",
                 token,
             )
             return False
 
-        # Funktionierende Token/Variante mit dem ERSTEN Puls ermitteln
+        # Funktionierenden Token/Variante ermitteln (der Move läuft dann bereits)
         active_token = ""
-        with_timeout = False
         for use_timeout in (False, True):
             for token in tokens:
                 resp = await self._async_ptz_soap_request(
@@ -1895,30 +1888,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 )
                 if self._ptz_response_ok(resp, "ContinuousMove"):
                     active_token = token
-                    with_timeout = use_timeout
                     break
             if active_token:
                 break
         if not active_token:
             return False
 
-        # Erster Puls läuft bereits → abschließen, dann restliche Pulse fahren
-        await asyncio.sleep(pulse_duration)
-        stopped = await _stop(active_token)
-        for _ in range(1, steps if stopped else 1):
-            await asyncio.sleep(pulse_gap)
-            resp = await self._async_ptz_soap_request(
-                "ContinuousMove", _move_body(active_token, with_timeout)
-            )
-            if not self._ptz_response_ok(resp, "ContinuousMove"):
-                _LOGGER.warning(
-                    "PTZ-Fallback: Puls-Sequenz vorzeitig beendet (Token=%s)",
-                    active_token,
-                )
-                break
-            await asyncio.sleep(pulse_duration)
-            if not await _stop(active_token):
-                break
+        await asyncio.sleep(duration)
+        await _stop(active_token)
 
         self._onvif_profile_tokens[self._active_stream] = active_token
         self._last_ptz_fault = ""

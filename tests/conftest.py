@@ -79,10 +79,11 @@ def _rtsp_never_has_video(self, rtsp_url, timeout=4.0):
 
 @pytest.fixture(autouse=True)
 def _offline_network(monkeypatch):
-    """XMSoapClient-Primärpfad offline stellen, Puls-Timing nullen."""
+    """XMSoapClient-Primärpfad offline stellen, Klick-Timing nullen."""
     monkeypatch.setattr(coordinator_module, "_XMSoapClient", OfflineXMSoapStub)
-    monkeypatch.setattr(xm_soap_module, "PTZ_PULSE_DURATION", 0.0)
-    monkeypatch.setattr(xm_soap_module, "PTZ_PULSE_GAP", 0.0)
+    # Klick-Dauer nullen, damit ptz_command/Fallback in Tests nicht real schlafen.
+    monkeypatch.setattr(xm_soap_module, "PTZ_MIN_MOVE_DURATION", 0.0)
+    monkeypatch.setattr(xm_soap_module, "PTZ_MAX_MOVE_DURATION", 0.0)
     monkeypatch.setattr(
         coordinator_module.WJGCameraCoordinator,
         "_tcp_port_reachable",
