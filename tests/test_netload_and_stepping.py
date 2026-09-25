@@ -9,6 +9,7 @@ fährt bis Stop, live verifiziert): 1 Tap = 1 Move, Halt ∝ Speed (Stufe 1 → 
 import asyncio
 import contextlib
 import io
+import logging
 import os
 import sys
 import time
@@ -140,10 +141,11 @@ async def test_async_setup_does_not_start_rtsp_motion_loop_when_option_disabled(
 
 
 @pytest.mark.asyncio
-async def test_async_setup_does_not_start_onvif_event_loop_when_option_disabled(monkeypatch):
+async def test_async_setup_does_not_start_onvif_event_loop_when_option_disabled(monkeypatch, caplog):
     """Kanal 1 abschaltbar: Die XM-3820 liefert dort nur ismotion=false, jedes
     PullMessages belegt aber ~1 s ihren seriellen SOAP-Server (PTZ-Latenz).
     Kanal 2 und UDP laufen unabhängig davon weiter."""
+    caplog.set_level(logging.INFO)
     coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA), options={
         "motion_onvif_events": False,
     }))
@@ -153,6 +155,10 @@ async def test_async_setup_does_not_start_onvif_event_loop_when_option_disabled(
         assert _get_private_attr(coordinator, "_event_task") is None
         assert _get_private_attr(coordinator, "_rtsp_motion_task") is not None
         assert _get_private_attr(coordinator, "_udp_monitor_task") is not None
+        # Startlog nennt nur die tatsächlich laufenden Kanäle
+        started = [r.getMessage() for r in caplog.records if "Motion-Detection (" in r.getMessage()]
+        assert started and "ONVIF-Ereignisse +" not in started[-1]
+        assert "per Option aus: ONVIF-Ereignisse" in started[-1]
     finally:
         await coordinator.async_shutdown()
 

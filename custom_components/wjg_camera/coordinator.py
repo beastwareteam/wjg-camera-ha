@@ -991,24 +991,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         await self.async_bootstrap_device()
 
         if self.protocol == PROTOCOL_ONVIF:
+            channels: list[str] = []
             if self.motion_onvif_events_enabled:
                 self._event_task = asyncio.create_task(self._async_onvif_event_loop())
-            else:
-                _LOGGER.info(
-                    "ONVIF-Ereignisabfrage (Kanal 1) für %s deaktiviert", self.host
-                )
-            self._udp_monitor_task = asyncio.create_task(self._async_udp_motion_monitor())
+                channels.append("ONVIF-Ereignisse")
             if self.motion_rtsp_diff_enabled:
                 self._rtsp_motion_task = asyncio.create_task(self._async_rtsp_motion_loop())
-                _LOGGER.info(
-                    "Motion-Detection: 3 Kanäle aktiv (ONVIF + RTSP-Stream alle %ds + UDP)",
-                    self.motion_rtsp_interval,
-                )
-            else:
-                _LOGGER.info(
-                    "Motion-Detection: ONVIF + UDP aktiv "
-                    "(RTSP-Bildvergleich per Option deaktiviert — keine Dauerlast)"
-                )
+                channels.append(f"RTSP-Bildvergleich alle {self.motion_rtsp_interval}s")
+            self._udp_monitor_task = asyncio.create_task(self._async_udp_motion_monitor())
+            channels.append("UDP")
+            disabled: list[str] = []
+            if not self.motion_onvif_events_enabled:
+                disabled.append("ONVIF-Ereignisse")
+            if not self.motion_rtsp_diff_enabled:
+                disabled.append("RTSP-Bildvergleich")
+            _LOGGER.info(
+                "Motion-Detection (%s): %d Kanal/Kanäle aktiv (%s)%s",
+                self.host, len(channels), " + ".join(channels),
+                f" — per Option aus: {', '.join(disabled)}" if disabled else "",
+            )
 
         await self.async_refresh()
 
