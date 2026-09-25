@@ -1885,6 +1885,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             return False
 
         # Funktionierenden Token/Variante ermitteln (der Move läuft dann bereits)
+        loop = asyncio.get_running_loop()
+        t_start = loop.time()
         active_token = ""
         for use_timeout in (False, True):
             for token in tokens:
@@ -1894,12 +1896,16 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 if self._ptz_response_ok(resp, "ContinuousMove"):
                     active_token = token
                     break
+                t_start = loop.time()  # fehlgeschlagener Versuch → Uhr neu starten
             if active_token:
                 break
         if not active_token:
             return False
 
-        await asyncio.sleep(duration)
+        # Haltedauer zählt ab Senden des erfolgreichen Moves (Latenz abziehen)
+        remaining = duration - (loop.time() - t_start)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
         await _stop(active_token)
 
         self._onvif_profile_tokens[self._active_stream] = active_token
