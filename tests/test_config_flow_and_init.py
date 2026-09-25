@@ -224,6 +224,27 @@ async def test_options_flow_create_entry_path():
 
 
 @pytest.mark.asyncio
+async def test_options_flow_rejects_invalid_patrol_values():
+    """Ungültige Uhrzeit/Stationsliste → Formular mit Fehler statt Speichern."""
+    entry = DummyEntry({"host": "192.168.1.30", "protocol": integration.PROTOCOL_ONVIF})
+    flow = WJGOptionsFlow(_as_any(entry))
+
+    result = _as_any(await flow.async_step_init(
+        {"patrol_start": "25:00", "patrol_end": "06:00", "patrol_stations": "0, x"}
+    ))
+    assert result["type"] == "form"
+    assert result["errors"] == {
+        "patrol_start": "invalid_time", "patrol_stations": "invalid_stations",
+    }
+
+    result = _as_any(await flow.async_step_init(
+        {"patrol_start": "21:30", "patrol_stations": "0, 5, 10"}
+    ))
+    assert result["type"] == "create_entry"
+    assert result["data"]["patrol_stations"] == "0, 5, 10"
+
+
+@pytest.mark.asyncio
 async def test_options_flow_exposes_onvif_override_fields():
     entry = DummyEntry(
         {

@@ -39,15 +39,27 @@ benachbarte Stufen spürbar verschieden. KEINE Serie von Einzelklicks.
   per Schwellen lösbar; dafür bräuchte es einen Vorlauf-Puffer aus dem Kanal-2-
   Stream (noch nicht umgesetzt).
 
-## Presets (v2.2.62)
-- Nutzer: Presets fahren falsche/nicht vorhandene Position an. Verdacht: XM
-  übernimmt den angefragten PresetToken ("1".."4") nicht, sondern vergibt einen
-  eigenen; der Button fuhr aber stur die Slot-Nummer an.
-- Jetzt: Button-Slot → beim SetPreset zurückgegebener Token (gemerkt), nach
-  Neustart über Namen "Preset N" aus GetPresets, sonst Slot-Nummer.
-- INFO-Logs: Position (GetStatus) beim Speichern, angefragter vs. Kamera-Token,
-  komplette Preset-Liste mit gespeicherten Positionen, Token beim Anfahren.
-  Noch nicht live bestätigt.
+## Presets/Home unbrauchbar → Patrouille über den Anschlag (v2.2.63)
+Live-Befund 25.09.2026 (.49), v2.2.62 mit Preset-Logs:
+- SetPreset übernimmt den angefragten Token korrekt (1 → 1); GetPresets liefert
+  127 feste Slots OHNE Position; GetStatus meldet immer pan=0 tilt=0 zoom=0.
+- `GotoPreset` (jede Nummer, auch Presets aus der App) UND `GotoHomePosition`
+  fahren immer denselben festen Punkt an; `SetHomePosition` ändert ihn nicht.
+  Nicht die Mitte/Kalibrierposition. In der App (Hersteller-Weg, Port 34567 ist
+  zu) funktionieren Presets. ContinuousMove aus HA (Stufe 2 und 8) verfälscht
+  die App-Presets NICHT.
+- **Schluss:** Firmware-Fehler im ONVIF-Preset-Pfad. Preset-/Home-Tasten und
+  die Preset-Auswahl entfernt; Coordinator-/xm_soap-Methoden bleiben (Logs).
+- **Patrouille (`patrol.py`, Schalter „Patrouille“):** Bezugspunkt linker
+  Anschlag (`async_ptz_run("left", patrol_home_secs)`, volle Geschwindigkeit),
+  Stationen = Klicks Stufe 8 nach rechts ab Anschlag, Verweilen mit Warten auf
+  Bewegungsende/Aufnahme, jede Runde neu ab Anschlag. Manueller Klick (Button)
+  pausiert 5 min und macht die Position unbekannt. Optionen: patrol_start/end,
+  patrol_dwell, patrol_stations, patrol_rest_station, patrol_home_secs.
+  Noch nicht live bestätigt (Fahrzeit zum Anschlag und Klicks je Station
+  müssen am Gerät eingestellt werden).
+- NICHT wieder Presets/Home für die XM-3820 einbauen, ohne GotoPreset live
+  neu geprüft zu haben.
 
 ### Live gemessen (25.09.2026, .49)
 v2.2.55 (Stop nach Move-Antwort):
@@ -338,10 +350,9 @@ WSSE funktioniert trotzdem — die Kamera akzeptiert diese Zeitdifferenz.
 ### Alle PTZ-Methoden verwenden XMSoapClient (seit v2.2.20)
 - `async_ptz_command` — Richtungsbewegung (right/left/up/down/zoom_in/zoom_out)
 - `async_ptz_stop` — Bewegung stoppen
-- `async_ptz_home` — Home-Position anfahren
-- `async_ptz_set_home` — aktuelle Position als Home speichern
-- `async_ptz_goto_preset` — Preset anfahren
-- `async_ptz_set_preset` — Preset speichern
+- `async_ptz_run` — längere Fahrt mit voller Geschwindigkeit (Patrouille)
+- `async_ptz_home` / `async_ptz_set_home` / `async_ptz_goto_preset` /
+  `async_ptz_set_preset` — ohne Entities (XM-3820: per ONVIF defekt, s. o.)
 
 ### Geschwindigkeitsregelung — Einzel-Klick (seit v2.2.59, siehe Top-Abschnitt)
 - `self._ptz_speed` in coordinator: int 1–8 (von Number-Entity gesetzt), pro Kamera.

@@ -78,6 +78,12 @@ CONF_MOTION_RTSP_PIXEL_THRESHOLD: Final = "motion_rtsp_pixel_threshold"
 CONF_MOTION_RTSP_TRIGGER_PERCENT: Final = "motion_rtsp_trigger_percent"
 CONF_MOTION_AUTO_RECORD: Final = "motion_auto_record"
 CONF_MOTION_RECORD_COOLDOWN: Final = "motion_record_cooldown"
+CONF_PATROL_START: Final = "patrol_start"
+CONF_PATROL_END: Final = "patrol_end"
+CONF_PATROL_DWELL: Final = "patrol_dwell"
+CONF_PATROL_STATIONS: Final = "patrol_stations"
+CONF_PATROL_REST_STATION: Final = "patrol_rest_station"
+CONF_PATROL_HOME_SECS: Final = "patrol_home_secs"
 
 PROTOCOL_RTSP: Final = "rtsp"
 PROTOCOL_HTTP: Final = "http_only"
@@ -98,6 +104,12 @@ DEFAULT_MOTION_RTSP_PIXEL_THRESHOLD: Final = 30
 DEFAULT_MOTION_RTSP_TRIGGER_PERCENT: Final = 6.0
 DEFAULT_MOTION_AUTO_RECORD: Final = True
 DEFAULT_MOTION_RECORD_COOLDOWN: Final = 30
+DEFAULT_PATROL_START: Final = "22:00"
+DEFAULT_PATROL_END: Final = "06:00"
+DEFAULT_PATROL_DWELL: Final = 90
+DEFAULT_PATROL_STATIONS: Final = "0, 4, 8"
+DEFAULT_PATROL_REST_STATION: Final = 1
+DEFAULT_PATROL_HOME_SECS: Final = 20
 
 # Standard RTSP-Pfad für XM-basierte Kameras
 DEFAULT_RTSP_PATH: Final = (

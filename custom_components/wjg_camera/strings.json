@@ -37,6 +37,12 @@
           "motion_rtsp_trigger_percent": "Bildvergleich: Auslöseschwelle in % (0,5-50, Standard 6 — kleiner = löst früher aus, mehr Fehlalarme)",
           "motion_auto_record": "Automatische Aufnahme bei Bewegung",
           "motion_record_cooldown": "Pause zwischen Auto-Aufnahmen (Sekunden, 0-600)",
+          "patrol_start": "Patrouille: Startzeit (HH:MM, z. B. 22:00)",
+          "patrol_end": "Patrouille: Endzeit (HH:MM, z. B. 06:00; gleich wie Start = immer)",
+          "patrol_dwell": "Patrouille: Verweildauer je Station (Sekunden, 20-1800)",
+          "patrol_stations": "Patrouille: Stationen als Klicks (Stufe 8) ab linkem Anschlag, kommagetrennt (z. B. 0, 4, 8)",
+          "patrol_rest_station": "Patrouille: Ruhe-Station außerhalb der Zeit (Nummer, 1 = erste)",
+          "patrol_home_secs": "Patrouille: Fahrzeit bis zum linken Anschlag (Sekunden, 5-90)",
           "rtsp_path": "RTSP-Pfad",
           "snapshot_path": "Snapshot-Pfad",
           "protocol": "Protokoll",
@@ -57,6 +63,10 @@
           "onvif_signal_topic_keywords": "Signalverlust: Topic-Stichwörter (kommagetrennt)"
         }
       }
+    },
+    "error": {
+      "invalid_time": "Uhrzeit bitte als HH:MM angeben (z. B. 22:00).",
+      "invalid_stations": "Stationen bitte als Zahlen 0-60, kommagetrennt (z. B. 0, 4, 8)."
     }
   }
 }

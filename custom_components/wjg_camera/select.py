@@ -1,8 +1,7 @@
-"""WJG Select Entities – PTZ Preset, IR, Belichtung, Stream."""
+"""WJG Select Entities – IR, Belichtung, Stream."""
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
@@ -26,7 +25,6 @@ async def async_setup_entry(
     coordinator: WJGCameraCoordinator = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
-            WJGPTZPresetSelect(coordinator, entry),
             WJGIRModeSelect(coordinator, entry),
             WJGExposureModeSelect(coordinator, entry),
             WJGExposurePrioritySelect(coordinator, entry),
@@ -48,40 +46,6 @@ class _WJGSelectBase(CoordinatorEntity[WJGCameraCoordinator], SelectEntity):
     @property
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
-
-
-class WJGPTZPresetSelect(_WJGSelectBase):
-    """Dropdown: PTZ-Preset anfahren."""
-
-    _attr_name = "PTZ-Preset anfahren"
-    _attr_icon = "mdi:map-marker-radius"
-
-    def __init__(
-        self, coordinator: WJGCameraCoordinator, entry: ConfigEntry
-    ) -> None:
-        super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.entry_id}_ptz_preset_select"
-        self._current: str | None = None
-
-    @property
-    def options(self) -> list[str]:
-        presets = self.coordinator.ptz_presets
-        if not presets:
-            return ["(keine Presets)"]
-        return list(presets.values())
-
-    @property
-    def current_option(self) -> str | None:
-        return self._current
-
-    async def async_select_option(self, option: str) -> None:
-        presets = self.coordinator.ptz_presets
-        token = next((k for k, v in presets.items() if v == option), None)
-        if token:
-            ok = await self.coordinator.async_ptz_goto_preset(token)
-            if ok:
-                self._current = option
-        self.async_write_ha_state()
 
 
 class WJGIRModeSelect(_WJGSelectBase):

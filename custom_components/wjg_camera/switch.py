@@ -8,6 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import DOMAIN
@@ -24,6 +25,7 @@ async def async_setup_entry(
             WJGWDRSwitch(coordinator, entry),
             WJGIRCutSwitch(coordinator, entry),
             WJGMicrophoneSwitch(coordinator, entry),
+            WJGPatrolSwitch(coordinator, entry),
         ]
     )
 
@@ -183,3 +185,53 @@ class WJGMicrophoneSwitch(  # pyright: ignore[reportAbstractUsage]
 
     def turn_off(self, **kwargs: Any) -> None:
         raise NotImplementedError
+
+
+class WJGPatrolSwitch(  # pyright: ignore[reportAbstractUsage]
+    CoordinatorEntity[WJGCameraCoordinator],
+    SwitchEntity,
+    RestoreEntity,
+):
+    """Patrouille über die Anschläge (Einstellungen unter „Konfigurieren“).
+    Zustand übersteht Neustarts; gefahren wird nur im Zeitfenster."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Patrouille"
+    _attr_icon = "mdi:cctv"
+
+    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_patrol"
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        last = await self.async_get_last_state()
+        if last is not None and last.state == "on":
+            self.coordinator.patrol.set_enabled(True)
+
+    @property
+    def is_on(self) -> bool:
+        return self.coordinator.patrol.enabled
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return self.coordinator.patrol.attributes
+
+    async def async_turn_on(self, **_: Any) -> None:
+        self.coordinator.patrol.set_enabled(True)
+        self.async_write_ha_state()
+
+    def turn_on(self, **kwargs: Any) -> None:
+        raise NotImplementedError("Use async_turn_on instead")
+
+    async def async_turn_off(self, **_: Any) -> None:
+        self.coordinator.patrol.set_enabled(False)
+        self.async_write_ha_state()
+
+    def turn_off(self, **kwargs: Any) -> None:
+        raise NotImplementedError("Use async_turn_off instead")
