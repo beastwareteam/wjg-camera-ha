@@ -10,16 +10,19 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import datetime
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import shutil
 import socket
 import struct
 import time
+from collections.abc import Iterator
 from datetime import timedelta
 from typing import Any
 from urllib.error import HTTPError as _UrllibHTTPError
@@ -162,6 +165,11 @@ BOOTSTRAP_RETRY_INTERVAL = 60.0
 # Obergrenze, wenn der Bootstrap wiederholt ohne Beleg bleibt. Ohne sie
 # probt eine erreichbare, aber stumme Kamera dauerhaft im Minutentakt.
 BOOTSTRAP_MAX_BACKOFF = 600.0
+# Nach einem PTZ-Befehl so lange keine Bewegungs-Trigger (v2.2.56): Das Bild
+# ändert sich durch die eigene Schwenkung, RTSP/Events laufen verzögert nach.
+# Sonst startet jeder PTZ-Klick eine HD-Aufnahme und belastet die Kamera
+# genau dann, wenn der Stop ankommen soll (live beobachtet 25.09.2026).
+PTZ_MOTION_QUIET_SECS = 8.0
 
 # XM SDK Message IDs
 XM_LOGIN_REQ       = 0x03E8  # 1000
@@ -517,6 +525,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # Sendezeitpunkt des letzten PTZ-SOAP-Versuchs (loop.time()); dient der
         # Latenz-Kompensation des Klicks — gemessen ab dem ERFOLGREICHEN Versuch.
         self._ptz_last_send_at: float = 0.0
+        # Bis zu diesem Zeitpunkt (time.time()) werden Bewegungs-Trigger der
+        # Kanäle ignoriert — die Kamera bewegt sich gerade selbst (PTZ).
+        self._ptz_quiet_until: float = 0.0
         self._ptz_presets: dict[str, str] = {}  # token -> name
         # Digital Zoom (Pillow-Crop für Snapshots, CSS-Sync über Lovelace-Karte)
         self._digital_zoom: float = 1.0
@@ -1687,155 +1698,172 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Unbekannter PTZ-Befehl: %s", cmd)
             return False
 
-        # Primärweg: XMSoapClient mit eigener frischer Session (verifiziert 13.05)
-        if self.protocol == PROTOCOL_ONVIF:
-            spd = min(speed, 8) / 8
-            # Profile-Token-Kandidaten: konfigurierter Token zuerst, dann 000/001/002.
-            # So funktionieren auch Kameras, die nicht "000" für PTZ nutzen (z. B. .49).
-            pref = (self._preferred_onvif_profile_token or "").strip()
-            candidate_tokens: list[str] = []
-            for t in (pref, "000", "001", "002"):
-                if t and t not in candidate_tokens:
-                    candidate_tokens.append(t)
-            if not candidate_tokens:
-                candidate_tokens = ["000"]
-            try:
-                for tok in candidate_tokens:
-                    async with self._soap() as soap:
-                        ok = await soap.ptz_command(cmd, speed=spd, token=tok)
+        # Eigene Kamerabewegung darf keine Bewegungserkennung/Aufnahme auslösen
+        # (belastete die Kamera genau dann, wenn der Stop ankommen soll).
+        with self._ptz_motion_quiet():
+            # Primärweg: XMSoapClient mit eigener frischer Session (verifiziert 13.05)
+            if self.protocol == PROTOCOL_ONVIF:
+                spd = min(speed, 8) / 8
+                # Profile-Token-Kandidaten: konfigurierter Token zuerst, dann 000/001/002.
+                # So funktionieren auch Kameras, die nicht "000" für PTZ nutzen (z. B. .49).
+                pref = (self._preferred_onvif_profile_token or "").strip()
+                candidate_tokens: list[str] = []
+                for t in (pref, "000", "001", "002"):
+                    if t and t not in candidate_tokens:
+                        candidate_tokens.append(t)
+                if not candidate_tokens:
+                    candidate_tokens = ["000"]
+                try:
+                    for tok in candidate_tokens:
+                        async with self._soap() as soap:
+                            ok = await soap.ptz_command(cmd, speed=spd, token=tok)
+                        if ok:
+                            self._last_ptz_fault = ""
+                            level = _ptz_level_for_speed(spd)
+                            if tok != pref:
+                                # Funktionierenden Token merken → künftig zuerst probieren
+                                self._preferred_onvif_profile_token = tok
+                                _LOGGER.info(
+                                    "PTZ '%s' OK via XMSoapClient (%s, Stufe %d, "
+                                    "Token=%s gemerkt)",
+                                    cmd, self.host, level, tok,
+                                )
+                            else:
+                                _LOGGER.info(
+                                    "PTZ '%s' OK via XMSoapClient (%s, Stufe %d)",
+                                    cmd, self.host, level,
+                                )
+                            return True
+                    self._last_ptz_fault = (
+                        f"XMSoapClient PTZ fehlgeschlagen: {cmd} (Tokens {','.join(candidate_tokens)})"
+                    )
+                    _LOGGER.warning(
+                        "XMSoapClient PTZ '%s' nicht erfolgreich (%s, Tokens %s)",
+                        cmd, self.host, ",".join(candidate_tokens),
+                    )
+                except Exception as soap_exc:
+                    self._last_ptz_fault = f"XMSoapClient Fehler: {soap_exc}"
+                    _LOGGER.warning("XMSoapClient PTZ '%s' Exception (%s): %s", cmd, self.host, soap_exc)
+
+            # ONVIF: Direct-SOAP-Fallback — gleicher Einzel-Klick wie im Primärpfad
+            # (Velocity = Stufe/8, Haltedauer proportional zur Stufe).
+            if self.protocol == PROTOCOL_ONVIF:
+                if cmd == "stop":
+                    return await self.async_ptz_stop()
+                spd = f"{_ptz_level_for_speed(min(speed, 8) / 8) / 8:.2f}"
+                soap_velocity_map: dict[str, str] = {
+                    "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
+                    "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
+                    "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                    "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                    "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
+                    "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
+                }
+                soap_translation_map: dict[str, str] = {
+                    "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
+                    "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
+                    "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                    "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
+                    "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
+                    "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
+                }
+                if cmd in soap_velocity_map:
+                    spd = min(speed, 8) / 8  # normalisiert 0.125–1.0
+                    _LOGGER.warning(
+                        "PTZ '%s': XMSoapClient-Pfad fehlgeschlagen — Direct-SOAP-Fallback "
+                        "(1 Klick, %.2fs)",
+                        cmd, _ptz_move_duration_for_speed(spd),
+                    )
+                    tried_tokens = await self._async_candidate_ptz_profile_tokens()
+                    if await self._async_fallback_ptz_pulse(
+                        soap_velocity_map[cmd], tried_tokens, spd
+                    ):
+                        return True
+
+                    # Letzter Versuch: RelativeMove — einzelner Schritt, Stepping
+                    # technisch nicht möglich → deutlich warnen.
+                    for profile_token in tried_tokens:
+                        resp = await self._async_ptz_soap_request(
+                            "RelativeMove",
+                            f"<tptz:RelativeMove>"
+                            f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
+                            f"<tptz:Translation>{soap_translation_map[cmd]}</tptz:Translation>"
+                            f"</tptz:RelativeMove>",
+                        )
+                        if self._ptz_response_ok(resp, "RelativeMove"):
+                            self._onvif_profile_tokens[self._active_stream] = profile_token
+                            self._last_ptz_fault = ""
+                            _LOGGER.warning(
+                                "PTZ '%s' nur via RelativeMove erfolgreich — "
+                                "Geschwindigkeits-Stepping inaktiv", cmd,
+                            )
+                            return True
+
+                    # python-onvif-zeep Fallback entfernt (self._onvif ist None)
+                    if not self._last_ptz_fault:
+                        self._last_ptz_fault = "PTZ fehlgeschlagen (kein ONVIF-Response vom Geraet)"
+
+            if self._xm:
+                code = ptz_map[cmd]
+                try:
+                    return await self.hass.async_add_executor_job(
+                        self._xm.ptz_command, code, speed, 0
+                    )
+                except Exception as e:
+                    self._last_ptz_fault = str(e)
+                    _LOGGER.error("PTZ-Befehl fehlgeschlagen: %s", e)
+
+            # XM-SDK-Fallback (Port 34567 auf XM-3820 geschlossen, aber Code bleibt für
+            # andere Geräte erhalten). Port-Cache: nicht bei jedem Tastendruck gegen
+            # einen bekannten geschlossenen Port anrennen.
+            if (
+                self.protocol == PROTOCOL_ONVIF
+                and not self._xm
+                and await self._async_port_open_cached(self.xm_port)
+            ):
+                code = ptz_map[cmd]
+                xm_tmp = XMClient(self.host, self.xm_port, self.username or "", self.password or "")
+                try:
+                    ok = await self.hass.async_add_executor_job(
+                        self._xm_ptz_one_shot, xm_tmp, code, speed
+                    )
                     if ok:
                         self._last_ptz_fault = ""
-                        level = _ptz_level_for_speed(spd)
-                        if tok != pref:
-                            # Funktionierenden Token merken → künftig zuerst probieren
-                            self._preferred_onvif_profile_token = tok
-                            _LOGGER.info(
-                                "PTZ '%s' OK via XMSoapClient (%s, Stufe %d, "
-                                "Token=%s gemerkt)",
-                                cmd, self.host, level, tok,
-                            )
-                        else:
-                            _LOGGER.info(
-                                "PTZ '%s' OK via XMSoapClient (%s, Stufe %d)",
-                                cmd, self.host, level,
-                            )
                         return True
-                self._last_ptz_fault = (
-                    f"XMSoapClient PTZ fehlgeschlagen: {cmd} (Tokens {','.join(candidate_tokens)})"
-                )
-                _LOGGER.warning(
-                    "XMSoapClient PTZ '%s' nicht erfolgreich (%s, Tokens %s)",
-                    cmd, self.host, ",".join(candidate_tokens),
-                )
-            except Exception as soap_exc:
-                self._last_ptz_fault = f"XMSoapClient Fehler: {soap_exc}"
-                _LOGGER.warning("XMSoapClient PTZ '%s' Exception (%s): %s", cmd, self.host, soap_exc)
-
-        # ONVIF: Direct-SOAP-Fallback — gleicher Einzel-Klick wie im Primärpfad
-        # (Velocity = Stufe/8, Haltedauer proportional zur Stufe).
-        if self.protocol == PROTOCOL_ONVIF:
-            if cmd == "stop":
-                return await self.async_ptz_stop()
-            spd = f"{_ptz_level_for_speed(min(speed, 8) / 8) / 8:.2f}"
-            soap_velocity_map: dict[str, str] = {
-                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
-                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
-                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
-                "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
-            }
-            soap_translation_map: dict[str, str] = {
-                "up":       f'<tt:PanTilt x="0.00" y="{spd}"/><tt:Zoom x="0.00"/>',
-                "down":     f'<tt:PanTilt x="0.00" y="-{spd}"/><tt:Zoom x="0.00"/>',
-                "left":     f'<tt:PanTilt x="-{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "right":    f'<tt:PanTilt x="{spd}" y="0.00"/><tt:Zoom x="0.00"/>',
-                "zoom_in":  f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="{spd}"/>',
-                "zoom_out": f'<tt:PanTilt x="0.00" y="0.00"/><tt:Zoom x="-{spd}"/>',
-            }
-            if cmd in soap_velocity_map:
-                spd = min(speed, 8) / 8  # normalisiert 0.125–1.0
-                _LOGGER.warning(
-                    "PTZ '%s': XMSoapClient-Pfad fehlgeschlagen — Direct-SOAP-Fallback "
-                    "(1 Klick, %.2fs)",
-                    cmd, _ptz_move_duration_for_speed(spd),
-                )
-                tried_tokens = await self._async_candidate_ptz_profile_tokens()
-                if await self._async_fallback_ptz_pulse(
-                    soap_velocity_map[cmd], tried_tokens, spd
-                ):
-                    return True
-
-                # Letzter Versuch: RelativeMove — einzelner Schritt, Stepping
-                # technisch nicht möglich → deutlich warnen.
-                for profile_token in tried_tokens:
-                    resp = await self._async_ptz_soap_request(
-                        "RelativeMove",
-                        f"<tptz:RelativeMove>"
-                        f"<tptz:ProfileToken>{profile_token}</tptz:ProfileToken>"
-                        f"<tptz:Translation>{soap_translation_map[cmd]}</tptz:Translation>"
-                        f"</tptz:RelativeMove>",
+                    self._last_ptz_fault = (
+                        f"PTZ XM-SDK-Fallback fehlgeschlagen (Port {self.xm_port})"
                     )
-                    if self._ptz_response_ok(resp, "RelativeMove"):
-                        self._onvif_profile_tokens[self._active_stream] = profile_token
+                except Exception as xm_exc:
+                    self._last_ptz_fault = f"PTZ XM-SDK-Fallback Fehler: {xm_exc}"
+
+            # HTTP-Fallback (Port-Cache wie oben — Port 80 ist auf XM-3820 zu)
+            if self._session and await self._async_port_open_cached(self.http_port):
+                for url in self._candidate_http_ptz_urls(cmd, speed):
+                    data = await self._async_http_get_data(url, timeout_seconds=3)
+                    ok = isinstance(data, (bytes, bytearray)) and self._ptz_http_payload_looks_ok(bytes(data))
+                    if ok:
                         self._last_ptz_fault = ""
-                        _LOGGER.warning(
-                            "PTZ '%s' nur via RelativeMove erfolgreich — "
-                            "Geschwindigkeits-Stepping inaktiv", cmd,
-                        )
                         return True
-
-                # python-onvif-zeep Fallback entfernt (self._onvif ist None)
                 if not self._last_ptz_fault:
-                    self._last_ptz_fault = "PTZ fehlgeschlagen (kein ONVIF-Response vom Geraet)"
-
-        if self._xm:
-            code = ptz_map[cmd]
-            try:
-                return await self.hass.async_add_executor_job(
-                    self._xm.ptz_command, code, speed, 0
-                )
-            except Exception as e:
-                self._last_ptz_fault = str(e)
-                _LOGGER.error("PTZ-Befehl fehlgeschlagen: %s", e)
-
-        # XM-SDK-Fallback (Port 34567 auf XM-3820 geschlossen, aber Code bleibt für
-        # andere Geräte erhalten). Port-Cache: nicht bei jedem Tastendruck gegen
-        # einen bekannten geschlossenen Port anrennen.
-        if (
-            self.protocol == PROTOCOL_ONVIF
-            and not self._xm
-            and await self._async_port_open_cached(self.xm_port)
-        ):
-            code = ptz_map[cmd]
-            xm_tmp = XMClient(self.host, self.xm_port, self.username or "", self.password or "")
-            try:
-                ok = await self.hass.async_add_executor_job(
-                    self._xm_ptz_one_shot, xm_tmp, code, speed
-                )
-                if ok:
-                    self._last_ptz_fault = ""
-                    return True
-                self._last_ptz_fault = (
-                    f"PTZ XM-SDK-Fallback fehlgeschlagen (Port {self.xm_port})"
-                )
-            except Exception as xm_exc:
-                self._last_ptz_fault = f"PTZ XM-SDK-Fallback Fehler: {xm_exc}"
-
-        # HTTP-Fallback (Port-Cache wie oben — Port 80 ist auf XM-3820 zu)
-        if self._session and await self._async_port_open_cached(self.http_port):
-            for url in self._candidate_http_ptz_urls(cmd, speed):
-                data = await self._async_http_get_data(url, timeout_seconds=3)
-                ok = isinstance(data, (bytes, bytearray)) and self._ptz_http_payload_looks_ok(bytes(data))
-                if ok:
-                    self._last_ptz_fault = ""
-                    return True
+                    self._last_ptz_fault = "PTZ HTTP-Fallback fehlgeschlagen"
+                return False
             if not self._last_ptz_fault:
-                self._last_ptz_fault = "PTZ HTTP-Fallback fehlgeschlagen"
+                self._last_ptz_fault = "PTZ fehlgeschlagen"
             return False
-        if not self._last_ptz_fault:
-            self._last_ptz_fault = "PTZ fehlgeschlagen"
-        return False
+
+    @contextlib.contextmanager
+    def _ptz_motion_quiet(self) -> Iterator[None]:
+        """Unterdrückt Bewegungs-Trigger während eines PTZ-Befehls und
+        PTZ_MOTION_QUIET_SECS danach (RTSP-/Event-Latenz der Kamera)."""
+        self._ptz_quiet_until = math.inf
+        try:
+            yield
+        finally:
+            self._ptz_quiet_until = time.time() + PTZ_MOTION_QUIET_SECS
+
+    def _ptz_motion_suppressed(self) -> bool:
+        """True, solange die Kamera sich durch PTZ selbst bewegt (bzw. kurz danach)."""
+        return time.time() < self._ptz_quiet_until
 
     # ── ONVIF Direct-SOAP helper ────────────────────────────────────────────
 
@@ -2773,6 +2801,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             truthy = any(value is True for value in values)
             if rule_name == "motion":
                 if truthy or (topic_match and not values and rule.get("topic_only_true", False)):
+                    if self._ptz_motion_suppressed():
+                        _LOGGER.debug("Bewegung während PTZ ignoriert (Topic=%s)", topic)
+                        continue
                     _LOGGER.info("BEWEGUNG erkannt! Topic=%s values=%s", topic, values)
                     self._last_motion_time = time.time()
                     asyncio.ensure_future(self._trigger_motion_recording())
@@ -3078,7 +3109,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             diff = ImageChops.difference(img1, img2)
             pixels = list(diff.getdata())
             pct = sum(1 for p in pixels if p > 30) / len(pixels) * 100
-            if pct >= 6.0:
+            if pct >= 6.0 and self._ptz_motion_suppressed():
+                _LOGGER.debug("RTSP Motion: %.1f%% während PTZ ignoriert", pct)
+            elif pct >= 6.0:
                 _LOGGER.info("RTSP Motion: %.1f%% Pixeländerung erkannt", pct)
                 self._last_motion_time = time.time()
                 asyncio.ensure_future(self._trigger_motion_recording())
@@ -3187,7 +3220,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         continue
                     text = data.decode("utf-8", errors="ignore")
                     tl = text.lower()
-                    if "motion" in tl or "alarm" in tl or "detect" in tl:
+                    if ("motion" in tl or "alarm" in tl or "detect" in tl) and self._ptz_motion_suppressed():
+                        _LOGGER.debug("UDP Motion während PTZ ignoriert: %s", text[:120])
+                    elif "motion" in tl or "alarm" in tl or "detect" in tl:
                         _LOGGER.info("UDP Motion von Kamera %s: %s", self.host, text[:120])
                         self._last_motion_time = time.time()
                         asyncio.ensure_future(self._trigger_motion_recording())

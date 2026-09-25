@@ -82,7 +82,9 @@ def _offline_network(monkeypatch):
     """XMSoapClient-Primärpfad offline stellen, Klick-Timing nullen."""
     monkeypatch.setattr(coordinator_module, "_XMSoapClient", OfflineXMSoapStub)
     # Klick-Dauer nullen, damit ptz_command/Fallback in Tests nicht real schlafen.
-    monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.0,) * 8)
+    # Minimal statt 0: bei 0 s ginge jeder Klick in den Früh-Stop-Pfad, weil
+    # die (sofort fertige) Fake-Move-Antwort noch nicht gelaufen ist.
+    monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.01,) * 8)
     monkeypatch.setattr(
         coordinator_module.WJGCameraCoordinator,
         "_tcp_port_reachable",
