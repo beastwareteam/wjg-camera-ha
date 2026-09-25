@@ -173,6 +173,14 @@ PTZ_MOTION_QUIET_SECS = 8.0
 # Aktion wjg_camera.ptz_test (Methode "timeout"): Sicherheits-Stop so lange
 # nach dem erwarteten Selbst-Stopp, dass "Timeout ignoriert" klar erkennbar ist.
 PTZ_TEST_SAFETY_STOP_SECS = 3.0
+# Pause zwischen zwei ONVIF-PullMessages (v2.2.59). Die XM hält jede Anfrage
+# ~1 s und liefert nur ismotion=false; ohne Pause war sie dauerhaft belegt und
+# jeder PTZ-Start wartete bis zu ~1 s in ihrer Warteschlange. Bewegung erkennt
+# bei der XM-3820 ohnehin Kanal 2 (RTSP-Bildvergleich).
+EVENT_PULL_PAUSE_SECS = 2.0
+# Direct-SOAP-Fallback, ContinuousMove-Variante mit <Timeout>: Puffer für die
+# Zeit bis zur Move-Antwort (live bis ~1 s, großzügig bemessen).
+PTZ_FALLBACK_TIMEOUT_MARGIN_SECS = 3.0
 PTZ_TEST_DIRECTIONS: dict[str, tuple[float, float]] = {
     "left": (-1.0, 0.0), "right": (1.0, 0.0), "up": (0.0, 1.0), "down": (0.0, -1.0),
 }
@@ -1907,10 +1915,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         duration = _ptz_move_duration_for_speed(spd)
 
         def _move_body(token: str, with_timeout: bool) -> str:
-            # Timeout mind. so lang wie der Klick (min. 0,5 s), sonst stoppt die
-            # Kamera bei hohen Stufen vorzeitig.
+            # Das Timeout zählt ab EINGANG des Moves, die Haltedauer erst ab der
+            # Move-Antwort → Puffer für die Warteschlangen-Latenz, sonst stoppt
+            # ein Gerät, das die Variante beachtet, vorzeitig. Nur Sicherheits-
+            # netz: der Stop wird ohnehin gesendet.
+            timeout_s = max(0.5, duration) + PTZ_FALLBACK_TIMEOUT_MARGIN_SECS
             timeout_xml = (
-                f"<tptz:Timeout>PT{max(0.5, duration):.2f}S</tptz:Timeout>"
+                f"<tptz:Timeout>PT{timeout_s:.2f}S</tptz:Timeout>"
                 if with_timeout else ""
             )
             return (
@@ -1962,11 +1973,11 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         if not active_token:
             return False
 
-        # Haltedauer zählt ab Senden des erfolgreichen Moves (Latenz abziehen)
+        # Haltedauer ab der Move-Antwort (vorher wartet der Move nur in der
+        # Warteschlange der Kamera — siehe xm_soap.PTZ_MOVE_DURATIONS_DEFAULT)
         t_move_ack = loop.time()
-        remaining = duration - (t_move_ack - t_start)
-        if remaining > 0:
-            await asyncio.sleep(remaining)
+        if duration > 0:
+            await asyncio.sleep(duration)
         t_stop_sent = loop.time()
         stopped = await _stop(active_token)
         t_stop_ack = loop.time()
@@ -3072,6 +3083,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     continue
                 if ok:
                     backoff_seconds = 1
+                    # Kamera zwischen zwei Abfragen frei lassen (PTZ-Latenz)
+                    await asyncio.sleep(EVENT_PULL_PAUSE_SECS)
                     continue
 
                 self._event_pullpoint_path = ""
