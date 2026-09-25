@@ -1,40 +1,35 @@
 # WJG XM-3820 Camera Bridge — Kritisches Wissen für Claude
 
-## PTZ-Geschwindigkeit: Stop-Delay (Fix v2.2.42 — Juni 2026) ⭐ AKTUELL
+## PTZ-Geschwindigkeit: Puls-Stepping (zurück ab v2.2.53 — September 2026) ⭐ AKTUELL
 
-### LIVE VERIFIZIERT (10.06.2026, Diagnose `ptz_speed_diag.py` an der .49)
-**Die Kamera fährt bei ContinuousMove BIS ZUM Stop weiter** — langer Halt =
-weitere Strecke, kurzer Halt = kürzere. Konkret beobachtet: 2,0 s-Halt bewegte
-deutlich weiter als 0,2 s-Halt. Das **widerlegt** die frühere Annahme „Kamera
-macht festen Schritt und stoppt selbst" (die 02.06-Notiz war falsch). Nur der
-Velocity-WERT wird ignoriert, die **Dauer NICHT**.
+### Warum zurück zum Pulsen
+Mit dem Stop-Delay-Verfahren (v2.2.41/v2.2.42: 1 ContinuousMove + Haltedauer
+0,2–1,5 s + Stop) fuhr die Kamera im Alltag **bei jeder Stufe gleich** — die
+Geschwindigkeitsstufe hatte keinen spürbaren Effekt mehr. Die Haltedauer eines
+einzelnen Moves ist bei dieser Firmware kein verlässlicher Stellhebel. Das
+Puls-Stepping aus v2.2.40 war dagegen am Gerät verifiziert einstellbar
+(Stufe 1 = 1 Puls ≈ 0,8 s, Stufe 8 = 8 Pulse ≈ 5,9 s) und ist wieder aktiv.
 
-### Mechanismus (Stop-Delay-Stepping)
-1 Tap = **1 ContinuousMove + proportionaler Sleep + Stop**. Die Stufe (1–8)
-steuert die Haltedauer linear über `ptz_stop_delay_for_speed(speed)`:
-- `PTZ_MIN_STOP_DELAY = 0.2 s` (Stufe 1, kleiner Tipp)
-- `PTZ_MAX_STOP_DELAY = 1.5 s` (Stufe 8, große Schwenkung)
-- linear dazwischen (Stufe N → `0.2 + (N-1)/7 * 1.3` s)
+### Mechanismus
+Stufe N (1–8) → **N Pulse** pro Tastendruck, jeder Puls =
+`ContinuousMove` + `PTZ_PULSE_DURATION` (0,35 s) + `Stop`, dazwischen
+`PTZ_PULSE_GAP` (0,12 s). Pulsanzahl über `ptz_pulse_count_for_speed(speed)`
+(xm_soap), `speed` = Stufe / 8.
 
 Gilt in **beiden** Pfaden: `XMSoapClient.ptz_command()` (xm_soap.py, Primär) und
-`_async_fallback_ptz_pulse()` (coordinator.py, Direct-SOAP-Fallback). Beide
-nutzen denselben Helper `ptz_stop_delay_for_speed` aus xm_soap.
-
-### Warum die Vorgänger scheiterten
-- **v2.2.40 (N Pulse):** Stufe 1 = 1 Puls × 0.35 s war als „Tipp" zu groß und
-  fühlte sich bei höheren Stufen wie Hold-to-Move an.
-- **v2.2.41 (1 Puls, Dauer 0.044–0.35 s):** richtiger Mechanismus, aber der
-  Bereich war viel zu klein/eng — bei so kurzen Dauern dominiert die
-  Netzwerk-Latenz, alle Stufen fühlten sich gleich an. v2.2.42 nutzt den großen,
-  klar getrennten Bereich 0.2–1.5 s (wie das alte v2.2.21).
+`_async_fallback_ptz_pulse()` (coordinator.py, Direct-SOAP-Fallback). Der
+Fallback liest Dauer/Pause zur Laufzeit aus dem `xm_soap`-Modul.
 
 ### Regeln
-- **Stop-Delay ist der richtige Ansatz** (entgegen der alten CLAUDE.md-Warnung).
-  Bei „alle Stufen gleich" zuerst den **Bereich vergrößern**, nicht den
-  Mechanismus wechseln.
-- Tuning nur über `PTZ_MIN_STOP_DELAY`/`PTZ_MAX_STOP_DELAY`.
-- RelativeMove ist als Alternative vorhanden (Kamera akzeptiert es, Bereich
-  −1…1, via `GetNodes` bestätigt) — bei Bedarf als noch präziserer Ersatz prüfbar.
+- `ptz_command` gibt `moved` zurück (nicht den Status des letzten Pulses): Nach
+  einer Bewegung darf der Coordinator NICHT mit dem nächsten Profile-Token
+  erneut pulsen (Extra-Strecke). Gleiches im Fallback: Token/Variante werden mit
+  dem ersten Puls festgelegt, danach kein Token-Wechsel.
+- Tuning nur über `PTZ_PULSE_DURATION` / `PTZ_PULSE_GAP`. Ist Stufe 1 als Tipp
+  zu groß, `PTZ_PULSE_DURATION` verkleinern — NICHT zurück auf Stop-Delay.
+- Historie: v2.2.39/40 = N Pulse (funktionierte, Stufe 1 etwas groß);
+  v2.2.41 = 1 Puls 0,044–0,35 s (alle Stufen gleich); v2.2.42–v2.2.52 =
+  Stop-Delay 0,2–1,5 s (alle Stufen gleich schnell) → verworfen.
 
 ## Kamera-Uhrzeit-Spam (Fix v2.2.41 — Juni 2026)
 `WJGCameraTimeSensor` gibt `coordinator.camera_time` zurück — ein String
@@ -92,7 +87,9 @@ Profile-Token erneut pulsen (Extra-Strecke).
 
 ### Tests / CI
 - `tests/conftest.py` stellt den XMSoapClient-Primärpfad per autouse-Fixture
-  offline (`OfflineXMSoapStub`) und nullt die Puls-Wartezeiten. OHNE diesen Stub
+  offline (`OfflineXMSoapStub`), nullt die Puls-Wartezeiten und stubbt
+  `_tcp_port_reachable` / `_rtsp_url_has_video` (sonst echte Socket-Timeouts,
+  vorher ~48 s pro `async_setup`-Test). OHNE diesen Stub
   würden die Unit-Tests REALE PTZ-Befehle an eine erreichbare Kamera senden
   (Tests hardcoden 192.168.178.49) und die Kamera physisch bewegen!
 - `DataUpdateCoordinator` bekommt seit v2.2.40 `config_entry=entry` explizit
@@ -254,19 +251,12 @@ WSSE funktioniert trotzdem — die Kamera akzeptiert diese Zeitdifferenz.
 - `async_ptz_goto_preset` — Preset anfahren
 - `async_ptz_set_preset` — Preset speichern
 
-### Geschwindigkeitsregelung — Stop-Delay (seit v2.2.42, siehe Top-Abschnitt)
+### Geschwindigkeitsregelung — Puls-Stepping (seit v2.2.53, siehe Top-Abschnitt)
 - `self._ptz_speed` in coordinator: int 1–8 (von Number-Entity gesetzt), pro Kamera.
 - Normalisierung: `spd = self._ptz_speed / 8` → float 0.125–1.0 für XMSoapClient.
 - `button.py` → `WJGPTZButton.async_press` übergibt `self.coordinator.ptz_speed`.
-- **LIVE KORRIGIERT (10.06.2026):** Die frühere 02.06-Notiz „XM ignoriert auch die
-  Bewegungsdauer / Kamera stoppt selbst" ist **FALSCH**. Die Kamera fährt bis zum
-  Stop; nur der Velocity-WERT wird ignoriert. → Stop-Delay funktioniert.
-- **Aktuelle Lösung:** 1 Tap = 1 `ContinuousMove` + `ptz_stop_delay_for_speed(spd)`
-  Sleep + `Stop`. Stufe 1 → 0.2 s, Stufe 8 → 1.5 s (linear). KEIN N-Puls-Stepping
-  mehr (v2.2.39–v2.2.41 überholt).
+- 1 Tap = N × (`ContinuousMove` + `PTZ_PULSE_DURATION` + `Stop`), N = Stufe.
 - **Default seit v2.2.35: `self._ptz_speed = 1`** (langsamste Stufe), pro Kamera getrennt.
-- Historie (überholt, NICHT wiederbeleben): v2.2.39–v2.2.40 = N Pulse (Stufe 1 zu groß);
-  v2.2.41 = 1 Puls mit Dauer 0.044–0.35 s (Bereich zu klein → alle Stufen gefühlt gleich).
 
 ### PTZ Profile-Token-Retry (seit v2.2.39)
 - `async_ptz_command` probiert bei Fehlschlag der Reihe nach Tokens: konfigurierter
@@ -331,8 +321,9 @@ CAMERA_USERNAME = "admin"
 CAMERA_PASSWORD = ""
 ONVIF_PORT = 8899
 PROFILE_TOKEN = "000"
-PTZ_SPEED = 0.4       # Default-Geschwindigkeit
-PTZ_STOP_DELAY = 0.8  # Sekunden Auto-Stop
+PTZ_SPEED = 0.4           # Default-Geschwindigkeit
+PTZ_PULSE_DURATION = 0.35 # Sekunden Bewegung pro Puls
+PTZ_PULSE_GAP = 0.12      # Sekunden Pause zwischen Pulsen
 ```
 **Wichtig:** Host/Credentials/Port kommen im Normalbetrieb aus dem Config-Entry
 (`coordinator._soap()` → `XMSoapClient(host=..., username=..., ...)`). Die

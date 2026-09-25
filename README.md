@@ -1,7 +1,7 @@
 # WJG XM-3820 Camera Bridge – Home Assistant Integration
 
 **Kamera:** WJG / Tenganda XM-3820 · **Chipset:** XM (Xiongmai) / GK-Serie  
-**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.52 · **HA:** ≥ 2024.1
+**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.53 · **HA:** ≥ 2024.1
 
 > Vollständige lokale Home-Assistant-Integration ohne Cloud-Abhängigkeit.  
 > RTSP-Livestream, ONVIF-Steuerung, PTZ mit 21 Buttons, Imaging-Einstellungen, Events und mehr.
@@ -340,7 +340,7 @@ Alle 21 PTZ-Buttons nutzen bei `protocol=onvif` direkte SOAP-Aufrufe:
 | Preset anfahren | `GotoPreset` |
 | Preset speichern | `SetPreset` |
 
-Geschwindigkeit: PTZ-Geschwindigkeit 1–8 wird auf 0.125–1.0 skaliert.  
+Geschwindigkeit: Die XM-Firmware ignoriert die Velocity. PTZ-Geschwindigkeit 1–8 = Anzahl kurzer Bewegungspulse (ContinuousMove + Stop) pro Tastendruck.  
 Fallback: Bei SOAP-Fehler automatisch auf python-onvif library.
 
 ### Events (Pull-Point)
@@ -433,4 +433,4 @@ pytest tests/test_coordinator.py -v
 
 ---
 
-*Version 2.2.52 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*
+*Version 2.2.53 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*
