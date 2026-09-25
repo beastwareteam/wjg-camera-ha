@@ -1849,7 +1849,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         duration = _ptz_move_duration_for_speed(spd)
 
         def _move_body(token: str, with_timeout: bool) -> str:
-            timeout_xml = "<tptz:Timeout>PT0.50S</tptz:Timeout>" if with_timeout else ""
+            # Timeout mind. so lang wie der Klick (min. 0,5 s), sonst stoppt die
+            # Kamera bei hohen Stufen vorzeitig.
+            timeout_xml = (
+                f"<tptz:Timeout>PT{max(0.5, duration):.2f}S</tptz:Timeout>"
+                if with_timeout else ""
+            )
             return (
                 f"<tptz:ContinuousMove>"
                 f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"

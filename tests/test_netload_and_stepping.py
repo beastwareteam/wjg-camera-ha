@@ -451,3 +451,35 @@ async def test_fallback_ptz_retries_failed_stop_once():
 
     assert len([b for b in bodies if "ContinuousMove" in b]) == 1
     assert len([b for b in bodies if "tptz:Stop" in b]) == 2
+
+
+@pytest.mark.asyncio
+async def test_fallback_ptz_timeout_covers_click_duration(monkeypatch):
+    """Timeout-Variante: <Timeout> muss mindestens die Klick-Dauer abdecken."""
+    monkeypatch.setattr(xm_soap_module, "PTZ_MIN_MOVE_DURATION", 0.0)
+    monkeypatch.setattr(xm_soap_module, "PTZ_MAX_MOVE_DURATION", 1.5)
+    monkeypatch.setattr(asyncio, "sleep", _no_sleep)
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    bodies: list[str] = []
+
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        bodies.append(body)
+        if "ContinuousMove" in body and "<tptz:Timeout>" in body:
+            return "<tptz:ContinuousMoveResponse/>"  # nur Timeout-Variante klappt
+        if "tptz:Stop" in body:
+            return "<tptz:StopResponse/>"
+        return ""
+
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_onvif_profile_tokens", {"000": "000"})
+    _set_private_attr(coordinator, "_active_stream", "000")
+
+    assert await coordinator.async_ptz_command("left", speed=8) is True
+    timed = [b for b in bodies if "<tptz:Timeout>" in b]
+    assert timed and "<tptz:Timeout>PT1.50S</tptz:Timeout>" in timed[-1]
+
+
+async def _no_sleep(_seconds):
+    return None
