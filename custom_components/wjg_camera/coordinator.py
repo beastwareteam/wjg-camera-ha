@@ -1864,8 +1864,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 f"</tptz:ContinuousMove>"
             )
 
-        async def _stop(token: str) -> None:
-            await self._async_ptz_soap_request(
+        async def _stop_once(token: str) -> bool:
+            resp = await self._async_ptz_soap_request(
                 "Stop",
                 f"<tptz:Stop>"
                 f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
@@ -1873,6 +1873,17 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 f"<tptz:Zoom>true</tptz:Zoom>"
                 f"</tptz:Stop>",
             )
+            return self._ptz_response_ok(resp, "Stop")
+
+        async def _stop(token: str) -> bool:
+            # Stop MUSS greifen, sonst fährt die Kamera weiter — 1× wiederholen.
+            if await _stop_once(token) or await _stop_once(token):
+                return True
+            _LOGGER.warning(
+                "PTZ-Fallback: Stop fehlgeschlagen (Token=%s) — Puls-Sequenz abgebrochen",
+                token,
+            )
+            return False
 
         # Funktionierende Token/Variante mit dem ERSTEN Puls ermitteln
         active_token = ""
@@ -1893,8 +1904,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         # Erster Puls läuft bereits → abschließen, dann restliche Pulse fahren
         await asyncio.sleep(pulse_duration)
-        await _stop(active_token)
-        for _ in range(1, steps):
+        stopped = await _stop(active_token)
+        for _ in range(1, steps if stopped else 1):
             await asyncio.sleep(pulse_gap)
             resp = await self._async_ptz_soap_request(
                 "ContinuousMove", _move_body(active_token, with_timeout)
@@ -1906,7 +1917,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 )
                 break
             await asyncio.sleep(pulse_duration)
-            await _stop(active_token)
+            if not await _stop(active_token):
+                break
 
         self._onvif_profile_tokens[self._active_stream] = active_token
         self._last_ptz_fault = ""

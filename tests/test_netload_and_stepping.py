@@ -419,3 +419,53 @@ async def test_fallback_ptz_pulse_count_matches_speed_level():
     stop_bodies = [b for b in bodies if "tptz:Stop" in b]
     assert len(move_bodies) == 4  # Stufe 4 → 4 Pulse
     assert len(stop_bodies) == 4  # jeder Puls wird gestoppt
+
+
+@pytest.mark.asyncio
+async def test_xmsoap_ptz_command_aborts_when_stop_fails():
+    """Greift Stop auch im Wiederholungsversuch nicht, darf KEIN weiterer Puls
+    folgen (Kamera würde sonst ungebremst weiterfahren)."""
+    client = XMSoapClient(host="192.168.1.61")
+    moves = {"n": 0}
+    stops = {"n": 0}
+
+    async def _fake_move(**_kwargs):
+        moves["n"] += 1
+        return True
+
+    async def _fake_stop(token=None):
+        _ = token
+        stops["n"] += 1
+        return False
+
+    client.ptz_continuous_move = _fake_move  # type: ignore[method-assign]
+    client.ptz_stop = _fake_stop  # type: ignore[method-assign]
+
+    # Bewegung lief → True (kein Token-Retry), aber nach Puls 1 Abbruch
+    assert await client.ptz_command("right", speed=1.0) is True
+    assert moves["n"] == 1
+    assert stops["n"] == 2  # 1 Stop + 1 Wiederholung
+
+
+@pytest.mark.asyncio
+async def test_fallback_ptz_aborts_when_stop_fails():
+    """Direct-SOAP-Fallback: fehlgeschlagener Stop beendet die Puls-Sequenz."""
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    bodies: list[str] = []
+
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        bodies.append(body)
+        if "ContinuousMove" in body:
+            return "<tptz:ContinuousMoveResponse/>"
+        return ""  # Stop schlägt fehl
+
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_onvif_profile_tokens", {"000": "000"})
+    _set_private_attr(coordinator, "_active_stream", "000")
+
+    await coordinator.async_ptz_command("left", speed=8)
+
+    move_bodies = [b for b in bodies if "ContinuousMove" in b]
+    assert len(move_bodies) == 1  # nach fehlgeschlagenem Stop kein 2. Puls

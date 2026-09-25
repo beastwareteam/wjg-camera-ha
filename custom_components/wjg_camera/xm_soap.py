@@ -358,7 +358,15 @@ class XMSoapClient:
                 break  # z. B. falscher Token → Coordinator probiert nächsten
             moved = True
             await asyncio.sleep(PTZ_PULSE_DURATION)
-            await self.ptz_stop(token=token)
+            # Stop MUSS greifen, sonst fährt die Kamera weiter (kein Timeout im
+            # ContinuousMove) — einmal wiederholen, sonst Sequenz abbrechen.
+            if not await self.ptz_stop(token=token) and not await self.ptz_stop(token=token):
+                _LOGGER.warning(
+                    "PTZ '%s': Stop nach Puls %d fehlgeschlagen (Token=%s) — "
+                    "Puls-Sequenz abgebrochen", direction, i + 1, token,
+                )
+                ok = False
+                break
             if i < steps - 1:
                 await asyncio.sleep(PTZ_PULSE_GAP)
 
