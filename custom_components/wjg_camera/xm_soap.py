@@ -61,15 +61,13 @@ PTZ_SPEED = 0.4   # Geschwindigkeit 0.1–1.0
 # Achtung: v2.2.42–v2.2.52 schickten Velocity fest 1.0 → alle Stufen fühlten
 # sich gleich an; v2.2.53 (N Pulse) → mehrere Einzelklicks statt einem langen.
 #
-# Live gemessen (25.09.2026, .49): Die Kamera beantwortet ContinuousMove erst
-# nach ~0,7–1,2 s und Stop nach weiteren ~1,3–1,7 s. v2.2.55 wartete vor dem
-# Stop auf die Move-Antwort → Stufe 1–4 waren identisch (Soll < Antwortzeit).
-# Deshalb (v2.2.56): Der Stop geht nach der Haltedauer ab SENDEN des Moves raus,
-# auch wenn die Move-Antwort noch aussteht (eigene Verbindung). Nach der
-# Move-Antwort folgt ein Sicherheits-Stop, falls die Kamera den Move erst nach
-# dem frühen Stop verarbeitet hat — Endlosfahrt ist damit ausgeschlossen.
-# Tuning nur über diese Tabelle (Index 0 = Stufe 1): Zeit vom Senden des Moves
-# bis zum Senden des Stops.
+# Live gemessen (25.09.2026, .49): Die Kamera beantwortet ContinuousMove nach
+# 0,1–2,3 s und Stop nach weiteren ~1,3–1,5 s; sie arbeitet Anfragen offenbar
+# seriell ab. Ein Stop wirkt daher frühestens nach ~1,5 s — Stufen darunter
+# fühlen sich gleich an. Ein früher Stop (v2.2.56) half nicht und ruckelte.
+# Kürzere Klicks gehen nur, wenn die Kamera selbst stoppt (ContinuousMove mit
+# <Timeout> oder RelativeMove) → per Aktion wjg_camera.ptz_test prüfen.
+# Tabelle: Zeit vom Senden des Moves bis zum Senden des Stops (Index 0 = Stufe 1).
 PTZ_MOVE_DURATIONS_DEFAULT: tuple[float, ...] = (0.3, 0.45, 0.6, 0.8, 1.05, 1.35, 1.7, 2.1)
 PTZ_MOVE_DURATIONS: tuple[float, ...] = PTZ_MOVE_DURATIONS_DEFAULT
 
@@ -263,15 +261,23 @@ class XMSoapClient:
         tilt: float = 0.0,
         zoom: float = 0.0,
         token: str | None = None,
+        timeout: float | None = None,
     ) -> bool:
-        """Startet kontinuierliche PTZ-Bewegung. Werte: -1.0 bis 1.0."""
+        """Startet kontinuierliche PTZ-Bewegung. Werte: -1.0 bis 1.0.
+
+        timeout: optionales ONVIF-<Timeout> (Sekunden), nach dem die Kamera
+        selbst stoppen soll — ob die XM-Firmware es beachtet, ist unverifiziert.
+        """
         token = token or self._profile_token
+        timeout_xml = (
+            f"\n  <tptz:Timeout>PT{timeout:.2f}S</tptz:Timeout>" if timeout else ""
+        )
         body = f"""<tptz:ContinuousMove>
   <tptz:ProfileToken>{token}</tptz:ProfileToken>
   <tptz:Velocity>
     <tt:PanTilt x="{pan:.2f}" y="{tilt:.2f}"/>
     <tt:Zoom x="{zoom:.2f}"/>
-  </tptz:Velocity>
+  </tptz:Velocity>{timeout_xml}
 </tptz:ContinuousMove>"""
         result = await self._post(self._ep_ptz, body)
         return result is not None
@@ -370,32 +376,22 @@ class XMSoapClient:
             self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom, token=token)
         )
         try:
-            done, _ = await asyncio.wait({move_task}, timeout=duration)
-
-            early_stop = not done
-            if early_stop:
-                # Haltedauer abgelaufen, Move-Antwort steht noch aus → Stop jetzt
-                # (parallel), nicht erst nach der trägen Move-Antwort.
-                t_stop_sent = loop.time()
-                await self.ptz_stop(token=token)
-                moved = await move_task
-                t_move_ack = loop.time()
-                # Sicherheits-Stop IMMER nach der Move-Antwort — auch bei
-                # "fehlgeschlagenem" Move: _post() meldet HTTP-/Parse-Fehler als
-                # None, die Kamera kann den Move trotzdem angenommen haben und
-                # würde nach dem (zu frühen) ersten Stop sonst endlos fahren.
-                stopped = await _stop_with_retry()
-                if not moved:
-                    return False  # z. B. falscher Token → Coordinator probiert nächsten
-            else:
-                if not move_task.result():
-                    return False  # z. B. falscher Token → Coordinator probiert nächsten
-                t_move_ack = loop.time()
-                remaining = duration - (t_move_ack - t_start)
-                if remaining > 0:
-                    await asyncio.sleep(remaining)
-                t_stop_sent = loop.time()
-                stopped = await _stop_with_retry()
+            # Stop erst NACH der Move-Antwort: Ein früher Stop (v2.2.56) brachte
+            # live keinen kürzeren Klick (die Kamera arbeitet Anfragen seriell ab),
+            # erzeugte aber Ruckeln durch wechselnde Befehlsreihenfolge.
+            moved = await move_task
+            t_move_ack = loop.time()
+            if not moved:
+                # _post() meldet auch HTTP-/Parse-Fehler als None — die Kamera
+                # kann den Move trotzdem angenommen haben → vorsorglich stoppen.
+                with contextlib.suppress(Exception):
+                    await self.ptz_stop(token=token)
+                return False  # z. B. falscher Token → Coordinator probiert nächsten
+            remaining = duration - (t_move_ack - t_start)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            t_stop_sent = loop.time()
+            stopped = await _stop_with_retry()
         except asyncio.CancelledError:
             # Abbruch (z. B. Entladen/Timeout) mitten im Klick: Move-Request
             # verwerfen und trotzdem stoppen, sonst fährt die Kamera endlos.
@@ -413,11 +409,10 @@ class XMSoapClient:
             )
         # Messwerte für das Tuning von PTZ_MOVE_DURATIONS
         _LOGGER.info(
-            "PTZ '%s' Stufe %d: Soll %.2fs | Stop gesendet nach %.2fs%s, "
-            "Move-Antwort nach %.2fs, letzte Stop-Antwort nach %.2fs",
+            "PTZ '%s' Stufe %d: Soll %.2fs | Move-Antwort nach %.2fs, Stop "
+            "gesendet nach %.2fs, Stop-Antwort nach %.2fs",
             direction, ptz_level_for_speed(speed), duration,
-            t_stop_sent - t_start, " (früh, vor Move-Antwort)" if early_stop else "",
-            t_move_ack - t_start, t_stop_ack - t_start,
+            t_move_ack - t_start, t_stop_sent - t_start, t_stop_ack - t_start,
         )
         # Bewegung lief → True, damit der Coordinator NICHT mit dem nächsten
         # Profile-Token erneut fährt (sonst Extra-Bewegung).

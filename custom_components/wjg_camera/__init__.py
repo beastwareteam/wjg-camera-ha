@@ -19,7 +19,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.components.persistent_notification import async_create as pn_async_create
@@ -127,6 +127,18 @@ _SVC_SCHEMA_SIMULATE_MOTION = vol.Schema({
 })
 
 
+# Diagnose: prüft, ob die Kamera kurze PTZ-Bewegungen selbst begrenzen kann
+# (RelativeMove bzw. ContinuousMove mit <Timeout>). Antwort direkt in den
+# Entwicklerwerkzeugen → Aktionen, ohne Log (siehe CLAUDE.md, PTZ-Abschnitt).
+_SERVICE_PTZ_TEST = "ptz_test"
+_SVC_SCHEMA_PTZ_TEST = vol.Schema({
+    vol.Required("entity_id"): cv.entity_id,
+    vol.Required("direction"): vol.In(["left", "right", "up", "down"]),
+    vol.Required("method"): vol.In(["relative", "timeout", "continuous"]),
+    vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.01, max=5.0)),
+})
+
+
 def _get_coordinator(hass: HomeAssistant, entity_id: str) -> WJGCameraCoordinator | None:
     """Coordinator für eine entity_id finden (Multi-Device-fähig).
 
@@ -202,6 +214,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await coord.async_simulate_motion()
         hass.services.async_register(DOMAIN, _SERVICE_SIMULATE_MOTION, _handle_simulate_motion,
                                      schema=_SVC_SCHEMA_SIMULATE_MOTION)
+
+    # HA-Service registrieren: wjg_camera.ptz_test (Diagnose, liefert Antwort)
+    if not hass.services.has_service(DOMAIN, _SERVICE_PTZ_TEST):
+        async def _handle_ptz_test(call: ServiceCall) -> ServiceResponse:
+            coord = _get_coordinator(hass, call.data["entity_id"])
+            if coord is None:
+                return {"fehler": "Keine WJG-Kamera zu dieser Entity gefunden"}
+            return await coord.async_ptz_test(
+                call.data["direction"], call.data["method"], call.data["value"]
+            )
+        hass.services.async_register(DOMAIN, _SERVICE_PTZ_TEST, _handle_ptz_test,
+                                     schema=_SVC_SCHEMA_PTZ_TEST,
+                                     supports_response=SupportsResponse.ONLY)
 
     # Einmalige Hinweis-Benachrichtigung für Lovelace-Ressource
     notif_key = f"{DOMAIN}_lovelace_hint"

@@ -170,6 +170,12 @@ BOOTSTRAP_MAX_BACKOFF = 600.0
 # Sonst startet jeder PTZ-Klick eine HD-Aufnahme und belastet die Kamera
 # genau dann, wenn der Stop ankommen soll (live beobachtet 25.09.2026).
 PTZ_MOTION_QUIET_SECS = 8.0
+# Aktion wjg_camera.ptz_test (Methode "timeout"): Sicherheits-Stop so lange
+# nach dem erwarteten Selbst-Stopp, dass "Timeout ignoriert" klar erkennbar ist.
+PTZ_TEST_SAFETY_STOP_SECS = 3.0
+PTZ_TEST_DIRECTIONS: dict[str, tuple[float, float]] = {
+    "left": (-1.0, 0.0), "right": (1.0, 0.0), "up": (0.0, 1.0), "down": (0.0, -1.0),
+}
 
 # XM SDK Message IDs
 XM_LOGIN_REQ       = 0x03E8  # 1000
@@ -2587,6 +2593,62 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             return dict(self._ptz_presets)
         self._ptz_presets = presets
         return presets
+
+    async def async_ptz_test(self, direction: str, method: str, value: float) -> dict[str, Any]:
+        """Diagnose (Aktion wjg_camera.ptz_test): prüft, ob die Kamera eine
+        Bewegung SELBST begrenzen kann — Voraussetzung für kurze PTZ-Klicks,
+        da ein Stop live erst nach ~1,5 s wirkt (siehe CLAUDE.md).
+
+        method:
+          relative   → RelativeMove um `value` (0,01–1,0) in Richtung, kein Stop
+          timeout    → ContinuousMove mit <Timeout>`value` s, Sicherheits-Stop
+                       erst PTZ_TEST_SAFETY_STOP_SECS danach
+          continuous → heutiges Verfahren: ContinuousMove, `value` s, Stop
+        """
+        pan_dir, tilt_dir = PTZ_TEST_DIRECTIONS[direction]
+        token = self._preferred_onvif_profile_token or None
+        loop = asyncio.get_running_loop()
+        result: dict[str, Any] = {"methode": method, "richtung": direction, "wert": value}
+        with self._ptz_motion_quiet():
+            async with self._soap() as soap:
+                t0 = loop.time()
+                if method == "relative":
+                    ok = await soap.ptz_relative_move(
+                        pan=pan_dir * value, tilt=tilt_dir * value, token=token
+                    )
+                    result["hinweis"] = (
+                        "Kein Stop gesendet. Fährt die Kamera ein kurzes, zum Wert "
+                        "passendes Stück und hält an, funktioniert RelativeMove."
+                    )
+                elif method == "timeout":
+                    ok = await soap.ptz_continuous_move(
+                        pan=pan_dir, tilt=tilt_dir, token=token, timeout=value
+                    )
+                    result["antwort_s"] = round(loop.time() - t0, 2)
+                    # Sicherheits-Stop (auch wenn der Move als Fehler gemeldet
+                    # wurde): Ignoriert die Kamera das Timeout, fährt sie
+                    # sichtbar länger als `value`.
+                    await asyncio.sleep(
+                        max(0.0, value + PTZ_TEST_SAFETY_STOP_SECS - (loop.time() - t0))
+                    )
+                    result["sicherheits_stop_nach_s"] = round(loop.time() - t0, 2)
+                    await soap.ptz_stop(token=token)
+                    result["hinweis"] = (
+                        f"Hält die Kamera nach ca. {value:.1f}s von selbst an, wird "
+                        f"das Timeout beachtet. Fährt sie ca. "
+                        f"{value + PTZ_TEST_SAFETY_STOP_SECS:.1f}s oder länger, "
+                        "wird es ignoriert."
+                    )
+                else:  # continuous
+                    ok = await soap.ptz_continuous_move(pan=pan_dir, tilt=tilt_dir, token=token)
+                    result["antwort_s"] = round(loop.time() - t0, 2)
+                    await asyncio.sleep(max(0.0, value - (loop.time() - t0)))
+                    await soap.ptz_stop(token=token)
+                    result["hinweis"] = "Vergleich: heutiges Verfahren (Move → warten → Stop)."
+                result["akzeptiert"] = bool(ok)
+                result["dauer_gesamt_s"] = round(loop.time() - t0, 2)
+        _LOGGER.info("PTZ-Test %s", result)
+        return result
 
     async def async_ptz_goto_preset(self, token: str) -> bool:
         spd = self._ptz_speed / 8

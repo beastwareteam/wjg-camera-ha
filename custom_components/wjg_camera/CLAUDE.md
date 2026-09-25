@@ -1,12 +1,13 @@
 # WJG XM-3820 Camera Bridge — Kritisches Wissen für Claude
 
-## PTZ-Geschwindigkeit: Einzel-Klick mit Früh-Stop (v2.2.56 — September 2026) ⭐ AKTUELL
+## PTZ-Geschwindigkeit: Stop-Latenz ist die Grenze (v2.2.57 — September 2026) ⭐ AKTUELL
 
 ### Gewünschtes Verhalten (Nutzer-Vorgabe)
 **1 Tastendruck = 1 Klick.** Stufe 1 = sehr kurzer Klick, Stufe 8 = langer Klick,
 benachbarte Stufen spürbar verschieden. KEINE Serie von Einzelklicks.
 
-### Live gemessen (25.09.2026, .49, v2.2.55-Timing-Log)
+### Live gemessen (25.09.2026, .49)
+v2.2.55 (Stop nach Move-Antwort):
 | Stufe | Soll | Move-Antwort | Stop-Antwort |
 |---|---|---|---|
 | 1 | 0,00 s | 0,82 / 1,21 s | 2,18 / 2,60 s |
@@ -14,44 +15,50 @@ benachbarte Stufen spürbar verschieden. KEINE Serie von Einzelklicks.
 | 4 | 0,45 s | 0,98 / 1,07 s | 2,27 / 2,44 s |
 | 8 | 2,00 s | 1,09 / 0,83 s | 3,51 / 3,75 s |
 
-→ Die Kamera antwortet auf ContinuousMove erst nach **~1 s**, auf Stop nach
-weiteren **~1,3–1,7 s**. Wer vor dem Stop auf die Move-Antwort wartet, kann
-keinen Klick kürzer als ~1 s + Stop-Laufzeit machen → Stufe 1–4 identisch.
-Zusätzlich löste jeder PTZ-Klick über den RTSP-Bildvergleich eine HD-Aufnahme
-aus (ffmpeg startet genau, wenn der Stop ankommen soll).
+v2.2.56 (Früh-Stop nach 0,3/0,45 s, VOR der Move-Antwort gesendet): Nutzer
+spürte **trotzdem nur Stufe 8** als anders, dazu **Ruckeln**. Move-Antwort
+schwankte 0,09–2,3 s, Stop-Antwort immer ~1,3–1,5 s nach dem Senden.
 
-### Mechanismus (v2.2.56)
-- `ContinuousMove` (Velocity = Stufe/8) wird als Task gesendet. Nach
-  `PTZ_MOVE_DURATIONS[Stufe-1]` ab SENDEN geht der `Stop` raus — auch wenn die
-  Move-Antwort noch aussteht (**Früh-Stop**, eigene Verbindung im Pool).
-- Nach der Move-Antwort folgt im Früh-Stop-Fall ein **Sicherheits-Stop**
-  (Retry 1×): Verarbeitet die Kamera den Move erst nach dem frühen Stop, würde
-  sie sonst endlos fahren. Kam die Move-Antwort vor Ablauf, wird nur der Rest
-  geschlafen und einmal gestoppt.
-- `PTZ_MOVE_DURATIONS = (0.3, 0.45, 0.6, 0.8, 1.05, 1.35, 1.7, 2.1)` — progressiv.
-- Jeder Klick loggt auf INFO: Soll, Stop gesendet (ggf. „früh“), Move-Antwort,
-  letzte Stop-Antwort. **Diese Messwerte zum Tuning nutzen.** INFO erscheint
-  NICHT in der HA-Problemansicht → Nutzer: Integration → ⋮ →
+**Schluss:** Die Kamera arbeitet Anfragen offenbar seriell ab; ein Stop wirkt
+frühestens nach ~1,5 s. Über Stop-Timing sind Klicks unter ~1,5 s NICHT
+erreichbar. Kürzere Klicks gehen nur, wenn die Kamera **selbst** stoppt.
+
+### Mechanismus (v2.2.57)
+- 1 `ContinuousMove` (Velocity = Stufe/8) → Move-Antwort abwarten → Rest der
+  Haltedauer aus `PTZ_MOVE_DURATIONS` (ab Senden) → `Stop` (1× Retry).
+  Früh-Stop wieder entfernt (brachte nichts, ruckelte).
+- Auch bei als Fehler gemeldetem Move wird vorsorglich gestoppt; bei Abbruch
+  (`CancelledError`) wird der Move verworfen und gestoppt.
+- INFO-Log je Klick: Soll, Move-Antwort, Stop gesendet, Stop-Antwort.
+  INFO erscheint NICHT in der HA-Problemansicht → Integration → ⋮ →
   „Debug-Protokollierung aktivieren“, klicken, deaktivieren → Log-Download.
-- `async_ptz_command` läuft in `_ptz_motion_quiet()`: Bewegungs-Trigger aller
-  Kanäle (ONVIF, RTSP-Diff, UDP) werden während des Befehls und
-  `PTZ_MOTION_QUIET_SECS` (8 s) danach ignoriert.
-- Der Direct-SOAP-Fallback (`_async_fallback_ptz_pulse`) stoppt weiterhin erst
-  nach der Move-Antwort (Latenz ab erfolgreichem Versuch abgezogen).
+- PTZ (Richtung, Home, Preset) läuft in `_ptz_motion_quiet()` (verschachtelungs-
+  sicher): Bewegungs-Trigger aller Kanäle werden währenddessen und
+  `PTZ_MOTION_QUIET_SECS` (8 s) danach ignoriert. **Live bestätigt:** keine
+  Aufnahmen mehr durch PTZ.
+
+### Nächster Schritt: Aktion `wjg_camera.ptz_test` (Diagnose)
+Liefert die Antwort direkt in Entwicklerwerkzeuge → Aktionen:
+- `method: relative, value: 0.01–1.0` → `RelativeMove`, kein Stop.
+- `method: timeout, value: s` → `ContinuousMove` mit `<tptz:Timeout>`,
+  Sicherheits-Stop erst `PTZ_TEST_SAFETY_STOP_SECS` (3 s) danach.
+- `method: continuous, value: s` → heutiges Verfahren zum Vergleich.
+Hält die Kamera bei `relative` bzw. `timeout` von selbst kurz an, wird der
+Klick auf diese Methode umgestellt (Stufe → Strecke bzw. Timeout).
 
 ### Historie — was NICHT funktionierte
 - v2.2.39/40, v2.2.53: N Pulse pro Druck → mehrere zu lange Einzelklicks.
 - v2.2.41: 1 Puls 0,044–0,35 s → alle Stufen gleich (Latenz dominiert).
 - v2.2.42–v2.2.52: 1 Klick 0,2–1,5 s, Velocity fest 1.0 → alle Stufen gleich.
 - v2.2.54: 1 Klick linear 0,25–1,5 s → Stufe 1 zu lang, 1 ≈ 2.
-- v2.2.55: Stop erst nach Move-Antwort (~1 s) → Stufe 1–4 identisch (s. Tabelle).
+- v2.2.55: Stop nach Move-Antwort (~1 s) → Stufe 1–4 identisch.
+- v2.2.56: Früh-Stop vor der Move-Antwort → weiter nur Stufe 8 anders + Ruckeln.
 
 ### Regeln
-- Tuning nur über `PTZ_MOVE_DURATIONS`, anhand der geloggten Messwerte.
-- Den Sicherheits-Stop nach der Move-Antwort NIE entfernen.
-- Ist Stufe 1 trotz Früh-Stop zu lang (Log zeigt „früh“, Kamera fährt trotzdem
-  lang), verarbeitet die Kamera Anfragen seriell → nächster Schritt:
-  `<tptz:Timeout>` im ContinuousMove oder `RelativeMove` testen (unverifiziert).
+- Den Stop nach der Move-Antwort (und den vorsorglichen Stop bei Fehler/Abbruch)
+  NIE entfernen.
+- Keine weiteren Stop-Timing-Experimente — die Grenze ist gemessen. Nächster
+  Hebel ist ausschließlich eine Kamera-seitige Begrenzung (s. `ptz_test`).
 
 ## Kamera-Uhrzeit-Spam (Fix v2.2.41 — Juni 2026)
 `WJGCameraTimeSensor` gibt `coordinator.camera_time` zurück — ein String
@@ -273,12 +280,12 @@ WSSE funktioniert trotzdem — die Kamera akzeptiert diese Zeitdifferenz.
 - `async_ptz_goto_preset` — Preset anfahren
 - `async_ptz_set_preset` — Preset speichern
 
-### Geschwindigkeitsregelung — Einzel-Klick (seit v2.2.56, siehe Top-Abschnitt)
+### Geschwindigkeitsregelung — Einzel-Klick (seit v2.2.57, siehe Top-Abschnitt)
 - `self._ptz_speed` in coordinator: int 1–8 (von Number-Entity gesetzt), pro Kamera.
 - Normalisierung: `spd = self._ptz_speed / 8` → float 0.125–1.0 für XMSoapClient.
 - `button.py` → `WJGPTZButton.async_press` übergibt `self.coordinator.ptz_speed`.
-- 1 Tap = 1 `ContinuousMove` (Velocity = spd), `Stop` nach
-  `ptz_move_duration_for_speed(spd)` ab Senden (Früh-Stop + Sicherheits-Stop).
+- 1 Tap = 1 `ContinuousMove` (Velocity = spd), nach der Move-Antwort Rest von
+  `ptz_move_duration_for_speed(spd)` (ab Senden) warten, dann `Stop`.
 - **Default seit v2.2.35: `self._ptz_speed = 1`** (langsamste Stufe), pro Kamera getrennt.
 
 ### PTZ Profile-Token-Retry (seit v2.2.39)
