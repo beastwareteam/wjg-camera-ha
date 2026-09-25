@@ -3,7 +3,7 @@ Lokaler Test: ONVIF PullPoint Motion Detection (v2.2.25)
 Zeigt Raw-XML damit wir sehen was die Kamera wirklich sendet.
 
 Ausfuehren:
-    .venv/Scripts/python test_motion_events.py
+    .venv/Scripts/python discovery/test_motion_events.py
 
 Beenden: Strg+C
 """
@@ -12,7 +12,7 @@ import sys
 import os
 import re
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "custom_components", "wjg_camera"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "custom_components", "wjg_camera"))
 
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())

@@ -7,3 +7,13 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# Netzwerk-Mitschnitte (enthalten privaten Traffic) — nie committen
+*.pcap
+*.pcapng
+
+# Persönliche Home-Assistant-Konfiguration (gehört nicht zur Integration)
+/config.yaml
+/config_old.yaml
+/automations.yaml
+/scripts.yaml

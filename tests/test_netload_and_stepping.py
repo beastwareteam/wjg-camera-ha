@@ -19,7 +19,7 @@ from PIL import Image
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 import custom_components.wjg_camera.coordinator as coordinator_module
-from custom_components.wjg_camera.xm_soap import XMSoapClient, ptz_stop_delay_for_speed
+from custom_components.wjg_camera.xm_soap import XMSoapClient, ptz_pulse_count_for_speed
 from tests_helpers import (
     call_private_async as _call_private_async,
     get_private_attr as _get_private_attr,
@@ -303,14 +303,44 @@ async def test_motion_recording_cooldown_limits_restarts():
 # ── PTZ: xm_soap (Primärpfad) ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_xmsoap_ptz_command_sends_single_pulse():
-    """1 Tap = immer genau 1 ContinuousMove, unabhängig von der Speed-Stufe."""
+async def test_xmsoap_ptz_command_pulse_count_matches_speed_level():
+    """Stufe N → N ContinuousMove + N Stop (Geschwindigkeit = Pulsanzahl)."""
     client = XMSoapClient(host="192.168.1.61")
     moves = {"n": 0}
+    stops = {"n": 0}
 
     async def _fake_move(**_kwargs):
         moves["n"] += 1
         return True
+
+    async def _fake_stop(token=None):
+        _ = token
+        stops["n"] += 1
+        return True
+
+    client.ptz_continuous_move = _fake_move  # type: ignore[method-assign]
+    client.ptz_stop = _fake_stop  # type: ignore[method-assign]
+
+    assert await client.ptz_command("right", speed=3 / 8) is True
+    assert moves["n"] == 3  # Stufe 3 → 3 Pulse
+    assert stops["n"] == 3  # jeder Puls wird gestoppt
+
+    moves["n"] = stops["n"] = 0
+    assert await client.ptz_command("right", speed=1.0) is True
+    assert moves["n"] == 8  # Stufe 8 → 8 Pulse
+    assert stops["n"] == 8
+
+
+@pytest.mark.asyncio
+async def test_xmsoap_ptz_command_no_token_retry_after_movement():
+    """Nach erfolgter Bewegung meldet ptz_command Erfolg, auch wenn ein
+    späterer Puls fehlschlägt — sonst pulst der Coordinator mit dem
+    nächsten Profile-Token erneut (unkontrollierte Extra-Bewegung)."""
+    client = XMSoapClient(host="192.168.1.61")
+    results = iter([True, False])
+
+    async def _fake_move(**_kwargs):
+        return next(results)
 
     async def _fake_stop(token=None):
         _ = token
@@ -319,13 +349,7 @@ async def test_xmsoap_ptz_command_sends_single_pulse():
     client.ptz_continuous_move = _fake_move  # type: ignore[method-assign]
     client.ptz_stop = _fake_stop  # type: ignore[method-assign]
 
-    # Sowohl bei Speed 3/8 als auch 1.0 genau 1 ContinuousMove
-    assert await client.ptz_command("right", speed=3 / 8) is True
-    assert moves["n"] == 1
-
-    moves["n"] = 0
-    assert await client.ptz_command("right", speed=1.0) is True
-    assert moves["n"] == 1
+    assert await client.ptz_command("left", speed=1.0) is True
 
 
 @pytest.mark.asyncio
@@ -357,25 +381,21 @@ async def test_xmsoap_ptz_command_fails_without_any_movement():
     assert await client.ptz_command("left", speed=1.0) is False
 
 
-def test_ptz_stop_delay_scales_monotonically_with_speed():
-    """Haltedauer steigt streng monoton mit der Stufe (Stufe 1 = min, 8 = max).
-
-    Explizite min/max, damit der Test unabhängig vom conftest-Nullen ist.
-    """
-    delays = [
-        ptz_stop_delay_for_speed(level / 8, 0.2, 1.5) for level in range(1, 9)
-    ]
-    assert delays[0] == pytest.approx(0.2)   # Stufe 1
-    assert delays[-1] == pytest.approx(1.5)  # Stufe 8
-    assert all(b > a for a, b in zip(delays, delays[1:]))  # streng steigend
+def test_ptz_pulse_count_matches_speed_levels():
+    """Stufe 1–8 (normalisiert /8) → exakt 1–8 Pulse, Randwerte geklemmt."""
+    assert [ptz_pulse_count_for_speed(level / 8) for level in range(1, 9)] == list(
+        range(1, 9)
+    )
+    assert ptz_pulse_count_for_speed(0.0) == 1
+    assert ptz_pulse_count_for_speed(2.0) == 8
 
 
 # ── PTZ: Coordinator-Fallback (Direct-SOAP) ──────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_fallback_ptz_sends_single_pulse():
-    """Schlägt der XMSoapClient-Primärpfad fehl (conftest-OfflineStub), sendet
-    der Direct-SOAP-Fallback genau 1 ContinuousMove (proportionale Dauer)."""
+async def test_fallback_ptz_pulse_count_matches_speed_level():
+    """Schlägt der XMSoapClient-Primärpfad fehl (conftest-OfflineStub), muss
+    der Direct-SOAP-Fallback ebenfalls pulsen: Stufe N → N ContinuousMove."""
     coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
     bodies: list[str] = []
 
@@ -397,5 +417,55 @@ async def test_fallback_ptz_sends_single_pulse():
 
     move_bodies = [b for b in bodies if "ContinuousMove" in b]
     stop_bodies = [b for b in bodies if "tptz:Stop" in b]
-    assert len(move_bodies) == 1  # 1 Tap = 1 Puls
-    assert len(stop_bodies) == 1  # Puls wird gestoppt
+    assert len(move_bodies) == 4  # Stufe 4 → 4 Pulse
+    assert len(stop_bodies) == 4  # jeder Puls wird gestoppt
+
+
+@pytest.mark.asyncio
+async def test_xmsoap_ptz_command_aborts_when_stop_fails():
+    """Greift Stop auch im Wiederholungsversuch nicht, darf KEIN weiterer Puls
+    folgen (Kamera würde sonst ungebremst weiterfahren)."""
+    client = XMSoapClient(host="192.168.1.61")
+    moves = {"n": 0}
+    stops = {"n": 0}
+
+    async def _fake_move(**_kwargs):
+        moves["n"] += 1
+        return True
+
+    async def _fake_stop(token=None):
+        _ = token
+        stops["n"] += 1
+        return False
+
+    client.ptz_continuous_move = _fake_move  # type: ignore[method-assign]
+    client.ptz_stop = _fake_stop  # type: ignore[method-assign]
+
+    # Bewegung lief → True (kein Token-Retry), aber nach Puls 1 Abbruch
+    assert await client.ptz_command("right", speed=1.0) is True
+    assert moves["n"] == 1
+    assert stops["n"] == 2  # 1 Stop + 1 Wiederholung
+
+
+@pytest.mark.asyncio
+async def test_fallback_ptz_aborts_when_stop_fails():
+    """Direct-SOAP-Fallback: fehlgeschlagener Stop beendet die Puls-Sequenz."""
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    bodies: list[str] = []
+
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        bodies.append(body)
+        if "ContinuousMove" in body:
+            return "<tptz:ContinuousMoveResponse/>"
+        return ""  # Stop schlägt fehl
+
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_onvif_profile_tokens", {"000": "000"})
+    _set_private_attr(coordinator, "_active_stream", "000")
+
+    await coordinator.async_ptz_command("left", speed=8)
+
+    move_bodies = [b for b in bodies if "ContinuousMove" in b]
+    assert len(move_bodies) == 1  # nach fehlgeschlagenem Stop kein 2. Puls
