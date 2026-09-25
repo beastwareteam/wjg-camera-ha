@@ -1,7 +1,7 @@
 # WJG XM-3820 Camera Bridge – Home Assistant Integration
 
 **Kamera:** WJG / Tenganda XM-3820 · **Chipset:** XM (Xiongmai) / GK-Serie  
-**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.62 · **HA:** ≥ 2024.1
+**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.63 · **HA:** ≥ 2024.1
 
 > Vollständige lokale Home-Assistant-Integration ohne Cloud-Abhängigkeit.  
 > RTSP-Livestream, ONVIF-Steuerung, PTZ mit 21 Buttons, Imaging-Einstellungen, Events und mehr.
@@ -40,7 +40,7 @@
 └─────────────┬────────────────────────────────────────────────┘
               ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  Home Assistant  │  49 Entitäten in 7 Plattformen           │
+│  Home Assistant  │  40 Entitäten in 7 Plattformen           │
 │  camera · switch · binary_sensor · button                    │
 │  sensor · number · select                                    │
 └──────────────────────────────────────────────────────────────┘
@@ -197,7 +197,7 @@ rtsp://KAMERA-IP:554/stream0
 
 ---
 
-### 🔄 Schalter – `switch` (4 Entitäten)
+### 🔄 Schalter – `switch` (5 Entitäten)
 
 | Entität | Entity-ID-Suffix | Beschreibung |
 |---|---|---|
@@ -205,6 +205,7 @@ rtsp://KAMERA-IP:554/stream0
 | **WDR** | `_wdr` | Wide Dynamic Range ein-/ausschalten (ONVIF Imaging) |
 | **IR-Cut** | `_ir_cut` | Infrarot-Sperrfilter manuell schalten (ONVIF Imaging) |
 | **Mikrofon** | `_microphone` | Kamera-Mikrofon aktivieren / deaktivieren (ONVIF Audio) |
+| **Patrouille** | `_patrol` | Stationen über den linken Anschlag abfahren (siehe unten) |
 
 ---
 
@@ -220,7 +221,7 @@ Events werden über ONVIF Pull-Point in Echtzeit empfangen.
 
 ---
 
-### 🔘 Buttons – `button` (21 Entitäten)
+### 🔘 Buttons – `button` (12 Entitäten)
 
 #### PTZ-Richtungen (6)
 
@@ -233,20 +234,35 @@ Events werden über ONVIF Pull-Point in Echtzeit empfangen.
 | PTZ Zoom + | `zoom_in` | `mdi:magnify-plus` |
 | PTZ Zoom − | `zoom_out` | `mdi:magnify-minus` |
 
-#### PTZ-Steuerung (3)
+#### PTZ-Steuerung (1)
 
 | Button | Beschreibung |
 |---|---|
-| **PTZ Home** | Heimposition anfahren (`GotoHomePosition`) |
-| **PTZ Home setzen** | Aktuelle Position als Heimposition speichern (`SetHomePosition`) |
 | **PTZ Stopp** | Laufende Bewegung sofort anhalten (`Stop`) |
 
-#### PTZ-Presets (8 – je 4 Speichern / Anfahren)
+> **Keine Home-/Preset-Tasten mehr (seit 2.2.63):** Die XM-3820 fährt bei
+> `GotoPreset` und `GotoHomePosition` über ONVIF immer denselben festen Punkt
+> an, egal welches Preset gewählt ist. Presets in der Hersteller-App sind davon
+> nicht betroffen. Für wechselnde Blickwinkel gibt es die **Patrouille**.
 
-| Button | Beschreibung |
-|---|---|
-| PTZ Preset 1–4 speichern | Aktuelle Kameraposition unter Slot 1–4 ablegen |
-| PTZ Preset 1–4 anfahren | Gespeicherte Position 1–4 direkt ansteuern |
+#### Patrouille (Schalter „Patrouille“)
+
+Die Kamera fährt im eingestellten Zeitfenster mehrere Stationen ab. Bezugspunkt
+ist der **linke Anschlag** (wie bei einer Kalibrierungsfahrt), deshalb summieren
+sich keine Abweichungen:
+
+1. mit voller Geschwindigkeit nach links bis zum Anschlag = Station mit 0 Klicks
+2. weitere Stationen = Anzahl Klicks (Stufe 8) nach rechts ab dem Anschlag
+3. an jeder Station verweilen; solange Bewegung erkannt wird oder eine
+   Aufnahme läuft, bleibt die Kamera stehen
+4. jede Runde beginnt wieder am Anschlag; außerhalb des Zeitfensters fährt die
+   Kamera einmal zur Ruhe-Station
+
+Ein manueller PTZ-Klick pausiert die Patrouille für 5 Minuten. Einstellungen
+unter **Konfigurieren**: Startzeit, Endzeit (gleich = immer), Verweildauer,
+Stationen (z. B. `0, 4, 8`), Ruhe-Station, Fahrzeit bis zum Anschlag. Die
+Neigung (hoch/runter) bleibt, wie sie vorher eingestellt war. Status und
+aktuelle Station stehen als Attribute am Schalter.
 
 #### System (3)
 
@@ -286,11 +302,10 @@ Events werden über ONVIF Pull-Point in Echtzeit empfangen.
 
 ---
 
-### 🔽 Auswahllisten – `select` (6 Entitäten)
+### 🔽 Auswahllisten – `select` (5 Entitäten)
 
 | Entität | Optionen | Beschreibung |
 |---|---|---|
-| **PTZ-Preset anfahren** | *(dynamisch aus Kamera)* | Dropdown über alle gespeicherten ONVIF-Presets |
 | **IR-Modus** | AUTO / ON / OFF | Infrarot-Filter-Steuerung |
 | **Belichtungs-Modus** | AUTO / MANUAL | Kamera-Belichtungsregelung |
 | **Belichtungs-Priorität** | LowNoise / FrameRate | Bildqualität vs. Framerate |
@@ -329,16 +344,14 @@ Events werden über ONVIF Pull-Point in Echtzeit empfangen.
 
 ### PTZ-Routing (ONVIF)
 
-Alle 21 PTZ-Buttons nutzen bei `protocol=onvif` direkte SOAP-Aufrufe:
+Alle PTZ-Buttons nutzen bei `protocol=onvif` direkte SOAP-Aufrufe:
 
 | Methode | SOAP-Befehl |
 |---|---|
 | Richtungstasten | `ContinuousMove` mit `PanTilt`-Velocity |
 | Zoom | `ContinuousMove` mit `Zoom`-Velocity |
 | Stopp | `Stop` |
-| Heimposition | `GotoHomePosition` |
-| Preset anfahren | `GotoPreset` |
-| Preset speichern | `SetPreset` |
+| Patrouille: Fahrt zum Anschlag | `ContinuousMove` (volle Geschwindigkeit) → warten → `Stop` |
 
 Geschwindigkeit: 1 Tastendruck = 1 Klick. PTZ-Geschwindigkeit 1–8 skaliert Velocity (Stufe/8) und Haltedauer (0 s … 1,6 s ab der Antwort der Kamera auf den Move). Während PTZ pausiert die ONVIF-Event-Abfrage (die XM arbeitet Anfragen seriell ab) und es werden keine Bewegungs-Aufnahmen ausgelöst. Für gleichmäßige Stufen bei der XM-3820 in den Optionen „Kamera-Ereignisse abfragen (Kanal 1)“ ausschalten — dort liefert ONVIF ohnehin nur „keine Bewegung“; Bewegung erkennt Kanal 2. Die Sensoren „Manipulation“ und „Signalverlust“ kommen nur aus diesen ONVIF-Ereignissen und bleiben dann aus; der Sensor „Bewegung“ läuft über Kanal 2/3 weiter. Diagnose-Aktion: `wjg_camera.ptz_test`.  
 Fallback: Bei SOAP-Fehler automatisch auf python-onvif library.
@@ -433,4 +446,4 @@ pytest tests/test_coordinator.py -v
 
 ---
 
-*Version 2.2.62 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*
+*Version 2.2.63 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*

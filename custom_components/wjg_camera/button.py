@@ -37,20 +37,9 @@ async def async_setup_entry(
         WJGPTZButton(coordinator, entry, "right"),
         WJGPTZButton(coordinator, entry, "zoom_in"),
         WJGPTZButton(coordinator, entry, "zoom_out"),
-        # PTZ: Home, Stop
-        WJGPTZHomeButton(coordinator, entry),
-        WJGPTZSetHomeButton(coordinator, entry),
+        # PTZ: Stop (Home/Presets entfernt: XM-3820 fährt per ONVIF immer
+        # denselben festen Punkt an → Patrouille nutzt den Anschlag, siehe patrol.py)
         WJGPTZStopButton(coordinator, entry),
-        # PTZ: Preset Set (4 Slots)
-        WJGPTZPresetSetButton(coordinator, entry, "1"),
-        WJGPTZPresetSetButton(coordinator, entry, "2"),
-        WJGPTZPresetSetButton(coordinator, entry, "3"),
-        WJGPTZPresetSetButton(coordinator, entry, "4"),
-        # PTZ: Preset Goto (4 Slots)
-        WJGPTZPresetGotoButton(coordinator, entry, "1"),
-        WJGPTZPresetGotoButton(coordinator, entry, "2"),
-        WJGPTZPresetGotoButton(coordinator, entry, "3"),
-        WJGPTZPresetGotoButton(coordinator, entry, "4"),
         # System
         WJGDigitalZoomResetButton(coordinator, entry),
         WJGSnapshotButton(coordinator, entry),
@@ -88,6 +77,9 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
     async def async_press(self) -> None:
         """PTZ-Befehl an den Coordinator weiterreichen."""
         speed = int(getattr(self.coordinator, "ptz_speed", getattr(self.coordinator, "_ptz_speed", 1)))
+        patrol = getattr(self.coordinator, "patrol", None)
+        if patrol is not None and self._direction not in ("zoom_in", "zoom_out"):
+            patrol.note_manual_ptz()   # Patrouille pausieren, Position unbekannt
         ok = await self.coordinator.async_ptz_command(self._direction, speed)
         if ok:
             _LOGGER.info(
@@ -127,58 +119,6 @@ class WJGPTZButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
         return icons.get(direction, "mdi:arrow-all")
 
 
-class WJGPTZHomeButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
-    """PTZ-Heimposition anfahren."""
-
-    _attr_has_entity_name = True
-    _attr_name = "PTZ Home"
-    _attr_icon = "mdi:home-map-marker"
-
-    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator)
-        self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_ptz_home"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
-
-    async def async_press(self) -> None:
-        ok = await self.coordinator.async_ptz_home()
-        if not ok:
-            _raise_action_failed("PTZ Home")
-
-    def press(self) -> None:
-        raise NotImplementedError
-
-
-class WJGPTZSetHomeButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
-    """Aktuelle Position als PTZ-Heimposition speichern."""
-
-    _attr_has_entity_name = True
-    _attr_name = "PTZ Home setzen"
-    _attr_icon = "mdi:home-edit"
-
-    def __init__(self, coordinator: WJGCameraCoordinator, entry: ConfigEntry) -> None:
-        super().__init__(coordinator)
-        self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_ptz_set_home"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
-
-    async def async_press(self) -> None:
-        ok = await self.coordinator.async_ptz_set_home()
-        if not ok:
-            _LOGGER.warning(
-                "PTZ Home setzen nicht unterstützt – XM-3820 ignoriert SetHomePosition (HTTP 500)"
-            )
-
-    def press(self) -> None:
-        raise NotImplementedError
-
-
 class WJGPTZStopButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
     """Laufende PTZ-Bewegung stoppen."""
 
@@ -196,66 +136,12 @@ class WJGPTZStopButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
     async def async_press(self) -> None:
+        patrol = getattr(self.coordinator, "patrol", None)
+        if patrol is not None:
+            patrol.note_manual_ptz()
         ok = await self.coordinator.async_ptz_stop()
         if not ok:
             _raise_action_failed("PTZ Stop")
-
-    def press(self) -> None:
-        raise NotImplementedError
-
-
-class WJGPTZPresetSetButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
-    """Aktuelle Position als Preset N speichern."""
-
-    _attr_has_entity_name = True
-
-    def __init__(
-        self, coordinator: WJGCameraCoordinator, entry: ConfigEntry, slot: str
-    ) -> None:
-        super().__init__(coordinator)
-        self._entry = entry
-        self._slot = slot
-        self._attr_unique_id = f"{entry.entry_id}_ptz_preset_set_{slot}"
-        self._attr_name = f"PTZ Preset {slot} speichern"
-        self._attr_icon = "mdi:map-marker-plus"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
-
-    async def async_press(self) -> None:
-        name = f"Preset {self._slot}"
-        token = await self.coordinator.async_ptz_set_preset(name, token=self._slot)
-        if not token:
-            _raise_action_failed(f"PTZ Preset {self._slot} speichern")
-
-    def press(self) -> None:
-        raise NotImplementedError
-
-
-class WJGPTZPresetGotoButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEntity):
-    """Preset N anfahren."""
-
-    _attr_has_entity_name = True
-
-    def __init__(
-        self, coordinator: WJGCameraCoordinator, entry: ConfigEntry, slot: str
-    ) -> None:
-        super().__init__(coordinator)
-        self._entry = entry
-        self._slot = slot
-        self._attr_unique_id = f"{entry.entry_id}_ptz_preset_goto_{slot}"
-        self._attr_name = f"PTZ Preset {slot} anfahren"
-        self._attr_icon = "mdi:map-marker-radius"
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
-
-    async def async_press(self) -> None:
-        ok = await self.coordinator.async_ptz_goto_preset(slot=self._slot)
-        if not ok:
-            _raise_action_failed(f"PTZ Preset {self._slot} anfahren")
 
     def press(self) -> None:
         raise NotImplementedError

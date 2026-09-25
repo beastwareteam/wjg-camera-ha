@@ -97,7 +97,7 @@ async def test_switch_platform_setup_adds_recording_switch():
 
     await setup_switch(_as_any(hass), _as_any(entry), _make_add_entities_callback(added))
 
-    assert len(added) == 4
+    assert len(added) == 5
     assert any(isinstance(e, WJGRecordingSwitch) for e in added)
     assert any(isinstance(e, WJGMicrophoneSwitch) for e in added)
 
@@ -124,9 +124,9 @@ async def test_button_platform_setup_adds_ptz_buttons():
 
     await setup_button(_as_any(hass), _as_any(entry), _make_add_entities_callback(added))
 
-    # 6 Richtungen + Home/SetHome/Stop + 4×Set-Preset + 4×Goto-Preset
-    # + ZoomReset/Snapshot/Reboot/NTP/FileListRefresh = 22
-    assert len(added) == 22
+    # 6 Richtungen + Stop + ZoomReset/Snapshot/Reboot/NTP/FileListRefresh = 12
+    # (Home/Presets entfernt: XM-3820 fährt per ONVIF immer denselben Punkt an)
+    assert len(added) == 12
     assert any(isinstance(e, WJGPTZButton) for e in added)
 
 

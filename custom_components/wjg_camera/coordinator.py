@@ -40,6 +40,7 @@ from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNA
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from .patrol import PatrolController, parse_patrol_stations, parse_patrol_time
 from .xm_soap import (
     XMSoapClient as _XMSoapClient,
     ptz_level_for_speed as _ptz_level_for_speed,
@@ -72,6 +73,12 @@ CONF_MOTION_RTSP_PIXEL_THRESHOLD = "motion_rtsp_pixel_threshold"
 CONF_MOTION_RTSP_TRIGGER_PERCENT = "motion_rtsp_trigger_percent"
 CONF_MOTION_AUTO_RECORD = "motion_auto_record"
 CONF_MOTION_RECORD_COOLDOWN = "motion_record_cooldown"
+CONF_PATROL_START = "patrol_start"
+CONF_PATROL_END = "patrol_end"
+CONF_PATROL_DWELL = "patrol_dwell"
+CONF_PATROL_STATIONS = "patrol_stations"
+CONF_PATROL_REST_STATION = "patrol_rest_station"
+CONF_PATROL_HOME_SECS = "patrol_home_secs"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_HTTP_RETRIES = 1
 DEFAULT_MOTION_RTSP_DIFF = True
@@ -83,6 +90,12 @@ DEFAULT_MOTION_RTSP_PIXEL_THRESHOLD = 30   # Grauwert-Differenz je Bildpunkt (0-
 DEFAULT_MOTION_RTSP_TRIGGER_PERCENT = 6.0  # Anteil geänderter Bildpunkte in %
 DEFAULT_MOTION_AUTO_RECORD = True
 DEFAULT_MOTION_RECORD_COOLDOWN = 30
+DEFAULT_PATROL_START = "22:00"
+DEFAULT_PATROL_END = "06:00"
+DEFAULT_PATROL_DWELL = 90
+DEFAULT_PATROL_STATIONS = "0, 4, 8"
+DEFAULT_PATROL_REST_STATION = 1
+DEFAULT_PATROL_HOME_SECS = 20
 DEFAULT_RTSP_PATH = "/user=admin&password=&channel=1&stream=1.sdp?real_stream"
 DEFAULT_SNAPSHOT_PATH = "/webcapture.jpg?command=snap&channel=1"
 DEFAULT_XM_PORT = 34567
@@ -535,6 +548,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             )
         ))
         self._last_record_trigger: float = 0.0
+        self.patrol = self._build_patrol(options, entry.data)
         # TCP-Port-Status-Cache (Port → (offen, geprüft_um)) gegen Fallback-Bursts
         self._port_state_cache: dict[int, tuple[bool, float]] = {}
         self._session: aiohttp.ClientSession | None = None
@@ -944,6 +958,29 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         candidates.extend(with_query_auth)
 
         return candidates
+
+    def _build_patrol(self, options: Any, data: Any) -> PatrolController:
+        """Patrouille aus den Optionen bauen; ungültige Werte → Standard."""
+
+        def _opt(key: str, default: Any) -> Any:
+            return options.get(key, data.get(key, default))
+
+        def _parsed(parser: Any, key: str, default: Any) -> Any:
+            try:
+                return parser(_opt(key, default))
+            except (TypeError, ValueError):
+                _LOGGER.warning("Patrouille: ungültiger Wert für %s, nutze %s", key, default)
+                return parser(default)
+
+        return PatrolController(
+            self,
+            start=_parsed(parse_patrol_time, CONF_PATROL_START, DEFAULT_PATROL_START),
+            end=_parsed(parse_patrol_time, CONF_PATROL_END, DEFAULT_PATROL_END),
+            dwell_secs=_parsed(float, CONF_PATROL_DWELL, DEFAULT_PATROL_DWELL),
+            stations=_parsed(parse_patrol_stations, CONF_PATROL_STATIONS, DEFAULT_PATROL_STATIONS),
+            rest_station=_parsed(int, CONF_PATROL_REST_STATION, DEFAULT_PATROL_REST_STATION),
+            home_secs=_parsed(float, CONF_PATROL_HOME_SECS, DEFAULT_PATROL_HOME_SECS),
+        )
 
     @property
     def is_recording(self) -> bool:
@@ -2641,6 +2678,32 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("ptz_set_home Fehler: %s", exc)
             return False
 
+    async def async_ptz_run(self, direction: str, seconds: float) -> bool:
+        """Längere Fahrt mit voller Geschwindigkeit (Patrouille: zum Anschlag).
+        Move → `seconds` warten → Stop; Stop auch bei Fehler und Abbruch."""
+        pan, tilt = PTZ_TEST_DIRECTIONS[direction]
+        with self._ptz_motion_quiet():
+            async with self._soap() as soap:
+
+                async def _stop() -> bool:
+                    return await soap.ptz_stop() or await soap.ptz_stop()
+
+                moved = False
+                try:
+                    moved = await soap.ptz_continuous_move(pan=pan, tilt=tilt)
+                    if moved:
+                        await asyncio.sleep(seconds)
+                except asyncio.CancelledError:
+                    with contextlib.suppress(Exception):
+                        await asyncio.shield(_stop())
+                    raise
+                stopped = await _stop()
+        if not moved:
+            _LOGGER.warning("PTZ-Fahrt '%s' (%s) von der Kamera abgelehnt", direction, self.host)
+        elif not stopped:
+            _LOGGER.warning("PTZ-Fahrt '%s' (%s): Stop fehlgeschlagen", direction, self.host)
+        return bool(moved)
+
     async def async_ptz_stop(self) -> bool:
         try:
             async with self._soap() as soap:
@@ -3709,6 +3772,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
     async def async_shutdown(self) -> None:
         """Verbindungen schließen."""
+        await self.patrol.async_stop()
         for task in (
             self._event_task, self._rtsp_motion_task,
             self._udp_monitor_task, self._recording_stop_task,

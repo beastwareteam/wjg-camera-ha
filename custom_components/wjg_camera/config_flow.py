@@ -28,17 +28,22 @@ from . import (
     CONF_ONVIF_PTZ_PATH,
     CONF_ONVIF_SIGNAL_ITEM_KEYS, CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS,
     CONF_ONVIF_TAMPER_ITEM_KEYS, CONF_ONVIF_TAMPER_TOPIC_KEYWORDS,
-    CONF_ONVIF_VIDEO_SOURCE_TOKEN, CONF_PROTOCOL,
+    CONF_ONVIF_VIDEO_SOURCE_TOKEN, CONF_PATROL_DWELL, CONF_PATROL_END,
+    CONF_PATROL_HOME_SECS, CONF_PATROL_REST_STATION, CONF_PATROL_START,
+    CONF_PATROL_STATIONS, CONF_PROTOCOL,
     CONF_RTSP_PATH, CONF_RTSP_PORT, CONF_SNAPSHOT_PATH,
     DEFAULT_HTTP_PORT, DEFAULT_HTTP_RETRIES,
     DEFAULT_MOTION_AUTO_RECORD, DEFAULT_MOTION_RECORD_COOLDOWN,
     DEFAULT_MOTION_ONVIF_EVENTS, DEFAULT_MOTION_RTSP_DIFF, DEFAULT_MOTION_RTSP_INTERVAL,
     DEFAULT_MOTION_RTSP_PIXEL_THRESHOLD, DEFAULT_MOTION_RTSP_TRIGGER_PERCENT,
-    DEFAULT_ONVIF_PORT, DEFAULT_PASSWORD,
+    DEFAULT_ONVIF_PORT, DEFAULT_PASSWORD, DEFAULT_PATROL_DWELL, DEFAULT_PATROL_END,
+    DEFAULT_PATROL_HOME_SECS, DEFAULT_PATROL_REST_STATION, DEFAULT_PATROL_START,
+    DEFAULT_PATROL_STATIONS,
     DEFAULT_RTSP_PATH, DEFAULT_RTSP_PORT,
     DEFAULT_SNAPSHOT_PATH, DEFAULT_USERNAME, DOMAIN,
     PROTOCOL_HTTP, PROTOCOL_RTSP, PROTOCOL_XM, PROTOCOL_ONVIF,
 )
+from .patrol import parse_patrol_stations, parse_patrol_time
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -169,10 +174,20 @@ class WJGOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Optionen fuer einen bestehenden Config-Entry anzeigen oder speichern."""
+        errors: dict[str, str] = {}
         if user_input is not None:
-            merged = dict(self._config_entry.options)
-            merged.update(user_input)
-            return self.async_create_entry(title="", data=merged)
+            errors = self._validate_patrol(user_input)
+            if not errors:
+                merged = dict(self._config_entry.options)
+                merged.update(user_input)
+                return self.async_create_entry(title="", data=merged)
+
+        def _opt(key: str, default: Any) -> Any:
+            if user_input is not None and key in user_input:
+                return user_input[key]
+            return self._config_entry.options.get(
+                key, self._config_entry.data.get(key, default)
+            )
 
         schema = vol.Schema({
             # Motion-Kanäle / Auto-Aufnahme (Netzlast-Steuerung)
@@ -239,6 +254,28 @@ class WJGOptionsFlow(config_entries.OptionsFlow):
                     ),
                 ),
             ): vol.All(vol.Coerce(int), vol.Range(min=0, max=600)),
+            # Patrouille (Schalter „Patrouille“ am Gerät)
+            vol.Optional(
+                CONF_PATROL_START, default=str(_opt(CONF_PATROL_START, DEFAULT_PATROL_START)),
+            ): str,
+            vol.Optional(
+                CONF_PATROL_END, default=str(_opt(CONF_PATROL_END, DEFAULT_PATROL_END)),
+            ): str,
+            vol.Optional(
+                CONF_PATROL_DWELL, default=_opt(CONF_PATROL_DWELL, DEFAULT_PATROL_DWELL),
+            ): vol.All(vol.Coerce(int), vol.Range(min=20, max=1800)),
+            vol.Optional(
+                CONF_PATROL_STATIONS,
+                default=str(_opt(CONF_PATROL_STATIONS, DEFAULT_PATROL_STATIONS)),
+            ): str,
+            vol.Optional(
+                CONF_PATROL_REST_STATION,
+                default=_opt(CONF_PATROL_REST_STATION, DEFAULT_PATROL_REST_STATION),
+            ): vol.All(vol.Coerce(int), vol.Range(min=1, max=20)),
+            vol.Optional(
+                CONF_PATROL_HOME_SECS,
+                default=_opt(CONF_PATROL_HOME_SECS, DEFAULT_PATROL_HOME_SECS),
+            ): vol.All(vol.Coerce(int), vol.Range(min=5, max=90)),
             vol.Optional(
                 CONF_RTSP_PATH,
                 default=self._config_entry.options.get(
@@ -340,4 +377,21 @@ class WJGOptionsFlow(config_entries.OptionsFlow):
             ): str,
         })
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+
+    @staticmethod
+    def _validate_patrol(user_input: dict[str, Any]) -> dict[str, str]:
+        """Patrouillen-Texteingaben prüfen (Uhrzeiten, Stationsliste)."""
+        errors: dict[str, str] = {}
+        for key in (CONF_PATROL_START, CONF_PATROL_END):
+            if key in user_input:
+                try:
+                    parse_patrol_time(user_input[key])
+                except (TypeError, ValueError):
+                    errors[key] = "invalid_time"
+        if CONF_PATROL_STATIONS in user_input:
+            try:
+                parse_patrol_stations(user_input[CONF_PATROL_STATIONS])
+            except (TypeError, ValueError):
+                errors[CONF_PATROL_STATIONS] = "invalid_stations"
+        return errors
