@@ -27,6 +27,17 @@ benachbarte Stufen spürbar verschieden. KEINE Serie von Einzelklicks.
   Kanal 1, Default AN für andere Kameras). Bei der XM-3820 AUS schalten: kein
   PullMessages mehr → Kamera bearbeitet nur PTZ. Folge: Sabotage-/Signalverlust-
   Sensoren (kommen aus ONVIF-Events) bleiben aus; Bewegung weiter über Kanal 2.
+- Live v2.2.60 (Kanal 1 aus): Move-Antwort 0,05–0,22 s, Stufen gleichmäßig —
+  Nutzer: „fühlt sich gut an“. **PTZ damit gelöst.**
+
+## Kanal 2: Empfindlichkeit einstellbar (v2.2.61)
+- `motion_rtsp_pixel_threshold` (Standard 30) und `motion_rtsp_trigger_percent`
+  (Standard 6 %) sind Optionen; vorher fest im Code (bis 19.08. 15 / 2 %).
+- Live-Befund: Aufnahme startet ~5–8 s nach Bewegungsbeginn. Anteile: Erkennung
+  (Schwelle + Bildabstand + Stream-Latenz, ~2–3 s) — per Optionen verkürzbar —
+  und Aufnahmestart (neue RTSP-Verbindung + Warten auf Keyframe, ~2–5 s) — NICHT
+  per Schwellen lösbar; dafür bräuchte es einen Vorlauf-Puffer aus dem Kanal-2-
+  Stream (noch nicht umgesetzt).
 
 ### Live gemessen (25.09.2026, .49)
 v2.2.55 (Stop nach Move-Antwort):
