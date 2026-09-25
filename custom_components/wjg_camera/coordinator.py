@@ -178,6 +178,9 @@ PTZ_TEST_SAFETY_STOP_SECS = 3.0
 # jeder PTZ-Start wartete bis zu ~1 s in ihrer Warteschlange. Bewegung erkennt
 # bei der XM-3820 ohnehin Kanal 2 (RTSP-Bildvergleich).
 EVENT_PULL_PAUSE_SECS = 2.0
+# Direct-SOAP-Fallback, ContinuousMove-Variante mit <Timeout>: Puffer für die
+# Zeit bis zur Move-Antwort (live bis ~1 s, großzügig bemessen).
+PTZ_FALLBACK_TIMEOUT_MARGIN_SECS = 3.0
 PTZ_TEST_DIRECTIONS: dict[str, tuple[float, float]] = {
     "left": (-1.0, 0.0), "right": (1.0, 0.0), "up": (0.0, 1.0), "down": (0.0, -1.0),
 }
@@ -1912,10 +1915,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         duration = _ptz_move_duration_for_speed(spd)
 
         def _move_body(token: str, with_timeout: bool) -> str:
-            # Timeout mind. so lang wie der Klick (min. 0,5 s), sonst stoppt die
-            # Kamera bei hohen Stufen vorzeitig.
+            # Das Timeout zählt ab EINGANG des Moves, die Haltedauer erst ab der
+            # Move-Antwort → Puffer für die Warteschlangen-Latenz, sonst stoppt
+            # ein Gerät, das die Variante beachtet, vorzeitig. Nur Sicherheits-
+            # netz: der Stop wird ohnehin gesendet.
+            timeout_s = max(0.5, duration) + PTZ_FALLBACK_TIMEOUT_MARGIN_SECS
             timeout_xml = (
-                f"<tptz:Timeout>PT{max(0.5, duration):.2f}S</tptz:Timeout>"
+                f"<tptz:Timeout>PT{timeout_s:.2f}S</tptz:Timeout>"
                 if with_timeout else ""
             )
             return (

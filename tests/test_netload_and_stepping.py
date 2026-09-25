@@ -716,7 +716,9 @@ async def test_fallback_ptz_timeout_covers_click_duration(monkeypatch):
 
     assert await coordinator.async_ptz_command("left", speed=8) is True
     timed = [b for b in bodies if "<tptz:Timeout>" in b]
-    assert timed and "<tptz:Timeout>PT1.50S</tptz:Timeout>" in timed[-1]
+    # Haltedauer 1,5 s ab Move-Antwort + Puffer für die Zeit bis zur Antwort
+    expected = 1.5 + coordinator_module.PTZ_FALLBACK_TIMEOUT_MARGIN_SECS
+    assert timed and f"<tptz:Timeout>PT{expected:.2f}S</tptz:Timeout>" in timed[-1]
 
 
 async def _no_sleep(_seconds):
