@@ -54,20 +54,26 @@ SNAPSHOT_URL = f"http://{CAMERA_HOST}/webcapture.jpg?command=snap&channel=1"
 
 PTZ_SPEED = 0.4   # Geschwindigkeit 0.1–1.0
 
-# Puls-Stepping (v2.2.53, zurück zum live verifizierten v2.2.40-Verfahren):
-# Die XM-Firmware ignoriert den Velocity-WERT, und die Haltedauer eines einzelnen
-# ContinuousMove hat sich in der Praxis nicht zuverlässig auf die Strecke
-# ausgewirkt (Stop-Delay v2.2.41/42: alle Stufen fuhren gleich weit/schnell).
-# Die HA-Geschwindigkeitsstufe (1–8) steuert daher die ANZAHL kurzer Pulse pro
-# Tastendruck: Stufe N → N × (ContinuousMove + PTZ_PULSE_DURATION + Stop),
-# getrennt durch PTZ_PULSE_GAP. Tuning nur über diese beiden Konstanten.
-PTZ_PULSE_DURATION = 0.35  # Sekunden Bewegung pro Puls
-PTZ_PULSE_GAP = 0.12       # Sekunden Pause zwischen zwei Pulsen
+# Einzel-Klick mit proportionaler Dauer UND Velocity (v2.2.54, wie v2.2.38):
+# 1 Tastendruck = 1 ContinuousMove (Velocity = Stufe/8) + Haltedauer + Stop.
+# Stufe 1 → kurzer, langsamer Klick; Stufe 8 → langer, schneller Klick.
+# Achtung: v2.2.42–v2.2.52 schickten Velocity fest 1.0 → alle Stufen fühlten
+# sich gleich an; v2.2.53 (N Pulse) → mehrere Einzelklicks statt einem langen.
+PTZ_MIN_MOVE_DURATION = 0.25  # Sekunden bei Stufe 1 (kurzer Klick)
+PTZ_MAX_MOVE_DURATION = 1.5   # Sekunden bei Stufe 8 (langer Klick)
 
 
-def ptz_pulse_count_for_speed(speed: float) -> int:
-    """Mappt normalisierte Speed (0.125–1.0 = Stufe 1–8) auf die Pulsanzahl 1–8."""
+def ptz_level_for_speed(speed: float) -> int:
+    """Normalisierte Speed (0.125–1.0) → Stufe 1–8."""
     return max(1, min(8, round(speed * 8)))
+
+
+def ptz_move_duration_for_speed(speed: float) -> float:
+    """Haltedauer des Einzel-Klicks, linear von Stufe 1 (min) bis Stufe 8 (max)."""
+    level = ptz_level_for_speed(speed)
+    return PTZ_MIN_MOVE_DURATION + (level - 1) / 7 * (
+        PTZ_MAX_MOVE_DURATION - PTZ_MIN_MOVE_DURATION
+    )
 
 # ── WSSE Auth ─────────────────────────────────────────────────────────────────
 
@@ -321,22 +327,22 @@ class XMSoapClient:
         speed: 0.0–1.0 (normalisiert aus HA-Stufe 1–8)
         token: ONVIF Profile-Token (für Geräte, die nicht "000" nutzen)
 
-        XM-Firmware ignoriert die Velocity — die Geschwindigkeitsstufe steuert
-        daher die ANZAHL kurzer Pulse pro Druck: Stufe 1 → 1 Puls, Stufe 8 →
-        8 Pulse (∝ zurückgelegte Strecke).
+        1 Tastendruck = 1 ContinuousMove + Haltedauer + Stop. Die Stufe steuert
+        Velocity (Stufe/8) UND Haltedauer: Stufe 1 → kurzer, langsamer Klick,
+        Stufe 8 → langer, schneller Klick.
         """
         token = token or self._profile_token
         if direction == "stop":
             return await self.ptz_stop(token=token)
 
-        # Feste Magnitude (Velocity wird ohnehin ignoriert) — nur Richtung zählt.
+        v = ptz_level_for_speed(speed) / 8
         dirs = {
-            "right":    (1.0,  0.0,  0.0),
-            "left":     (-1.0, 0.0,  0.0),
-            "up":       (0.0,  1.0,  0.0),
-            "down":     (0.0, -1.0,  0.0),
-            "zoom_in":  (0.0,  0.0,  1.0),
-            "zoom_out": (0.0,  0.0, -1.0),
+            "right":    (v,    0.0,  0.0),
+            "left":     (-v,   0.0,  0.0),
+            "up":       (0.0,  v,    0.0),
+            "down":     (0.0, -v,    0.0),
+            "zoom_in":  (0.0,  0.0,  v),
+            "zoom_out": (0.0,  0.0, -v),
         }
         coords = dirs.get(direction)
         if coords is None:
@@ -344,41 +350,23 @@ class XMSoapClient:
             return False
         pan, tilt, zoom = coords
 
-        steps = ptz_pulse_count_for_speed(speed)
+        duration = ptz_move_duration_for_speed(speed)
         _LOGGER.debug(
-            "PTZ '%s': speed=%.3f → %d Puls(e) à %.2fs (token=%s)",
-            direction, speed, steps, PTZ_PULSE_DURATION, token,
+            "PTZ '%s': Velocity=%.3f, Klick=%.2fs (token=%s)",
+            direction, v, duration, token,
         )
 
-        ok = False
-        moved = False
-        for i in range(steps):
-            ok = await self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom, token=token)
-            if not ok:
-                break  # z. B. falscher Token → Coordinator probiert nächsten
-            moved = True
-            await asyncio.sleep(PTZ_PULSE_DURATION)
-            # Stop MUSS greifen, sonst fährt die Kamera weiter (kein Timeout im
-            # ContinuousMove) — einmal wiederholen, sonst Sequenz abbrechen.
-            if not await self.ptz_stop(token=token) and not await self.ptz_stop(token=token):
-                _LOGGER.warning(
-                    "PTZ '%s': Stop nach Puls %d fehlgeschlagen (Token=%s) — "
-                    "Puls-Sequenz abgebrochen", direction, i + 1, token,
-                )
-                ok = False
-                break
-            if i < steps - 1:
-                await asyncio.sleep(PTZ_PULSE_GAP)
-
-        if moved and not ok:
+        if not await self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom, token=token):
+            return False  # z. B. falscher Token → Coordinator probiert nächsten
+        await asyncio.sleep(duration)
+        # Stop MUSS greifen, sonst fährt die Kamera weiter — 1× wiederholen.
+        if not await self.ptz_stop(token=token) and not await self.ptz_stop(token=token):
             _LOGGER.warning(
-                "PTZ '%s': Puls-Sequenz nach Bewegung abgebrochen (Token=%s) — "
-                "melde Erfolg, damit kein weiterer Token probiert wird",
-                direction, token,
+                "PTZ '%s': Stop fehlgeschlagen (Token=%s)", direction, token,
             )
-        # moved statt ok: Hat die Kamera sich bewegt, darf der Coordinator NICHT
-        # mit dem nächsten Profile-Token erneut pulsen (sonst Extra-Bewegung).
-        return moved
+        # Bewegung lief → True, damit der Coordinator NICHT mit dem nächsten
+        # Profile-Token erneut fährt (sonst Extra-Bewegung).
+        return True
 
     async def ptz_goto_home(self, speed: float = PTZ_SPEED, token: str | None = None) -> bool:
         """Fährt zur gespeicherten Home-Position."""
