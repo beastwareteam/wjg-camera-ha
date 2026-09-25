@@ -429,15 +429,15 @@ async def test_xmsoap_ptz_click_subtracts_move_latency(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_xmsoap_ptz_click_stops_early_without_waiting_for_move_ack(monkeypatch):
-    """Ist die Haltedauer abgelaufen, bevor die (träge) Move-Antwort kommt,
-    geht der Stop sofort raus — danach folgt ein Sicherheits-Stop."""
+async def test_xmsoap_ptz_click_waits_for_move_ack_before_stop(monkeypatch):
+    """Stop erst NACH der Move-Antwort — ein früher Stop brachte live keinen
+    kürzeren Klick, erzeugte aber Ruckeln (v2.2.56)."""
     monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.05,) * 8)
     client = XMSoapClient(host="192.168.1.61")
     events: list[str] = []
 
     async def _slow_move(**_kwargs):
-        await asyncio.sleep(0.3)  # Kamera antwortet erst nach 0,3 s
+        await asyncio.sleep(0.2)  # Kamera antwortet erst nach 0,2 s
         events.append("move_ack")
         return True
 
@@ -449,16 +449,14 @@ async def test_xmsoap_ptz_click_stops_early_without_waiting_for_move_ack(monkeyp
     client.ptz_continuous_move = _slow_move  # type: ignore[method-assign]
     client.ptz_stop = _fake_stop  # type: ignore[method-assign]
 
-    t0 = time.monotonic()
     assert await client.ptz_command("left", speed=1 / 8) is True
-    assert events == ["stop", "move_ack", "stop"]  # früher Stop + Sicherheits-Stop
-    assert time.monotonic() - t0 < 1.0
+    assert events == ["move_ack", "stop"]
 
 
 @pytest.mark.asyncio
-async def test_xmsoap_ptz_click_early_stop_wrong_token_returns_false(monkeypatch):
-    """Früh-Stop-Pfad: Scheitert der Move (falscher Token), False zurückgeben,
-    damit der Coordinator den nächsten Token probiert."""
+async def test_xmsoap_ptz_click_wrong_token_returns_false(monkeypatch):
+    """Scheitert der Move (falscher Token), False zurückgeben, damit der
+    Coordinator den nächsten Token probiert."""
     monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.01,) * 8)
     client = XMSoapClient(host="192.168.1.61")
 
@@ -477,10 +475,10 @@ async def test_xmsoap_ptz_click_early_stop_wrong_token_returns_false(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_xmsoap_ptz_click_failed_move_still_sends_safety_stop(monkeypatch):
-    """Früh-Stop-Pfad: Auch wenn die Move-Antwort als Fehler zurückkommt
-    (HTTP-/Parse-Fehler → None), folgt ein Sicherheits-Stop — die Kamera
-    kann den Move trotzdem angenommen haben."""
+async def test_xmsoap_ptz_click_failed_move_still_sends_stop(monkeypatch):
+    """Auch wenn die Move-Antwort als Fehler zurückkommt (HTTP-/Parse-Fehler
+    → None), wird vorsorglich gestoppt — die Kamera kann den Move trotzdem
+    angenommen haben."""
     monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.01,) * 8)
     client = XMSoapClient(host="192.168.1.61")
     events: list[str] = []
@@ -499,7 +497,29 @@ async def test_xmsoap_ptz_click_failed_move_still_sends_safety_stop(monkeypatch)
     client.ptz_stop = _fake_stop  # type: ignore[method-assign]
 
     assert await client.ptz_command("left", speed=1 / 8) is False
-    assert events == ["stop", "move_fail", "stop"]
+    assert events == ["move_fail", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_xmsoap_ptz_click_failed_move_stop_is_retried(monkeypatch):
+    """Vorsorglicher Stop nach Move-Fehler wird bei Fehlschlag 1× wiederholt."""
+    monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.01,) * 8)
+    client = XMSoapClient(host="192.168.1.61")
+    stops = {"n": 0}
+
+    async def _failing_move(**_kwargs):
+        return False
+
+    async def _failing_stop(token=None):
+        _ = token
+        stops["n"] += 1
+        return False
+
+    client.ptz_continuous_move = _failing_move  # type: ignore[method-assign]
+    client.ptz_stop = _failing_stop  # type: ignore[method-assign]
+
+    assert await client.ptz_command("left", speed=1 / 8) is False
+    assert stops["n"] == 2
 
 
 @pytest.mark.asyncio
@@ -743,3 +763,151 @@ async def test_fallback_ptz_latency_measured_from_successful_attempt(monkeypatch
     assert len(slept) == 1
     # 0.3 s Soll − ~0.1 s Antwortzeit des erfolgreichen Moves (NICHT − 0.5 s)
     assert 0.15 <= slept[0] <= 0.21
+
+
+class _PtzTestSoap:
+    """Fake-XMSoapClient für async_ptz_test: zeichnet Aufrufe auf."""
+
+    def __init__(self, calls):
+        self.calls = calls
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_):
+        return None
+
+    async def ptz_relative_move(self, **kwargs):
+        self.calls.append(("relative", kwargs))
+        return True
+
+    async def ptz_continuous_move(self, **kwargs):
+        self.calls.append(("continuous", kwargs))
+        return True
+
+    async def ptz_stop(self, **kwargs):
+        self.calls.append(("stop", kwargs))
+        return True
+
+
+@pytest.mark.asyncio
+async def test_ptz_test_relative_sends_single_relative_move_without_stop(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    calls: list = []
+    monkeypatch.setattr(coordinator, "_soap", lambda: _PtzTestSoap(calls))
+
+    result = await coordinator.async_ptz_test("left", "relative", 0.05)
+
+    assert [c[0] for c in calls] == ["relative"]
+    assert calls[0][1]["pan"] == pytest.approx(-0.05)
+    assert calls[0][1]["tilt"] == pytest.approx(0.0)
+    assert result["akzeptiert"] is True and result["methode"] == "relative"
+
+
+@pytest.mark.asyncio
+async def test_ptz_test_timeout_sends_timeout_and_late_safety_stop(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    calls: list = []
+    slept: list[float] = []
+
+    async def _record_sleep(seconds):
+        slept.append(seconds)
+
+    monkeypatch.setattr(coordinator, "_soap", lambda: _PtzTestSoap(calls))
+    monkeypatch.setattr(coordinator_module.asyncio, "sleep", _record_sleep)
+
+    result = await coordinator.async_ptz_test("up", "timeout", 0.3)
+
+    assert [c[0] for c in calls] == ["continuous", "stop"]
+    assert calls[0][1]["timeout"] == pytest.approx(0.3)
+    assert calls[0][1]["tilt"] == pytest.approx(1.0)
+    # Sicherheits-Stop erst deutlich nach dem erwarteten Selbst-Stopp
+    assert slept and slept[0] >= 0.3 + coordinator_module.PTZ_TEST_SAFETY_STOP_SECS - 0.1
+    assert result["akzeptiert"] is True
+
+
+def test_xmsoap_continuous_move_timeout_element():
+    """<Timeout> nur, wenn angefordert — der Standard-Klick bleibt unverändert."""
+    client = XMSoapClient(host="192.168.1.61")
+    bodies: list[str] = []
+
+    async def _fake_post(_endpoint, body, auth=True):
+        _ = auth
+        bodies.append(body)
+        return object()
+
+    client._post = _fake_post  # type: ignore[method-assign]  # pylint: disable=protected-access
+    asyncio.run(client.ptz_continuous_move(pan=1.0))
+    asyncio.run(client.ptz_continuous_move(pan=1.0, timeout=0.25))
+    assert "Timeout" not in bodies[0]
+    assert "<tptz:Timeout>PT0.25S</tptz:Timeout>" in bodies[1]
+
+
+class _TokenPtzTestSoap(_PtzTestSoap):
+    """Nur Token "002" funktioniert (wie bei Kameras mit anderem PTZ-Profil)."""
+
+    async def ptz_relative_move(self, **kwargs):
+        self.calls.append(("relative", kwargs))
+        return kwargs.get("token") == "002"
+
+
+@pytest.mark.asyncio
+async def test_ptz_test_tries_candidate_tokens_and_remembers(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    calls: list = []
+    monkeypatch.setattr(coordinator, "_soap", lambda: _TokenPtzTestSoap(calls))
+    _set_private_attr(coordinator, "_preferred_onvif_profile_token", "")
+
+    result = await coordinator.async_ptz_test("right", "relative", 0.05)
+
+    assert [c[1]["token"] for c in calls] == ["000", "001", "002"]
+    assert result["akzeptiert"] is True and result["token"] == "002"
+    assert _get_private_attr(coordinator, "_preferred_onvif_profile_token") == "002"
+
+
+@pytest.mark.asyncio
+async def test_ptz_test_cancelled_during_wait_still_stops(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    calls: list = []
+    monkeypatch.setattr(coordinator, "_soap", lambda: _PtzTestSoap(calls))
+
+    task = asyncio.ensure_future(coordinator.async_ptz_test("left", "timeout", 2.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert [c[0] for c in calls] == ["continuous", "stop"]
+
+
+def test_ptz_test_schema_limits_relative_value():
+    from custom_components.wjg_camera import (  # pylint: disable=import-outside-toplevel
+        _SVC_SCHEMA_PTZ_TEST,
+    )
+    import voluptuous as vol  # pylint: disable=import-outside-toplevel
+
+    base = {"entity_id": "camera.x", "direction": "left"}
+    assert _SVC_SCHEMA_PTZ_TEST({**base, "method": "relative", "value": 1.0})
+    assert _SVC_SCHEMA_PTZ_TEST({**base, "method": "timeout", "value": 3.0})
+    with pytest.raises(vol.Invalid):
+        _SVC_SCHEMA_PTZ_TEST({**base, "method": "relative", "value": 2.0})
+
+
+def test_get_coordinator_without_fallback_ignores_foreign_entity(monkeypatch):
+    """ptz_test nutzt allow_fallback=False: Eine Entity, die zu keinem
+    WJG-Config-Entry gehört, darf nicht auf eine beliebige WJG-Kamera fallen."""
+    import custom_components.wjg_camera as integration  # pylint: disable=import-outside-toplevel
+    from homeassistant.helpers import entity_registry as er  # pylint: disable=import-outside-toplevel
+
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+
+    class _Registry:
+        def async_get(self, _entity_id):
+            return None  # fremde Kamera: nicht in der WJG-Registry
+
+    hass = DummyHass()
+    hass.data = {integration.DOMAIN: {"entry1": coordinator}}
+    monkeypatch.setattr(er, "async_get", lambda _hass: _Registry())
+
+    get = integration._get_coordinator  # pylint: disable=protected-access
+    assert get(hass, "camera.fremd") is coordinator  # alter Fallback bleibt für Zoom/Motion
+    assert get(hass, "camera.fremd", allow_fallback=False) is None

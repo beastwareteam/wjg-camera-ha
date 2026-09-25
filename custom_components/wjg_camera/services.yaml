@@ -64,3 +64,54 @@ simulate_motion:
       selector:
         entity:
           domain: camera
+
+ptz_test:
+  name: PTZ-Test (Diagnose)
+  description: >
+    Prüft, ob die Kamera kurze Schwenks selbst begrenzen kann. Die Antwort
+    erscheint direkt unter dem Aktions-Aufruf. Kamera beim Test beobachten:
+    "relative" fährt eine feste Strecke ohne Stop, "timeout" soll nach
+    "Wert" Sekunden selbst anhalten (Sicherheits-Stop 3 s später),
+    "continuous" ist das heutige Verfahren zum Vergleich.
+  fields:
+    entity_id:
+      name: Kamera-Entity
+      description: Die Kamera-Entity, die getestet wird.
+      required: true
+      selector:
+        entity:
+          domain: camera
+    direction:
+      name: Richtung
+      required: true
+      default: right
+      selector:
+        select:
+          options:
+            - left
+            - right
+            - up
+            - down
+    method:
+      name: Methode
+      required: true
+      default: relative
+      selector:
+        select:
+          options:
+            - relative
+            - timeout
+            - continuous
+    value:
+      name: Wert
+      description: >
+        relative = Strecke (0.01 winzig … höchstens 1.0 groß),
+        timeout/continuous = Sekunden (bis 5.0).
+      required: true
+      default: 0.05
+      selector:
+        number:
+          min: 0.01
+          max: 5.0
+          step: 0.01
+          mode: box

@@ -19,7 +19,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.components.persistent_notification import async_create as pn_async_create
@@ -127,7 +127,37 @@ _SVC_SCHEMA_SIMULATE_MOTION = vol.Schema({
 })
 
 
-def _get_coordinator(hass: HomeAssistant, entity_id: str) -> WJGCameraCoordinator | None:
+# Diagnose: prüft, ob die Kamera kurze PTZ-Bewegungen selbst begrenzen kann
+# (RelativeMove bzw. ContinuousMove mit <Timeout>). Antwort direkt in den
+# Entwicklerwerkzeugen → Aktionen, ohne Log (siehe CLAUDE.md, PTZ-Abschnitt).
+_SERVICE_PTZ_TEST = "ptz_test"
+_PTZ_TEST_RELATIVE_MAX = 1.0  # ONVIF-Translation: −1…1 (per GetNodes bestätigt)
+
+
+def _validate_ptz_test(data: dict) -> dict:
+    """RelativeMove-Strecke ist auf 1.0 begrenzt; nur timeout/continuous
+    (Sekunden) dürfen bis 5.0 gehen."""
+    if data["method"] == "relative" and data["value"] > _PTZ_TEST_RELATIVE_MAX:
+        raise vol.Invalid(
+            f"Für method=relative ist value höchstens {_PTZ_TEST_RELATIVE_MAX} (Strecke)"
+        )
+    return data
+
+
+_SVC_SCHEMA_PTZ_TEST = vol.All(
+    vol.Schema({
+        vol.Required("entity_id"): cv.entity_id,
+        vol.Required("direction"): vol.In(["left", "right", "up", "down"]),
+        vol.Required("method"): vol.In(["relative", "timeout", "continuous"]),
+        vol.Required("value"): vol.All(vol.Coerce(float), vol.Range(min=0.01, max=5.0)),
+    }),
+    _validate_ptz_test,
+)
+
+
+def _get_coordinator(
+    hass: HomeAssistant, entity_id: str, allow_fallback: bool = True
+) -> WJGCameraCoordinator | None:
     """Coordinator für eine entity_id finden (Multi-Device-fähig).
 
     Ordnet die entity_id über die Entity-Registry dem zugehörigen Config-Entry
@@ -143,6 +173,8 @@ def _get_coordinator(hass: HomeAssistant, entity_id: str) -> WJGCameraCoordinato
         if isinstance(coord, WJGCameraCoordinator):
             return coord
 
+    if not allow_fallback:
+        return None
     # Fallback: erster Coordinator (z. B. wenn nur eine Kamera existiert)
     for coord in hass.data.get(DOMAIN, {}).values():
         if isinstance(coord, WJGCameraCoordinator):
@@ -202,6 +234,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await coord.async_simulate_motion()
         hass.services.async_register(DOMAIN, _SERVICE_SIMULATE_MOTION, _handle_simulate_motion,
                                      schema=_SVC_SCHEMA_SIMULATE_MOTION)
+
+    # HA-Service registrieren: wjg_camera.ptz_test (Diagnose, liefert Antwort)
+    if not hass.services.has_service(DOMAIN, _SERVICE_PTZ_TEST):
+        async def _handle_ptz_test(call: ServiceCall) -> ServiceResponse:
+            # Kein Fallback: Eine fremde Kamera-Entity darf NIE eine beliebige
+            # WJG-Kamera bewegen.
+            coord = _get_coordinator(hass, call.data["entity_id"], allow_fallback=False)
+            if coord is None:
+                return {"fehler": "Keine WJG-Kamera zu dieser Entity gefunden"}
+            return await coord.async_ptz_test(
+                call.data["direction"], call.data["method"], call.data["value"]
+            )
+        hass.services.async_register(DOMAIN, _SERVICE_PTZ_TEST, _handle_ptz_test,
+                                     schema=_SVC_SCHEMA_PTZ_TEST,
+                                     supports_response=SupportsResponse.ONLY)
 
     # Einmalige Hinweis-Benachrichtigung für Lovelace-Ressource
     notif_key = f"{DOMAIN}_lovelace_hint"
