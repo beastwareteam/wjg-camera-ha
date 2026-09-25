@@ -514,6 +514,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         )
         # PTZ — Standardgeschwindigkeit 1 (langsamste Stufe), pro Kamera
         self._ptz_speed: int = 1
+        # Sendezeitpunkt des letzten PTZ-SOAP-Versuchs (loop.time()); dient der
+        # Latenz-Kompensation des Klicks — gemessen ab dem ERFOLGREICHEN Versuch.
+        self._ptz_last_send_at: float = 0.0
         self._ptz_presets: dict[str, str] = {}  # token -> name
         # Digital Zoom (Pillow-Crop für Snapshots, CSS-Sync über Lovelace-Karte)
         self._digital_zoom: float = 1.0
@@ -1886,7 +1889,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
 
         # Funktionierenden Token/Variante ermitteln (der Move läuft dann bereits)
         loop = asyncio.get_running_loop()
-        t_start = loop.time()
+        t_start = 0.0
         active_token = ""
         for use_timeout in (False, True):
             for token in tokens:
@@ -1895,18 +1898,30 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 )
                 if self._ptz_response_ok(resp, "ContinuousMove"):
                     active_token = token
+                    # Uhr ab dem Senden des ERFOLGREICHEN Versuchs (nicht ab
+                    # vorherigen, fehlgeschlagenen Varianten/Tokens)
+                    t_start = self._ptz_last_send_at
                     break
-                t_start = loop.time()  # fehlgeschlagener Versuch → Uhr neu starten
             if active_token:
                 break
         if not active_token:
             return False
 
         # Haltedauer zählt ab Senden des erfolgreichen Moves (Latenz abziehen)
-        remaining = duration - (loop.time() - t_start)
+        t_move_ack = loop.time()
+        remaining = duration - (t_move_ack - t_start)
         if remaining > 0:
             await asyncio.sleep(remaining)
-        await _stop(active_token)
+        t_stop_sent = loop.time()
+        stopped = await _stop(active_token)
+        t_stop_ack = loop.time()
+        # Messwerte für das Tuning von PTZ_MOVE_DURATIONS (wie im Primärpfad)
+        _LOGGER.info(
+            "PTZ-Fallback Stufe %d: Soll %.2fs | Move-Antwort %.2fs, Stop gesendet "
+            "nach %.2fs, Stop-Antwort nach %.2fs (Stop %s)",
+            _ptz_level_for_speed(spd), duration, t_move_ack - t_start,
+            t_stop_sent - t_start, t_stop_ack - t_start, "OK" if stopped else "FEHLER",
+        )
 
         self._onvif_profile_tokens[self._active_stream] = active_token
         self._last_ptz_fault = ""
@@ -2155,13 +2170,16 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             (self._ptz_body_ver10(body), f"http://www.onvif.org/ver10/ptz/wsdl/{action_name}"),
         )
         last_response = ""
+        loop = asyncio.get_running_loop()
         for candidate_body, soap_action in variants:
+            self._ptz_last_send_at = loop.time()
             response_text = await self._onvif_soap_for(ONVIF_SERVICE_PTZ, candidate_body)
             if self._ptz_response_ok(response_text, action_name):
                 return response_text
             self._remember_ptz_fault_from_response(response_text)
             last_response = response_text
 
+            self._ptz_last_send_at = loop.time()
             legacy_response = await self._onvif_soap_legacy_for(
                 ONVIF_SERVICE_PTZ, candidate_body, soap_action,
             )
@@ -2179,6 +2197,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             for pwd_variant in password_variants:
                 for service_path in self._candidate_onvif_service_paths(ONVIF_SERVICE_PTZ):
                     for candidate_body, _ in variants:
+                        self._ptz_last_send_at = loop.time()
                         resp = await self._onvif_soap_with_wsse_text(
                             service_path, candidate_body, password_override=pwd_variant
                         )

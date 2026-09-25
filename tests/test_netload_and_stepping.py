@@ -517,3 +517,51 @@ async def test_fallback_ptz_timeout_covers_click_duration(monkeypatch):
 
 async def _no_sleep(_seconds):
     return None
+
+
+@pytest.mark.asyncio
+async def test_fallback_ptz_latency_measured_from_successful_attempt(monkeypatch):
+    """Fallback: Latenz-Kompensation misst ab dem Senden des ERFOLGREICHEN
+    ContinuousMove — fehlgeschlagene Varianten/Tokens werden nicht abgezogen."""
+    monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.3,) * 8)
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _record_sleep(seconds):
+        slept.append(seconds)
+        await real_sleep(0)
+
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        if "ContinuousMove" in body:
+            if "ProfileToken>bad<" in body or "<tptz:ContinuousMove>" in body:
+                # fehlgeschlagener Token bzw. v20-Variante, langsam → darf
+                # NICHT von der Haltedauer abgezogen werden
+                time.sleep(0.2)
+                return ""
+            time.sleep(0.1)  # Antwortzeit des erfolgreichen (v10-)Moves
+            return "<tptz10:ContinuousMoveResponse/>"
+        if "tptz:Stop" in body:
+            return "<tptz:StopResponse/>"
+        return ""
+
+    async def _no_legacy(*_args, **_kwargs):
+        return ""
+
+    async def _tokens():
+        return ["bad", "000"]
+
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_onvif_soap_legacy_for", _no_legacy)
+    _set_private_attr(coordinator, "_async_candidate_ptz_profile_tokens", _tokens)
+    _set_private_attr(coordinator, "_onvif_profile_tokens", {"000": "000"})
+    _set_private_attr(coordinator, "_active_stream", "000")
+    monkeypatch.setattr(coordinator_module.asyncio, "sleep", _record_sleep)
+
+    assert await coordinator.async_ptz_command("left", speed=4) is True
+    assert _get_private_attr(coordinator, "_onvif_profile_tokens")["000"] == "000"
+    assert len(slept) == 1
+    # 0.3 s Soll − ~0.1 s Antwortzeit des erfolgreichen Moves (NICHT − 0.5 s)
+    assert 0.15 <= slept[0] <= 0.21
