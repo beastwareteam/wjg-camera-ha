@@ -1,0 +1,59 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up WJG XM-3820 camera",
+        "description": "Connect Home Assistant to your WJG camera.\n{hotspot_hint}",
+        "data": {
+          "host": "Camera IP address",
+          "username": "Username",
+          "password": "Password",
+          "port": "HTTP port",
+          "rtsp_port": "RTSP port",
+          "onvif_port": "ONVIF port",
+          "protocol": "Protocol",
+          "http_retries": "HTTP retries on errors (0-5)",
+          "rtsp_path": "RTSP path",
+          "snapshot_path": "Snapshot path"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Camera not reachable – check IP address and Wi-Fi connection"
+    },
+    "abort": {
+      "already_configured": "This camera is already configured"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "WJG camera options",
+        "data": {
+          "motion_rtsp_diff": "Motion via RTSP image comparison (channel 2, continuous load)",
+          "motion_rtsp_interval": "RTSP comparison frame interval (seconds, 1-30 — lower = faster but more load)",
+          "motion_auto_record": "Record automatically on motion",
+          "motion_record_cooldown": "Pause between auto recordings (seconds, 0-600)",
+          "rtsp_path": "RTSP path",
+          "snapshot_path": "Snapshot path",
+          "protocol": "Protocol",
+          "http_retries": "HTTP retries on errors (0-5)",
+          "onvif_port": "ONVIF port",
+          "onvif_device_path": "ONVIF device service path",
+          "onvif_media_path": "ONVIF media path",
+          "onvif_ptz_path": "ONVIF PTZ path",
+          "onvif_imaging_path": "ONVIF imaging path",
+          "onvif_events_path": "ONVIF events path",
+          "onvif_profile_token": "ONVIF profile token (empty = automatic)",
+          "onvif_video_source_token": "ONVIF video source token (empty = automatic)",
+          "onvif_motion_item_keys": "Motion: event fields (comma-separated)",
+          "onvif_motion_topic_keywords": "Motion: topic keywords (comma-separated)",
+          "onvif_tamper_item_keys": "Tamper: event fields (comma-separated)",
+          "onvif_tamper_topic_keywords": "Tamper: topic keywords (comma-separated)",
+          "onvif_signal_item_keys": "Signal loss: event fields (comma-separated)",
+          "onvif_signal_topic_keywords": "Signal loss: topic keywords (comma-separated)"
+        }
+      }
+    }
+  }
+}

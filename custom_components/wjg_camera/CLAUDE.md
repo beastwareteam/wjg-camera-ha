@@ -1,6 +1,6 @@
 # WJG XM-3820 Camera Bridge — Kritisches Wissen für Claude
 
-## PTZ-Geschwindigkeit: Stop-Latenz ist die Grenze (v2.2.57 — September 2026) ⭐ AKTUELL
+## PTZ-Geschwindigkeit: Stop-Latenz durch Event-Abfrage (v2.2.58 — September 2026) ⭐ AKTUELL
 
 ### Gewünschtes Verhalten (Nutzer-Vorgabe)
 **1 Tastendruck = 1 Klick.** Stufe 1 = sehr kurzer Klick, Stufe 8 = langer Klick,
@@ -37,14 +37,28 @@ erreichbar. Kürzere Klicks gehen nur, wenn die Kamera **selbst** stoppt.
   `PTZ_MOTION_QUIET_SECS` (8 s) danach ignoriert. **Live bestätigt:** keine
   Aufnahmen mehr durch PTZ.
 
-### Nächster Schritt: Aktion `wjg_camera.ptz_test` (Diagnose)
+### Ursache der Latenz: ONVIF-Event-Abfrage blockiert die Kamera (v2.2.58)
+Im Juni (v2.2.40, live) dauerte eine SOAP-Anfrage ~0,13 s (8 Pulse = 5,9 s),
+jetzt ~1 s. Live-Tests 25.09.2026:
+- `RelativeMove`: wird mit OK quittiert, Kamera bewegt sich NICHT (Bildvergleich 0,0 %).
+- `ContinuousMove` + `<Timeout>`: Timeout wird ignoriert (fährt bis zum Stop).
+- Kanal 2 (RTSP-Bildvergleich) AUS: Latenz unverändert → **nicht** die Ursache.
+- Der ONVIF-Event-Loop fragt je Kamera ~1×/s `PullMessages` ab; die XM hält
+  jede Anfrage ~1 s und liefert nur `ismotion=false`. Da die Kamera SOAP
+  seriell abarbeitet, wartet jeder PTZ-Befehl auf das laufende PullMessages
+  (passt zu Move-Antwort 0,2–1,2 s gleichverteilt, Stop ~1,3 s).
+**Fix:** `_ptz_motion_quiet()` setzt `_ptz_idle` zurück und bricht ein laufendes
+PullMessages ab (`_event_pull_task`); der Event-Loop wartet auf `_ptz_idle`
+und macht danach mit derselben Subscription weiter. Live noch zu bestätigen
+(Timing-Log: Move-/Stop-Antwort sollten deutlich unter 1 s fallen).
+
+### Diagnose-Aktion `wjg_camera.ptz_test`
 Liefert die Antwort direkt in Entwicklerwerkzeuge → Aktionen:
 - `method: relative, value: 0.01–1.0` → `RelativeMove`, kein Stop.
 - `method: timeout, value: s` → `ContinuousMove` mit `<tptz:Timeout>`,
   Sicherheits-Stop erst `PTZ_TEST_SAFETY_STOP_SECS` (3 s) danach.
 - `method: continuous, value: s` → heutiges Verfahren zum Vergleich.
-Hält die Kamera bei `relative` bzw. `timeout` von selbst kurz an, wird der
-Klick auf diese Methode umgestellt (Stufe → Strecke bzw. Timeout).
+Ergebnis 25.09.2026: beide Methoden funktionieren an der XM-3820 NICHT (s. o.).
 
 ### Historie — was NICHT funktionierte
 - v2.2.39/40, v2.2.53: N Pulse pro Druck → mehrere zu lange Einzelklicks.
@@ -57,8 +71,12 @@ Klick auf diese Methode umgestellt (Stufe → Strecke bzw. Timeout).
 ### Regeln
 - Den Stop nach der Move-Antwort (und den vorsorglichen Stop bei Fehler/Abbruch)
   NIE entfernen.
-- Keine weiteren Stop-Timing-Experimente — die Grenze ist gemessen. Nächster
-  Hebel ist ausschließlich eine Kamera-seitige Begrenzung (s. `ptz_test`).
+- Keine weiteren Stop-Timing-Experimente, solange die Latenz hoch ist. Erst die
+  Latenz senken (Event-Abfrage während PTZ pausieren), dann die Stufen tunen.
+- Den Event-Loop NIE ohne Pause-Mechanismus parallel zu PTZ laufen lassen.
+- Optionen: `strings.json`/`translations/*.json` brauchen `"options"` auf
+  OBERSTER Ebene (lag bis v2.2.57 fälschlich in `"config"` → Rohnamen im
+  Formular). Options-Änderung lädt die Integration per Update-Listener neu.
 
 ## Kamera-Uhrzeit-Spam (Fix v2.2.41 — Juni 2026)
 `WJGCameraTimeSensor` gibt `coordinator.camera_time` zurück — ein String

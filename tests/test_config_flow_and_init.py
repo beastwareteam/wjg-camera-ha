@@ -27,6 +27,12 @@ class DummyEntry:
         """DataUpdateCoordinator (HA ≥2025) registriert sich am Entry."""
         return None
 
+    def add_update_listener(self, listener):
+        """async_setup_entry registriert einen Options-Listener (Reload)."""
+        self.update_listeners = getattr(self, "update_listeners", [])
+        self.update_listeners.append(listener)
+        return lambda: None
+
 
 class DummySocketConnection:
     def __enter__(self):
@@ -97,6 +103,12 @@ async def test_async_setup_entry_success(monkeypatch):
     hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
         entry, integration.PLATFORMS
     )
+
+    # Options-Listener ist registriert und lädt beim Aufruf den Entry neu
+    assert len(entry.update_listeners) == 1
+    hass.config_entries.async_reload = AsyncMock()
+    await entry.update_listeners[0](hass, entry)
+    hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
 
 
 @pytest.mark.asyncio

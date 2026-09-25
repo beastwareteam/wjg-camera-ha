@@ -536,6 +536,15 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._ptz_quiet_until: float = 0.0
         # Anzahl gerade laufender PTZ-Bewegungen (überlappende Tastendrücke)
         self._ptz_quiet_depth: int = 0
+        # Gesetzt = kein PTZ aktiv. Der ONVIF-Event-Loop pausiert, solange PTZ
+        # läuft: Die XM-Kamera arbeitet SOAP-Anfragen seriell ab und hält jedes
+        # PullMessages ~1 s offen — PTZ-Befehle warteten dahinter (live
+        # gemessen 25.09.2026: Move-Antwort 0,2–1,2 s, Stop-Antwort ~1,3 s).
+        self._ptz_idle = asyncio.Event()
+        self._ptz_idle.set()
+        # Laufende Event-Anfrage (Subscription/PullMessages), wird beim
+        # PTZ-Start abgebrochen
+        self._event_pull_task: asyncio.Task | None = None
         self._ptz_presets: dict[str, str] = {}  # token -> name
         # Digital Zoom (Pillow-Crop für Snapshots, CSS-Sync über Lovelace-Karte)
         self._digital_zoom: float = 1.0
@@ -1864,6 +1873,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         """
         self._ptz_quiet_depth += 1
         self._ptz_quiet_until = math.inf
+        # ONVIF-Event-Abfrage anhalten und ein laufendes PullMessages abbrechen,
+        # damit Move/Stop nicht in der Warteschlange der Kamera warten.
+        self._ptz_idle.clear()
+        pull = self._event_pull_task
+        if pull is not None and not pull.done():
+            pull.cancel()
         try:
             yield
         finally:
@@ -1871,6 +1886,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             if self._ptz_quiet_depth <= 0:
                 self._ptz_quiet_depth = 0
                 self._ptz_quiet_until = time.time() + PTZ_MOTION_QUIET_SECS
+                self._ptz_idle.set()
 
     def _ptz_motion_suppressed(self) -> bool:
         """True, solange die Kamera sich durch PTZ selbst bewegt (bzw. kurz danach)."""
@@ -3009,6 +3025,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._remember_onvif_service_path(ONVIF_SERVICE_EVENTS, self._event_pullpoint_path)
         return True
 
+    async def _async_event_request(self, coro: Any) -> Any:
+        """Event-SOAP-Anfrage (Subscription/PullMessages) als abbrechbarer Task.
+
+        Beim PTZ-Start bricht `_ptz_motion_quiet()` den Task ab, damit die
+        seriell arbeitende Kamera Move/Stop sofort bearbeitet.
+        Rückgabe: Ergebnis der Anfrage, oder None, wenn für PTZ abgebrochen.
+        """
+        task = asyncio.ensure_future(coro)
+        self._event_pull_task = task
+        try:
+            await asyncio.wait({task})
+        finally:
+            self._event_pull_task = None
+            if not task.done():  # Loop selbst wurde abgebrochen
+                task.cancel()
+        if task.cancelled():
+            return None
+        return task.result()
+
     async def _async_onvif_event_loop(self) -> None:
         """ONVIF Pull-Point Event-Loop mit Reconnect/Backoff."""
         backoff_seconds = 1
@@ -3018,14 +3053,23 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     await asyncio.sleep(1)
                     continue
 
+                # Während PTZ keine Event-Abfrage (siehe _ptz_idle)
+                await self._ptz_idle.wait()
+
                 if not self._event_pullpoint_path:
-                    ok = await self.async_onvif_create_pullpoint()
+                    ok = await self._async_event_request(self.async_onvif_create_pullpoint())
+                    if ok is None:
+                        continue  # für PTZ abgebrochen → nach PTZ neu versuchen
                     if not ok:
                         await asyncio.sleep(backoff_seconds)
                         backoff_seconds = min(backoff_seconds * 2, 30)
-                        continue
+                    # Vor dem ersten PullMessages erneut auf PTZ-Ruhe prüfen
+                    continue
 
-                ok = await self.async_onvif_pull_messages_once()
+                ok = await self._async_event_request(self.async_onvif_pull_messages_once())
+                if ok is None:
+                    # Für PTZ abgebrochen — Subscription bleibt gültig
+                    continue
                 if ok:
                     backoff_seconds = 1
                     continue
