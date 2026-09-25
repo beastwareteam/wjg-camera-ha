@@ -1,10 +1,25 @@
 # WJG XM-3820 Camera Bridge — Kritisches Wissen für Claude
 
-## PTZ-Geschwindigkeit: Stop-Latenz durch Event-Abfrage (v2.2.58 — September 2026) ⭐ AKTUELL
+## PTZ-Geschwindigkeit: Event-Abfrage war die Ursache (v2.2.59 — September 2026) ⭐ AKTUELL
 
 ### Gewünschtes Verhalten (Nutzer-Vorgabe)
 **1 Tastendruck = 1 Klick.** Stufe 1 = sehr kurzer Klick, Stufe 8 = langer Klick,
 benachbarte Stufen spürbar verschieden. KEINE Serie von Einzelklicks.
+
+### Stand v2.2.59 (live bestätigt bis v2.2.58)
+- **Ursache der Latenz BESTÄTIGT:** der ONVIF-Event-Loop (PullMessages ~1×/s,
+  XM hält jede Anfrage ~1 s, arbeitet SOAP seriell). Mit Pause während PTZ
+  (v2.2.58) sank die Stop-Antwort live von ~1,3–1,5 s auf **~0,2 s**; Stufe 1
+  fühlt sich „genau wie gewollt“ an.
+- Rest-Schwankung v2.2.58: Move-Antwort 0,08–0,98 s (die Kamera arbeitet ein
+  gerade abgebrochenes PullMessages intern noch ab). Da die Haltedauer ab dem
+  SENDEN zählte, fraß diese Wartezeit die Haltedauer → Stufe 2/4 manchmal wie 1.
+- **v2.2.59:** Haltedauer zählt ab der **Move-Antwort** (vorher bewegt sich die
+  Kamera noch nicht). Tabelle `PTZ_MOVE_DURATIONS = (0.0, 0.15, 0.3, 0.5, 0.7,
+  0.95, 1.25, 1.6)` = Sekunden nach der Move-Antwort; Stufe 1 = 0 (Stop direkt).
+- **v2.2.59:** `EVENT_PULL_PAUSE_SECS = 2.0` Pause zwischen zwei PullMessages →
+  Kamera meist frei, PTZ-Start wartet seltener. Bewegung erkennt bei der
+  XM-3820 ohnehin Kanal 2 (ONVIF liefert dauerhaft ismotion=false).
 
 ### Live gemessen (25.09.2026, .49)
 v2.2.55 (Stop nach Move-Antwort):
@@ -23,9 +38,9 @@ schwankte 0,09–2,3 s, Stop-Antwort immer ~1,3–1,5 s nach dem Senden.
 frühestens nach ~1,5 s. Über Stop-Timing sind Klicks unter ~1,5 s NICHT
 erreichbar. Kürzere Klicks gehen nur, wenn die Kamera **selbst** stoppt.
 
-### Mechanismus (v2.2.57)
-- 1 `ContinuousMove` (Velocity = Stufe/8) → Move-Antwort abwarten → Rest der
-  Haltedauer aus `PTZ_MOVE_DURATIONS` (ab Senden) → `Stop` (1× Retry).
+### Mechanismus (seit v2.2.57, Haltedauer-Bezug seit v2.2.59)
+- 1 `ContinuousMove` (Velocity = Stufe/8) → Move-Antwort abwarten → Haltedauer
+  aus `PTZ_MOVE_DURATIONS` (ab Move-Antwort) → `Stop` (1× Retry).
   Früh-Stop wieder entfernt (brachte nichts, ruckelte).
 - Auch bei als Fehler gemeldetem Move wird vorsorglich gestoppt; bei Abbruch
   (`CancelledError`) wird der Move verworfen und gestoppt.
@@ -73,7 +88,9 @@ Ergebnis 25.09.2026: beide Methoden funktionieren an der XM-3820 NICHT (s. o.).
   NIE entfernen.
 - Keine weiteren Stop-Timing-Experimente, solange die Latenz hoch ist. Erst die
   Latenz senken (Event-Abfrage während PTZ pausieren), dann die Stufen tunen.
-- Den Event-Loop NIE ohne Pause-Mechanismus parallel zu PTZ laufen lassen.
+- Den Event-Loop NIE ohne Pause-Mechanismus parallel zu PTZ laufen lassen und
+  die Pause zwischen PullMessages (`EVENT_PULL_PAUSE_SECS`) nicht entfernen.
+- Haltedauer NIE wieder ab dem Senden rechnen (Wartezeit ≠ Bewegung).
 - Optionen: `strings.json`/`translations/*.json` brauchen `"options"` auf
   OBERSTER Ebene (lag bis v2.2.57 fälschlich in `"config"` → Rohnamen im
   Formular). Options-Änderung lädt die Integration per Update-Listener neu.
@@ -298,12 +315,12 @@ WSSE funktioniert trotzdem — die Kamera akzeptiert diese Zeitdifferenz.
 - `async_ptz_goto_preset` — Preset anfahren
 - `async_ptz_set_preset` — Preset speichern
 
-### Geschwindigkeitsregelung — Einzel-Klick (seit v2.2.57, siehe Top-Abschnitt)
+### Geschwindigkeitsregelung — Einzel-Klick (seit v2.2.59, siehe Top-Abschnitt)
 - `self._ptz_speed` in coordinator: int 1–8 (von Number-Entity gesetzt), pro Kamera.
 - Normalisierung: `spd = self._ptz_speed / 8` → float 0.125–1.0 für XMSoapClient.
 - `button.py` → `WJGPTZButton.async_press` übergibt `self.coordinator.ptz_speed`.
-- 1 Tap = 1 `ContinuousMove` (Velocity = spd), nach der Move-Antwort Rest von
-  `ptz_move_duration_for_speed(spd)` (ab Senden) warten, dann `Stop`.
+- 1 Tap = 1 `ContinuousMove` (Velocity = spd), nach der Move-Antwort
+  `ptz_move_duration_for_speed(spd)` warten, dann `Stop`.
 - **Default seit v2.2.35: `self._ptz_speed = 1`** (langsamste Stufe), pro Kamera getrennt.
 
 ### PTZ Profile-Token-Retry (seit v2.2.39)
@@ -370,7 +387,7 @@ CAMERA_PASSWORD = ""
 ONVIF_PORT = 8899
 PROFILE_TOKEN = "000"
 PTZ_SPEED = 0.4           # Default-Geschwindigkeit
-PTZ_MOVE_DURATIONS = (0.3, 0.45, 0.6, 0.8, 1.05, 1.35, 1.7, 2.1)  # Move→Stop Stufe 1–8
+PTZ_MOVE_DURATIONS = (0.0, 0.15, 0.3, 0.5, 0.7, 0.95, 1.25, 1.6)  # Halten nach Move-Antwort, Stufe 1–8
 ```
 **Wichtig:** Host/Credentials/Port kommen im Normalbetrieb aus dem Config-Entry
 (`coordinator._soap()` → `XMSoapClient(host=..., username=..., ...)`). Die

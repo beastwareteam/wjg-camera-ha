@@ -61,14 +61,15 @@ PTZ_SPEED = 0.4   # Geschwindigkeit 0.1–1.0
 # Achtung: v2.2.42–v2.2.52 schickten Velocity fest 1.0 → alle Stufen fühlten
 # sich gleich an; v2.2.53 (N Pulse) → mehrere Einzelklicks statt einem langen.
 #
-# Live gemessen (25.09.2026, .49): Die Kamera beantwortet ContinuousMove nach
-# 0,1–2,3 s und Stop nach weiteren ~1,3–1,5 s; sie arbeitet Anfragen offenbar
-# seriell ab. Ein Stop wirkt daher frühestens nach ~1,5 s — Stufen darunter
-# fühlen sich gleich an. Ein früher Stop (v2.2.56) half nicht und ruckelte.
-# Kürzere Klicks gehen nur, wenn die Kamera selbst stoppt (ContinuousMove mit
-# <Timeout> oder RelativeMove) → per Aktion wjg_camera.ptz_test prüfen.
-# Tabelle: Zeit vom Senden des Moves bis zum Senden des Stops (Index 0 = Stufe 1).
-PTZ_MOVE_DURATIONS_DEFAULT: tuple[float, ...] = (0.3, 0.45, 0.6, 0.8, 1.05, 1.35, 1.7, 2.1)
+# Live gemessen (25.09.2026, .49, v2.2.58): Sobald die ONVIF-Event-Abfrage
+# während PTZ pausiert, antwortet die Kamera auf Stop nach ~0,2 s. Die
+# Move-Antwort schwankt noch 0,1–1 s — in dieser Zeit wartet der Move in der
+# Warteschlange der Kamera, sie bewegt sich also NOCH NICHT. Deshalb zählt die
+# Haltedauer ab der Move-ANTWORT (nicht ab dem Senden): sonst fraß die Wartezeit
+# die Haltedauer auf und Stufe 2/4 fühlten sich manchmal wie Stufe 1 an.
+# Tabelle: Haltedauer nach der Move-Antwort bis zum Stop (Index 0 = Stufe 1).
+# Stufe 1 = 0 s (Stop direkt nach der Move-Antwort) war live "genau richtig".
+PTZ_MOVE_DURATIONS_DEFAULT: tuple[float, ...] = (0.0, 0.15, 0.3, 0.5, 0.7, 0.95, 1.25, 1.6)
 PTZ_MOVE_DURATIONS: tuple[float, ...] = PTZ_MOVE_DURATIONS_DEFAULT
 
 
@@ -387,9 +388,10 @@ class XMSoapClient:
                 with contextlib.suppress(Exception):
                     await _stop_with_retry()
                 return False  # z. B. falscher Token → Coordinator probiert nächsten
-            remaining = duration - (t_move_ack - t_start)
-            if remaining > 0:
-                await asyncio.sleep(remaining)
+            # Haltedauer ab der Move-Antwort: vorher stand der Move nur in der
+            # Warteschlange der Kamera (siehe PTZ_MOVE_DURATIONS_DEFAULT).
+            if duration > 0:
+                await asyncio.sleep(duration)
             t_stop_sent = loop.time()
             stopped = await _stop_with_retry()
         except asyncio.CancelledError:
