@@ -253,7 +253,7 @@ class WJGPTZPresetGotoButton(CoordinatorEntity[WJGCameraCoordinator], ButtonEnti
         return DeviceInfo(identifiers={(DOMAIN, self._entry.entry_id)})
 
     async def async_press(self) -> None:
-        ok = await self.coordinator.async_ptz_goto_preset(self._slot)
+        ok = await self.coordinator.async_ptz_goto_preset(slot=self._slot)
         if not ok:
             _raise_action_failed(f"PTZ Preset {self._slot} anfahren")
 

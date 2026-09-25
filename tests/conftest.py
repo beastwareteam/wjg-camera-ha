@@ -55,6 +55,12 @@ class OfflineXMSoapStub:
     async def ptz_get_presets(self, *args, **kwargs):
         return {}
 
+    async def ptz_get_presets_detailed(self, *args, **kwargs):
+        return []
+
+    async def ptz_get_status(self, *args, **kwargs):
+        return None
+
     async def ptz_remove_preset(self, *args, **kwargs):
         return False
 

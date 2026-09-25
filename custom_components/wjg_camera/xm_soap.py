@@ -109,6 +109,26 @@ def _wsse_header(username: str = CAMERA_USERNAME, password: str = CAMERA_PASSWOR
 </wsse:Security>"""
 
 
+def _ptz_position(el: ET.Element) -> dict[str, Any]:
+    """PanTilt/Zoom-Position aus einem Preset- oder Status-Element lesen.
+    Liefert {pan, tilt, zoom}; fehlende Werte sind None."""
+    pos: dict[str, Any] = {"pan": None, "tilt": None, "zoom": None}
+
+    def _f(val: str | None) -> float | None:
+        try:
+            return float(val) if val is not None else None
+        except ValueError:
+            return None
+
+    for sub in el.iter():
+        local = sub.tag.split("}")[-1]
+        if local == "PanTilt" and pos["pan"] is None and sub.get("x") is not None:
+            pos["pan"], pos["tilt"] = _f(sub.get("x")), _f(sub.get("y"))
+        elif local == "Zoom" and pos["zoom"] is None and sub.get("x") is not None:
+            pos["zoom"] = _f(sub.get("x"))
+    return pos
+
+
 def _envelope(
     body: str,
     auth: bool = True,
@@ -482,6 +502,13 @@ class XMSoapClient:
 
     async def ptz_get_presets(self, token: str | None = None) -> dict[str, str]:
         """Gibt alle gespeicherten Presets zurück: {preset_token: name}."""
+        return {
+            p["token"]: p["name"] for p in await self.ptz_get_presets_detailed(token=token)
+        }
+
+    async def ptz_get_presets_detailed(self, token: str | None = None) -> list[dict[str, Any]]:
+        """Alle Presets mit gespeicherter Position (sofern die Kamera sie meldet):
+        [{token, name, pan, tilt, zoom}, ...]; fehlende Werte sind None."""
         token = token or self._profile_token
         body = (
             f"<tptz:GetPresets>"
@@ -489,20 +516,34 @@ class XMSoapClient:
             f"</tptz:GetPresets>"
         )
         root = await self._post(self._ep_ptz, body)
-        presets: dict[str, str] = {}
+        presets: list[dict[str, Any]] = []
         if root is None:
             return presets
         for el in root.iter():
-            local = el.tag.split("}")[-1]
-            if local == "Preset":
-                ptok = el.get("token", "")
-                pname = ""
-                for child in el:
-                    if child.tag.split("}")[-1] == "Name":
-                        pname = child.text or ""
-                if ptok:
-                    presets[ptok] = pname or f"Preset {ptok}"
+            if el.tag.split("}")[-1] != "Preset":
+                continue
+            ptok = el.get("token", "")
+            if not ptok:
+                continue
+            pname = ""
+            for child in el:
+                if child.tag.split("}")[-1] == "Name":
+                    pname = (child.text or "").strip()
+            presets.append({"token": ptok, "name": pname or f"Preset {ptok}", **_ptz_position(el)})
         return presets
+
+    async def ptz_get_status(self, token: str | None = None) -> dict[str, Any] | None:
+        """Aktuelle PTZ-Position {pan, tilt, zoom} (None-Werte, wenn nicht gemeldet)."""
+        token = token or self._profile_token
+        body = (
+            f"<tptz:GetStatus>"
+            f"<tptz:ProfileToken>{token}</tptz:ProfileToken>"
+            f"</tptz:GetStatus>"
+        )
+        root = await self._post(self._ep_ptz, body)
+        if root is None:
+            return None
+        return _ptz_position(root)
 
     async def ptz_remove_preset(self, preset_token: str, token: str | None = None) -> bool:
         """Löscht ein gespeichertes Preset."""
