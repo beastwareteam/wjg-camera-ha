@@ -66,12 +66,14 @@ CONF_ONVIF_TAMPER_TOPIC_KEYWORDS = "onvif_tamper_topic_keywords"
 CONF_ONVIF_SIGNAL_ITEM_KEYS = "onvif_signal_item_keys"
 CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS = "onvif_signal_topic_keywords"
 CONF_MOTION_RTSP_DIFF = "motion_rtsp_diff"
+CONF_MOTION_ONVIF_EVENTS = "motion_onvif_events"
 CONF_MOTION_RTSP_INTERVAL = "motion_rtsp_interval"
 CONF_MOTION_AUTO_RECORD = "motion_auto_record"
 CONF_MOTION_RECORD_COOLDOWN = "motion_record_cooldown"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_HTTP_RETRIES = 1
 DEFAULT_MOTION_RTSP_DIFF = True
+DEFAULT_MOTION_ONVIF_EVENTS = True
 DEFAULT_MOTION_RTSP_INTERVAL = 2
 DEFAULT_MOTION_AUTO_RECORD = True
 DEFAULT_MOTION_RECORD_COOLDOWN = 30
@@ -481,6 +483,15 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             options.get(
                 CONF_MOTION_RTSP_DIFF,
                 entry.data.get(CONF_MOTION_RTSP_DIFF, DEFAULT_MOTION_RTSP_DIFF),
+            )
+        )
+        # Kanal 1 (ONVIF-PullPoint) abschaltbar (v2.2.60): Die XM-3820 liefert
+        # dort dauerhaft ismotion=false, belegt aber mit jedem PullMessages
+        # ~1 s ihren seriellen SOAP-Server — PTZ-Starts warteten dahinter.
+        self.motion_onvif_events_enabled: bool = bool(
+            options.get(
+                CONF_MOTION_ONVIF_EVENTS,
+                entry.data.get(CONF_MOTION_ONVIF_EVENTS, DEFAULT_MOTION_ONVIF_EVENTS),
             )
         )
         self.motion_rtsp_interval: int = max(1, int(
@@ -980,19 +991,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         await self.async_bootstrap_device()
 
         if self.protocol == PROTOCOL_ONVIF:
-            self._event_task = asyncio.create_task(self._async_onvif_event_loop())
-            self._udp_monitor_task = asyncio.create_task(self._async_udp_motion_monitor())
+            channels: list[str] = []
+            if self.motion_onvif_events_enabled:
+                self._event_task = asyncio.create_task(self._async_onvif_event_loop())
+                channels.append("ONVIF-Ereignisse")
             if self.motion_rtsp_diff_enabled:
                 self._rtsp_motion_task = asyncio.create_task(self._async_rtsp_motion_loop())
-                _LOGGER.info(
-                    "Motion-Detection: 3 Kanäle aktiv (ONVIF + RTSP-Stream alle %ds + UDP)",
-                    self.motion_rtsp_interval,
-                )
-            else:
-                _LOGGER.info(
-                    "Motion-Detection: ONVIF + UDP aktiv "
-                    "(RTSP-Bildvergleich per Option deaktiviert — keine Dauerlast)"
-                )
+                channels.append(f"RTSP-Bildvergleich alle {self.motion_rtsp_interval}s")
+            self._udp_monitor_task = asyncio.create_task(self._async_udp_motion_monitor())
+            channels.append("UDP")
+            disabled: list[str] = []
+            if not self.motion_onvif_events_enabled:
+                disabled.append("ONVIF-Ereignisse")
+            if not self.motion_rtsp_diff_enabled:
+                disabled.append("RTSP-Bildvergleich")
+            _LOGGER.info(
+                "Motion-Detection (%s): %d Kanal/Kanäle aktiv (%s)%s",
+                self.host, len(channels), " + ".join(channels),
+                f" — per Option aus: {', '.join(disabled)}" if disabled else "",
+            )
 
         await self.async_refresh()
 

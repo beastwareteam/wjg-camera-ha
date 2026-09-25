@@ -30,6 +30,7 @@
       "init": {
         "title": "WJG camera options",
         "data": {
+          "motion_onvif_events": "Poll camera events (channel 1, ONVIF — useless on XM-3820 and slows PTZ)",
           "motion_rtsp_diff": "Motion via RTSP image comparison (channel 2, continuous load)",
           "motion_rtsp_interval": "RTSP comparison frame interval (seconds, 1-30 — lower = faster but more load)",
           "motion_auto_record": "Record automatically on motion",

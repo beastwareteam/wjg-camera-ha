@@ -30,6 +30,7 @@
       "init": {
         "title": "WJG-Kamera Optionen",
         "data": {
+          "motion_onvif_events": "Kamera-Ereignisse abfragen (Kanal 1, ONVIF — bei XM-3820 nutzlos und bremst PTZ)",
           "motion_rtsp_diff": "Bewegung per RTSP-Bildvergleich (Kanal 2, erzeugt Dauerlast)",
           "motion_rtsp_interval": "Bildabstand RTSP-Bildvergleich (Sekunden, 1-30 — kleiner = schneller aber mehr Dauerlast)",
           "motion_auto_record": "Automatische Aufnahme bei Bewegung",
