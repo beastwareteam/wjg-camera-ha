@@ -33,6 +33,8 @@
           "motion_onvif_events": "Poll camera events (channel 1, ONVIF — useless on XM-3820 and slows PTZ)",
           "motion_rtsp_diff": "Motion via RTSP image comparison (channel 2, continuous load)",
           "motion_rtsp_interval": "RTSP comparison frame interval (seconds, 1-30 — lower = faster but more load)",
+          "motion_rtsp_pixel_threshold": "Image comparison: pixel threshold (5-100, default 30 — lower = more sensitive)",
+          "motion_rtsp_trigger_percent": "Image comparison: trigger threshold in % (0.5-50, default 6 — lower = triggers earlier, more false alarms)",
           "motion_auto_record": "Record automatically on motion",
           "motion_record_cooldown": "Pause between auto recordings (seconds, 0-600)",
           "rtsp_path": "RTSP path",

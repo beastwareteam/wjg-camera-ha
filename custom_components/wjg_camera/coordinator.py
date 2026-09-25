@@ -68,6 +68,8 @@ CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS = "onvif_signal_topic_keywords"
 CONF_MOTION_RTSP_DIFF = "motion_rtsp_diff"
 CONF_MOTION_ONVIF_EVENTS = "motion_onvif_events"
 CONF_MOTION_RTSP_INTERVAL = "motion_rtsp_interval"
+CONF_MOTION_RTSP_PIXEL_THRESHOLD = "motion_rtsp_pixel_threshold"
+CONF_MOTION_RTSP_TRIGGER_PERCENT = "motion_rtsp_trigger_percent"
 CONF_MOTION_AUTO_RECORD = "motion_auto_record"
 CONF_MOTION_RECORD_COOLDOWN = "motion_record_cooldown"
 DEFAULT_HTTP_PORT = 80
@@ -75,6 +77,10 @@ DEFAULT_HTTP_RETRIES = 1
 DEFAULT_MOTION_RTSP_DIFF = True
 DEFAULT_MOTION_ONVIF_EVENTS = True
 DEFAULT_MOTION_RTSP_INTERVAL = 2
+# Kanal-2-Empfindlichkeit (seit 19.08.2026 / 040fd53: 30 und 6 %, vorher 15 und
+# 2 %). Kleiner = empfindlicher/früher, aber mehr Fehlalarme (Licht, IR).
+DEFAULT_MOTION_RTSP_PIXEL_THRESHOLD = 30   # Grauwert-Differenz je Bildpunkt (0-255)
+DEFAULT_MOTION_RTSP_TRIGGER_PERCENT = 6.0  # Anteil geänderter Bildpunkte in %
 DEFAULT_MOTION_AUTO_RECORD = True
 DEFAULT_MOTION_RECORD_COOLDOWN = 30
 DEFAULT_RTSP_PATH = "/user=admin&password=&channel=1&stream=1.sdp?real_stream"
@@ -500,6 +506,22 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 entry.data.get(CONF_MOTION_RTSP_INTERVAL, DEFAULT_MOTION_RTSP_INTERVAL),
             )
         ))
+        self.motion_rtsp_pixel_threshold: int = max(1, min(254, int(
+            options.get(
+                CONF_MOTION_RTSP_PIXEL_THRESHOLD,
+                entry.data.get(
+                    CONF_MOTION_RTSP_PIXEL_THRESHOLD, DEFAULT_MOTION_RTSP_PIXEL_THRESHOLD
+                ),
+            )
+        )))
+        self.motion_rtsp_trigger_percent: float = max(0.1, min(100.0, float(
+            options.get(
+                CONF_MOTION_RTSP_TRIGGER_PERCENT,
+                entry.data.get(
+                    CONF_MOTION_RTSP_TRIGGER_PERCENT, DEFAULT_MOTION_RTSP_TRIGGER_PERCENT
+                ),
+            )
+        )))
         self.motion_auto_record_enabled: bool = bool(
             options.get(
                 CONF_MOTION_AUTO_RECORD,
@@ -3294,16 +3316,21 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             img2 = Image.open(_io.BytesIO(frame)).convert("L")
             diff = ImageChops.difference(img1, img2)
             pixels = list(diff.getdata())
-            pct = sum(1 for p in pixels if p > 30) / len(pixels) * 100
-            if pct >= 6.0 and self._ptz_motion_suppressed():
+            pixel_threshold = self.motion_rtsp_pixel_threshold
+            trigger_pct = self.motion_rtsp_trigger_percent
+            pct = sum(1 for p in pixels if p > pixel_threshold) / len(pixels) * 100
+            if pct >= trigger_pct and self._ptz_motion_suppressed():
                 _LOGGER.debug("RTSP Motion: %.1f%% während PTZ ignoriert", pct)
-            elif pct >= 6.0:
+            elif pct >= trigger_pct:
                 _LOGGER.info("RTSP Motion: %.1f%% Pixeländerung erkannt", pct)
                 self._last_motion_time = time.time()
                 asyncio.ensure_future(self._trigger_motion_recording())
                 self.async_update_listeners()
             else:
-                _LOGGER.debug("RTSP Motion: %.1f%% Pixeländerung (unter 2%% Schwelle)", pct)
+                _LOGGER.debug(
+                    "RTSP Motion: %.1f%% Pixeländerung (unter %.1f%% Schwelle)",
+                    pct, trigger_pct,
+                )
         except Exception:
             pass
         return frame

@@ -74,6 +74,8 @@ CONF_ONVIF_SIGNAL_TOPIC_KEYWORDS: Final = "onvif_signal_topic_keywords"
 CONF_MOTION_RTSP_DIFF: Final = "motion_rtsp_diff"
 CONF_MOTION_ONVIF_EVENTS: Final = "motion_onvif_events"
 CONF_MOTION_RTSP_INTERVAL: Final = "motion_rtsp_interval"
+CONF_MOTION_RTSP_PIXEL_THRESHOLD: Final = "motion_rtsp_pixel_threshold"
+CONF_MOTION_RTSP_TRIGGER_PERCENT: Final = "motion_rtsp_trigger_percent"
 CONF_MOTION_AUTO_RECORD: Final = "motion_auto_record"
 CONF_MOTION_RECORD_COOLDOWN: Final = "motion_record_cooldown"
 
@@ -92,6 +94,8 @@ DEFAULT_HTTP_RETRIES: Final = 1
 DEFAULT_MOTION_RTSP_DIFF: Final = True
 DEFAULT_MOTION_ONVIF_EVENTS: Final = True
 DEFAULT_MOTION_RTSP_INTERVAL: Final = 2
+DEFAULT_MOTION_RTSP_PIXEL_THRESHOLD: Final = 30
+DEFAULT_MOTION_RTSP_TRIGGER_PERCENT: Final = 6.0
 DEFAULT_MOTION_AUTO_RECORD: Final = True
 DEFAULT_MOTION_RECORD_COOLDOWN: Final = 30
 

@@ -222,6 +222,64 @@ async def test_process_rtsp_motion_frame_triggers_on_large_diff():
     assert _get_private_attr(coordinator, "_last_motion_time") > 0
 
 
+def _make_png_with_patch(base: int, patch: int, patch_w: int, patch_h: int) -> bytes:
+    """80x60-Graubild (verlustfrei) mit Muster, damit es wie ein echtes Frame
+    > 200 Byte groß ist; links oben ist ein Rechteck um (patch - base) heller."""
+    delta = patch - base
+    img = Image.new("L", (80, 60))
+    img.putdata([
+        base + ((x * 7 + y * 13) % 40) + (delta if x < patch_w and y < patch_h else 0)
+        for y in range(60) for x in range(80)
+    ])
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_process_rtsp_motion_frame_pixel_threshold_is_configurable():
+    """Grauwert-Differenz 20 auf 10 % des Bildes: mit Standard (Pixel-Schwelle
+    30) keine Bewegung, mit Option 15 (+ Auslöseschwelle 3 %) Bewegung."""
+    before = _make_png_with_patch(100, 100, 24, 20)
+    after = _make_png_with_patch(100, 120, 24, 20)   # 480/4800 = 10 %, Diff 20
+
+    default = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    default._trigger_motion_recording = AsyncMock()
+    default._process_rtsp_motion_frame(after, before)
+    await asyncio.sleep(0)
+    default._trigger_motion_recording.assert_not_called()
+
+    tuned = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA), options={
+        "motion_rtsp_pixel_threshold": 15, "motion_rtsp_trigger_percent": 3.0,
+    }))
+    tuned._trigger_motion_recording = AsyncMock()
+    tuned._process_rtsp_motion_frame(after, before)
+    await asyncio.sleep(0)
+    tuned._trigger_motion_recording.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_process_rtsp_motion_frame_trigger_percent_is_configurable():
+    """Starke Änderung auf 4 % des Bildes: mit Standard (6 %) keine Bewegung,
+    mit Auslöseschwelle 3 % Bewegung."""
+    before = _make_png_with_patch(50, 50, 16, 12)
+    after = _make_png_with_patch(50, 200, 16, 12)    # 192/4800 = 4 %, Diff 150
+
+    default = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    default._trigger_motion_recording = AsyncMock()
+    default._process_rtsp_motion_frame(after, before)
+    await asyncio.sleep(0)
+    default._trigger_motion_recording.assert_not_called()
+
+    tuned = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA), options={
+        "motion_rtsp_trigger_percent": 3.0,
+    }))
+    tuned._trigger_motion_recording = AsyncMock()
+    tuned._process_rtsp_motion_frame(after, before)
+    await asyncio.sleep(0)
+    tuned._trigger_motion_recording.assert_called_once()
+
+
 class _FakeRtspStdout:
     def __init__(self, chunks):
         self._chunks = list(chunks)

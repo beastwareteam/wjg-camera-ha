@@ -33,6 +33,8 @@
           "motion_onvif_events": "Kamera-Ereignisse abfragen (Kanal 1, ONVIF — bei XM-3820 nutzlos und bremst PTZ)",
           "motion_rtsp_diff": "Bewegung per RTSP-Bildvergleich (Kanal 2, erzeugt Dauerlast)",
           "motion_rtsp_interval": "Bildabstand RTSP-Bildvergleich (Sekunden, 1-30 — kleiner = schneller aber mehr Dauerlast)",
+          "motion_rtsp_pixel_threshold": "Bildvergleich: Pixel-Schwelle (5-100, Standard 30 — kleiner = empfindlicher)",
+          "motion_rtsp_trigger_percent": "Bildvergleich: Auslöseschwelle in % (0,5-50, Standard 6 — kleiner = löst früher aus, mehr Fehlalarme)",
           "motion_auto_record": "Automatische Aufnahme bei Bewegung",
           "motion_record_cooldown": "Pause zwischen Auto-Aufnahmen (Sekunden, 0-600)",
           "rtsp_path": "RTSP-Pfad",
