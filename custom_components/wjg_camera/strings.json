@@ -40,7 +40,7 @@
           "patrol_start": "Patrouille: Startzeit (HH:MM, z. B. 22:00)",
           "patrol_end": "Patrouille: Endzeit (HH:MM, z. B. 06:00; gleich wie Start = immer)",
           "patrol_dwell": "Patrouille: Verweildauer je Station (Sekunden, 20-1800)",
-          "patrol_stations": "Patrouille: Stationen als Klicks (Stufe 8) ab linkem Anschlag, kommagetrennt (z. B. 0, 4, 8)",
+          "patrol_stations": "Patrouille: Stationen als Klicks (Stufe 8) ab linkem Anschlag, kommagetrennt, in Fahrreihenfolge — mit Rückweg z. B. 0, 4, 8, 4, 0",
           "patrol_rest_station": "Patrouille: Ruhe-Station außerhalb der Zeit (Nummer, 1 = erste)",
           "patrol_home_secs": "Patrouille: Fahrzeit bis zum linken Anschlag (Sekunden, 5-90)",
           "rtsp_path": "RTSP-Pfad",

@@ -58,6 +58,11 @@ Live-Befund 25.09.2026 (.49), v2.2.62 mit Preset-Logs:
   patrol_dwell, patrol_stations, patrol_rest_station, patrol_home_secs.
   Noch nicht live bestätigt (Fahrzeit zum Anschlag und Klicks je Station
   müssen am Gerät eingestellt werden).
+- v2.2.64: Stationen in beliebiger Reihenfolge (Rückweg klickt nach links).
+  Letzte == erste Station wird gestrichen (Start der nächsten Runde). Jede
+  0-Station fährt an den Anschlag; aus bekannter Position nur
+  `Klicks × PATROL_CLICK_TRAVEL_SECS (1,8) + PATROL_STOP_MARGIN_SECS (3)`,
+  höchstens `patrol_home_secs` (kein langes Rattern).
 - NICHT wieder Presets/Home für die XM-3820 einbauen, ohne GotoPreset live
   neu geprüft zu haben.
 
