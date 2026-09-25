@@ -1,7 +1,7 @@
 # WJG XM-3820 Camera Bridge – Home Assistant Integration
 
 **Kamera:** WJG / Tenganda XM-3820 · **Chipset:** XM (Xiongmai) / GK-Serie  
-**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.61 · **HA:** ≥ 2024.1
+**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.62 · **HA:** ≥ 2024.1
 
 > Vollständige lokale Home-Assistant-Integration ohne Cloud-Abhängigkeit.  
 > RTSP-Livestream, ONVIF-Steuerung, PTZ mit 21 Buttons, Imaging-Einstellungen, Events und mehr.
@@ -433,4 +433,4 @@ pytest tests/test_coordinator.py -v
 
 ---
 
-*Version 2.2.61 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*
+*Version 2.2.62 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*

@@ -39,6 +39,16 @@ benachbarte Stufen spürbar verschieden. KEINE Serie von Einzelklicks.
   per Schwellen lösbar; dafür bräuchte es einen Vorlauf-Puffer aus dem Kanal-2-
   Stream (noch nicht umgesetzt).
 
+## Presets (v2.2.62)
+- Nutzer: Presets fahren falsche/nicht vorhandene Position an. Verdacht: XM
+  übernimmt den angefragten PresetToken ("1".."4") nicht, sondern vergibt einen
+  eigenen; der Button fuhr aber stur die Slot-Nummer an.
+- Jetzt: Button-Slot → beim SetPreset zurückgegebener Token (gemerkt), nach
+  Neustart über Namen "Preset N" aus GetPresets, sonst Slot-Nummer.
+- INFO-Logs: Position (GetStatus) beim Speichern, angefragter vs. Kamera-Token,
+  komplette Preset-Liste mit gespeicherten Positionen, Token beim Anfahren.
+  Noch nicht live bestätigt.
+
 ### Live gemessen (25.09.2026, .49)
 v2.2.55 (Stop nach Move-Antwort):
 | Stufe | Soll | Move-Antwort | Stop-Antwort |

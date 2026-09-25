@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 import time
+import xml.etree.ElementTree as ET
 from unittest.mock import AsyncMock
 
 import pytest
@@ -715,6 +716,83 @@ async def test_ptz_home_and_preset_suppress_motion(monkeypatch):
     assert await coordinator.async_ptz_goto_preset("1") is True
     assert seen == [True, True]
     assert coordinator._ptz_motion_suppressed() is True  # pylint: disable=protected-access
+
+
+@pytest.mark.asyncio
+async def test_preset_slot_uses_token_assigned_by_camera(monkeypatch, caplog):
+    """Die XM-Firmware vergibt beim SetPreset eigene Tokens. Der Preset-Button
+    muss danach genau diesen Token anfahren, nicht die Slot-Nummer."""
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    gotos: list[str] = []
+
+    class _Soap:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def ptz_get_status(self, **_kwargs):
+            return {"pan": 0.25, "tilt": -0.5, "zoom": 0.0}
+
+        async def ptz_set_preset(self, **_kwargs):
+            return "7"
+
+        async def ptz_get_presets_detailed(self, **_kwargs):
+            return [{"token": "7", "name": "Preset 1", "pan": 0.25, "tilt": -0.5, "zoom": 0.0}]
+
+        async def ptz_goto_preset(self, preset_token, **_kwargs):
+            gotos.append(preset_token)
+            return True
+
+    monkeypatch.setattr(coordinator, "_soap", _Soap)
+    caplog.set_level(logging.INFO)
+    assert await coordinator.async_ptz_set_preset("Preset 1", token="1") == "7"
+    assert await coordinator.async_ptz_goto_preset(slot="1") is True
+    assert gotos == ["7"]
+    assert "Kamera-Token=7" in caplog.text
+    assert "pan=0.250 tilt=-0.500" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_preset_slot_found_by_name_after_restart(monkeypatch):
+    """Nach einem Neustart ist die Slot→Token-Zuordnung weg: dann über den
+    Namen "Preset N" aus GetPresets auflösen, sonst die Slot-Nummer."""
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    gotos: list[str] = []
+
+    class _Soap:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def ptz_get_presets_detailed(self, **_kwargs):
+            return [{"token": "12", "name": "Preset 2", "pan": None, "tilt": None, "zoom": None}]
+
+        async def ptz_goto_preset(self, preset_token, **_kwargs):
+            gotos.append(preset_token)
+            return True
+
+    monkeypatch.setattr(coordinator, "_soap", _Soap)
+    assert await coordinator.async_ptz_get_presets() == {"12": "Preset 2"}
+    await coordinator.async_ptz_goto_preset(slot="2")
+    await coordinator.async_ptz_goto_preset(slot="3")
+    assert gotos == ["12", "3"]
+
+
+def test_ptz_position_parsing():
+    """GetPresets/GetStatus: Position aus PanTilt/Zoom lesen, fehlend → None."""
+    root = ET.fromstring(
+        '<Preset xmlns:tt="http://www.onvif.org/ver10/schema" token="1">'
+        '<tt:Name>Preset 1</tt:Name><tt:PTZPosition>'
+        '<tt:PanTilt x="0.5" y="-0.25"/><tt:Zoom x="0.1"/></tt:PTZPosition></Preset>'
+    )
+    assert xm_soap_module._ptz_position(root) == {"pan": 0.5, "tilt": -0.25, "zoom": 0.1}  # pylint: disable=protected-access
+    assert xm_soap_module._ptz_position(ET.fromstring("<Preset/>")) == {  # pylint: disable=protected-access
+        "pan": None, "tilt": None, "zoom": None,
+    }
 
 
 # ── PTZ: Coordinator-Fallback (Direct-SOAP) ──────────────────────────────────

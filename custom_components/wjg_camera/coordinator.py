@@ -587,6 +587,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # PTZ-Start abgebrochen
         self._event_pull_task: asyncio.Task | None = None
         self._ptz_presets: dict[str, str] = {}  # token -> name
+        # Button-Slot ("1".."4") → Token, den die Kamera beim Speichern vergeben hat
+        # (XM-Firmware übernimmt den angefragten Token nicht zwingend).
+        self._ptz_slot_tokens: dict[str, str] = {}
+        self._ptz_preset_positions: dict[str, dict[str, Any]] = {}  # token -> Position
         # Digital Zoom (Pillow-Crop für Snapshots, CSS-Sync über Lovelace-Karte)
         self._digital_zoom: float = 1.0
         self._digital_zoom_cx: float = 0.5   # Bildmittelpunkt X (0–1)
@@ -2648,12 +2652,13 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_ptz_get_presets(self) -> dict[str, str]:
         try:
             async with self._soap() as soap:
-                presets = await soap.ptz_get_presets()
+                presets = await soap.ptz_get_presets_detailed()
         except Exception as exc:
             _LOGGER.warning("ptz_get_presets Fehler: %s", exc)
             return dict(self._ptz_presets)
-        self._ptz_presets = presets
-        return presets
+        self._ptz_presets = {p["token"]: p["name"] for p in presets}
+        self._ptz_preset_positions = {p["token"]: p for p in presets}
+        return dict(self._ptz_presets)
 
     def _ptz_candidate_tokens(self) -> list[str]:
         """Profile-Token-Kandidaten für PTZ: gemerkter/konfigurierter zuerst,
@@ -2754,27 +2759,91 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         _LOGGER.info("PTZ-Test %s", result)
         return result
 
-    async def async_ptz_goto_preset(self, token: str) -> bool:
+    def _ptz_preset_token_for_slot(self, slot: str) -> str:
+        """Kamera-Token für Button-Slot N: beim Speichern gemerkter Token, sonst
+        das Preset mit Namen "Preset N" aus GetPresets, sonst N selbst."""
+        if slot in self._ptz_slot_tokens:
+            return self._ptz_slot_tokens[slot]
+        wanted = f"Preset {slot}"
+        for tok, name in self._ptz_presets.items():
+            if name == wanted:
+                return tok
+        return slot
+
+    @staticmethod
+    def _fmt_ptz_pos(pos: dict[str, Any] | None) -> str:
+        if not pos or pos.get("pan") is None:
+            return "unbekannt"
+        parts = [f"{key}={pos[key]:.3f}" for key in ("pan", "tilt", "zoom") if pos.get(key) is not None]
+        return " ".join(parts)
+
+    def _store_preset_list(self, presets: list[dict[str, Any]]) -> None:
+        if presets:
+            self._ptz_presets = {p["token"]: p["name"] for p in presets}
+            self._ptz_preset_positions = {p["token"]: p for p in presets}
+        # Wichtig für die Diagnose: welche Tokens/Positionen die Kamera wirklich hat
+        _LOGGER.info(
+            "PTZ-Presets der Kamera (%s): %s",
+            self.host,
+            "; ".join(
+                f"Token={p['token']} Name='{p['name']}' {self._fmt_ptz_pos(p)}"
+                for p in presets
+            ) or "keine",
+        )
+
+    async def async_ptz_goto_preset(self, token: str | None = None, *, slot: str | None = None) -> bool:
+        """Preset anfahren: per Kamera-Token (Auswahlliste) oder per Button-Slot N
+        (→ beim Speichern vergebener Kamera-Token, siehe _ptz_preset_token_for_slot)."""
+        if slot is not None:
+            token = self._ptz_preset_token_for_slot(slot)
+        if not token:
+            return False
         spd = self._ptz_speed / 8
+        saved = self._ptz_preset_positions.get(token)
         try:
             with self._ptz_motion_quiet():
                 async with self._soap() as soap:
-                    return await soap.ptz_goto_preset(preset_token=token, speed=spd)
+                    ok = await soap.ptz_goto_preset(preset_token=token, speed=spd)
         except Exception as exc:
             _LOGGER.warning("ptz_goto_preset Fehler: %s", exc)
             return False
+        if ok:
+            _LOGGER.info(
+                "PTZ Preset angefahren (%s): Token=%s, gespeicherte Position %s",
+                self.host, token, self._fmt_ptz_pos(saved),
+            )
+        else:
+            _LOGGER.warning(
+                "PTZ Preset Token=%s von der Kamera abgelehnt (%s, bekannte Presets: %s)",
+                token, self.host, self._ptz_presets or "keine",
+            )
+        return ok
 
     async def async_ptz_set_preset(self, name: str, token: str | None = None) -> str | None:
         try:
             async with self._soap() as soap:
+                pos = await soap.ptz_get_status()
                 new_token = await soap.ptz_set_preset(name=name, preset_token=token)
-            if new_token:
-                self._ptz_presets[new_token] = name
-                return new_token
-            return None
+                presets = await soap.ptz_get_presets_detailed() if new_token else []
         except Exception as exc:
             _LOGGER.warning("ptz_set_preset Fehler: %s", exc)
             return None
+        if not new_token:
+            _LOGGER.warning(
+                "PTZ Preset '%s' nicht gespeichert (%s, angefragter Token=%s)",
+                name, self.host, token,
+            )
+            return None
+        if token:
+            self._ptz_slot_tokens[token] = new_token
+        self._ptz_presets[new_token] = name
+        _LOGGER.info(
+            "PTZ Preset '%s' gespeichert (%s): angefragter Token=%s, Kamera-Token=%s, "
+            "aktuelle Position %s",
+            name, self.host, token, new_token, self._fmt_ptz_pos(pos),
+        )
+        self._store_preset_list(presets)
+        return new_token
 
     async def async_ptz_delete_preset(self, token: str) -> bool:
         try:
