@@ -59,8 +59,16 @@ PTZ_SPEED = 0.4   # Geschwindigkeit 0.1–1.0
 # Stufe 1 → kurzer, langsamer Klick; Stufe 8 → langer, schneller Klick.
 # Achtung: v2.2.42–v2.2.52 schickten Velocity fest 1.0 → alle Stufen fühlten
 # sich gleich an; v2.2.53 (N Pulse) → mehrere Einzelklicks statt einem langen.
-PTZ_MIN_MOVE_DURATION = 0.25  # Sekunden bei Stufe 1 (kurzer Klick)
-PTZ_MAX_MOVE_DURATION = 1.5   # Sekunden bei Stufe 8 (langer Klick)
+#
+# Die Kamera fährt zusätzlich zur Haltedauer während der Netzwerk-Latenz
+# (Antwort auf ContinuousMove + Laufzeit des Stop) — dieser Sockel kommt bei
+# JEDEM Klick obendrauf. Deshalb (v2.2.55):
+# - Die Haltedauer zählt ab dem SENDEN des Moves (Antwortzeit wird abgezogen).
+# - Stufe 1 = 0 s → Stop sofort nach der Move-Antwort (kürzest möglicher Klick).
+# - Abstufung wächst progressiv, damit benachbarte Stufen spürbar verschieden sind.
+# Tuning nur über diese Tabelle (Index 0 = Stufe 1).
+PTZ_MOVE_DURATIONS_DEFAULT: tuple[float, ...] = (0.0, 0.1, 0.25, 0.45, 0.7, 1.0, 1.4, 2.0)
+PTZ_MOVE_DURATIONS: tuple[float, ...] = PTZ_MOVE_DURATIONS_DEFAULT
 
 
 def ptz_level_for_speed(speed: float) -> int:
@@ -69,11 +77,8 @@ def ptz_level_for_speed(speed: float) -> int:
 
 
 def ptz_move_duration_for_speed(speed: float) -> float:
-    """Haltedauer des Einzel-Klicks, linear von Stufe 1 (min) bis Stufe 8 (max)."""
-    level = ptz_level_for_speed(speed)
-    return PTZ_MIN_MOVE_DURATION + (level - 1) / 7 * (
-        PTZ_MAX_MOVE_DURATION - PTZ_MIN_MOVE_DURATION
-    )
+    """Haltedauer des Einzel-Klicks laut PTZ_MOVE_DURATIONS (Stufe 1 = kürzester)."""
+    return PTZ_MOVE_DURATIONS[ptz_level_for_speed(speed) - 1]
 
 # ── WSSE Auth ─────────────────────────────────────────────────────────────────
 
@@ -351,19 +356,32 @@ class XMSoapClient:
         pan, tilt, zoom = coords
 
         duration = ptz_move_duration_for_speed(speed)
-        _LOGGER.debug(
-            "PTZ '%s': Velocity=%.3f, Klick=%.2fs (token=%s)",
-            direction, v, duration, token,
-        )
+        loop = asyncio.get_running_loop()
 
+        t_start = loop.time()
         if not await self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom, token=token):
             return False  # z. B. falscher Token → Coordinator probiert nächsten
-        await asyncio.sleep(duration)
+        t_move_ack = loop.time()
+        # Die Kamera fährt bereits, während wir auf die Move-Antwort warten →
+        # diese Zeit von der Haltedauer abziehen.
+        remaining = duration - (t_move_ack - t_start)
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+        t_stop_sent = loop.time()
         # Stop MUSS greifen, sonst fährt die Kamera weiter — 1× wiederholen.
-        if not await self.ptz_stop(token=token) and not await self.ptz_stop(token=token):
+        stopped = await self.ptz_stop(token=token) or await self.ptz_stop(token=token)
+        t_stop_ack = loop.time()
+        if not stopped:
             _LOGGER.warning(
                 "PTZ '%s': Stop fehlgeschlagen (Token=%s)", direction, token,
             )
+        # Messwerte für das Tuning von PTZ_MOVE_DURATIONS
+        _LOGGER.info(
+            "PTZ '%s' Stufe %d: Soll %.2fs | Move-Antwort %.2fs, Stop gesendet "
+            "nach %.2fs, Stop-Antwort nach %.2fs",
+            direction, ptz_level_for_speed(speed), duration,
+            t_move_ack - t_start, t_stop_sent - t_start, t_stop_ack - t_start,
+        )
         # Bewegung lief → True, damit der Coordinator NICHT mit dem nächsten
         # Profile-Token erneut fährt (sonst Extra-Bewegung).
         return True

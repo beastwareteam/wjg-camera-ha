@@ -384,16 +384,51 @@ async def test_xmsoap_ptz_command_fails_without_any_movement():
     assert await client.ptz_command("left", speed=1.0) is False
 
 
-def test_ptz_move_duration_scales_monotonically_with_speed(monkeypatch):
-    """Klick-Dauer steigt streng monoton: Stufe 1 = kurz, Stufe 8 = lang."""
-    monkeypatch.setattr(xm_soap_module, "PTZ_MIN_MOVE_DURATION", 0.25)
-    monkeypatch.setattr(xm_soap_module, "PTZ_MAX_MOVE_DURATION", 1.5)
-    durations = [
-        xm_soap_module.ptz_move_duration_for_speed(level / 8) for level in range(1, 9)
-    ]
-    assert durations[0] == pytest.approx(0.25)
-    assert durations[-1] == pytest.approx(1.5)
-    assert all(b > a for a, b in zip(durations, durations[1:]))
+def test_ptz_move_duration_scales_monotonically_with_speed():
+    """Klick-Dauer: Stufe 1 = 0 s (sofortiger Stop), danach streng steigend
+    und progressiv (jeder Schritt mindestens so groß wie der vorige)."""
+    table = xm_soap_module.PTZ_MOVE_DURATIONS_DEFAULT
+    assert len(table) == 8
+    assert table[0] == 0.0
+    assert all(b > a for a, b in zip(table, table[1:]))
+    steps = [b - a for a, b in zip(table, table[1:])]
+    assert all(b >= a for a, b in zip(steps, steps[1:]))
+
+
+@pytest.mark.asyncio
+async def test_xmsoap_ptz_click_subtracts_move_latency(monkeypatch):
+    """Die Haltedauer zählt ab Senden des Moves: Antwortzeit wird abgezogen,
+    sonst kommt die Netzwerk-Latenz bei jeder Stufe obendrauf."""
+    monkeypatch.setattr(
+        xm_soap_module, "PTZ_MOVE_DURATIONS", (0.0, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3)
+    )
+    client = XMSoapClient(host="192.168.1.61")
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _record_sleep(seconds):
+        slept.append(seconds)
+        await real_sleep(0)
+
+    async def _slow_move(**_kwargs):
+        time.sleep(0.1)  # simulierte Move-Antwortzeit
+        return True
+
+    async def _fake_stop(token=None):
+        _ = token
+        return True
+
+    client.ptz_continuous_move = _slow_move  # type: ignore[method-assign]
+    client.ptz_stop = _fake_stop  # type: ignore[method-assign]
+    monkeypatch.setattr(xm_soap_module.asyncio, "sleep", _record_sleep)
+
+    assert await client.ptz_command("right", speed=2 / 8) is True
+    assert len(slept) == 1
+    assert 0.15 <= slept[0] <= 0.21  # 0.3 s Soll − ~0.1 s Antwortzeit
+
+    slept.clear()
+    assert await client.ptz_command("right", speed=1 / 8) is True
+    assert slept == []  # Stufe 1: Stop sofort nach der Move-Antwort
 
 
 # ── PTZ: Coordinator-Fallback (Direct-SOAP) ──────────────────────────────────
@@ -456,8 +491,7 @@ async def test_fallback_ptz_retries_failed_stop_once():
 @pytest.mark.asyncio
 async def test_fallback_ptz_timeout_covers_click_duration(monkeypatch):
     """Timeout-Variante: <Timeout> muss mindestens die Klick-Dauer abdecken."""
-    monkeypatch.setattr(xm_soap_module, "PTZ_MIN_MOVE_DURATION", 0.0)
-    monkeypatch.setattr(xm_soap_module, "PTZ_MAX_MOVE_DURATION", 1.5)
+    monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.0,) * 7 + (1.5,))
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
     bodies: list[str] = []
@@ -483,3 +517,51 @@ async def test_fallback_ptz_timeout_covers_click_duration(monkeypatch):
 
 async def _no_sleep(_seconds):
     return None
+
+
+@pytest.mark.asyncio
+async def test_fallback_ptz_latency_measured_from_successful_attempt(monkeypatch):
+    """Fallback: Latenz-Kompensation misst ab dem Senden des ERFOLGREICHEN
+    ContinuousMove — fehlgeschlagene Varianten/Tokens werden nicht abgezogen."""
+    monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.3,) * 8)
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    slept: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _record_sleep(seconds):
+        slept.append(seconds)
+        await real_sleep(0)
+
+    async def _fake_soap_for(_service_key, body, use_auth=True, timeout_seconds=5):
+        _ = use_auth
+        _ = timeout_seconds
+        if "ContinuousMove" in body:
+            if "ProfileToken>bad<" in body or "<tptz:ContinuousMove>" in body:
+                # fehlgeschlagener Token bzw. v20-Variante, langsam → darf
+                # NICHT von der Haltedauer abgezogen werden
+                time.sleep(0.2)
+                return ""
+            time.sleep(0.1)  # Antwortzeit des erfolgreichen (v10-)Moves
+            return "<tptz10:ContinuousMoveResponse/>"
+        if "tptz:Stop" in body:
+            return "<tptz:StopResponse/>"
+        return ""
+
+    async def _no_legacy(*_args, **_kwargs):
+        return ""
+
+    async def _tokens():
+        return ["bad", "000"]
+
+    _set_private_attr(coordinator, "_onvif_soap_for", _fake_soap_for)
+    _set_private_attr(coordinator, "_onvif_soap_legacy_for", _no_legacy)
+    _set_private_attr(coordinator, "_async_candidate_ptz_profile_tokens", _tokens)
+    _set_private_attr(coordinator, "_onvif_profile_tokens", {"000": "000"})
+    _set_private_attr(coordinator, "_active_stream", "000")
+    monkeypatch.setattr(coordinator_module.asyncio, "sleep", _record_sleep)
+
+    assert await coordinator.async_ptz_command("left", speed=4) is True
+    assert _get_private_attr(coordinator, "_onvif_profile_tokens")["000"] == "000"
+    assert len(slept) == 1
+    # 0.3 s Soll − ~0.1 s Antwortzeit des erfolgreichen Moves (NICHT − 0.5 s)
+    assert 0.15 <= slept[0] <= 0.21
