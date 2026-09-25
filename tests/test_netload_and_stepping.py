@@ -996,3 +996,44 @@ def test_translations_cover_all_option_fields():
         assert "options" in data and "options" not in data["config"], name
         labels = data["options"]["step"]["init"]["data"]
         assert keys <= set(labels), f"{name}: fehlend {sorted(keys - set(labels))}"
+
+
+@pytest.mark.asyncio
+async def test_event_loop_cancels_subscription_creation_during_ptz():
+    """Auch das Anlegen der Subscription wird beim PTZ-Start abgebrochen;
+    während PTZ folgt kein PullMessages, danach neuer Versuch."""
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    _set_private_attr(coordinator, "_session", object())
+    _set_private_attr(coordinator, "_event_pullpoint_path", "")
+    calls = {"create": 0, "create_cancelled": 0, "pull": 0}
+
+    async def _hanging_create():
+        calls["create"] += 1
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            calls["create_cancelled"] += 1
+            raise
+        return True
+
+    async def _pull():
+        calls["pull"] += 1
+        await asyncio.sleep(10)
+        return True
+
+    coordinator.async_onvif_create_pullpoint = _hanging_create  # type: ignore[method-assign]
+    coordinator.async_onvif_pull_messages_once = _pull  # type: ignore[method-assign]
+    loop_task = asyncio.ensure_future(
+        _get_private_attr(coordinator, "_async_onvif_event_loop")()
+    )
+    try:
+        await asyncio.sleep(0.05)
+        with coordinator._ptz_motion_quiet():  # pylint: disable=protected-access
+            await asyncio.sleep(0.05)
+            assert calls == {"create": 1, "create_cancelled": 1, "pull": 0}
+        await asyncio.sleep(0.05)
+        assert calls["create"] == 2 and calls["pull"] == 0
+    finally:
+        loop_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await loop_task

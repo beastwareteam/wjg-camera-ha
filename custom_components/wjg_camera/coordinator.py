@@ -542,7 +542,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # gemessen 25.09.2026: Move-Antwort 0,2–1,2 s, Stop-Antwort ~1,3 s).
         self._ptz_idle = asyncio.Event()
         self._ptz_idle.set()
-        # Laufendes PullMessages (wird beim PTZ-Start abgebrochen)
+        # Laufende Event-Anfrage (Subscription/PullMessages), wird beim
+        # PTZ-Start abgebrochen
         self._event_pull_task: asyncio.Task | None = None
         self._ptz_presets: dict[str, str] = {}  # token -> name
         # Digital Zoom (Pillow-Crop für Snapshots, CSS-Sync über Lovelace-Karte)
@@ -3024,6 +3025,25 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._remember_onvif_service_path(ONVIF_SERVICE_EVENTS, self._event_pullpoint_path)
         return True
 
+    async def _async_event_request(self, coro: Any) -> Any:
+        """Event-SOAP-Anfrage (Subscription/PullMessages) als abbrechbarer Task.
+
+        Beim PTZ-Start bricht `_ptz_motion_quiet()` den Task ab, damit die
+        seriell arbeitende Kamera Move/Stop sofort bearbeitet.
+        Rückgabe: Ergebnis der Anfrage, oder None, wenn für PTZ abgebrochen.
+        """
+        task = asyncio.ensure_future(coro)
+        self._event_pull_task = task
+        try:
+            await asyncio.wait({task})
+        finally:
+            self._event_pull_task = None
+            if not task.done():  # Loop selbst wurde abgebrochen
+                task.cancel()
+        if task.cancelled():
+            return None
+        return task.result()
+
     async def _async_onvif_event_loop(self) -> None:
         """ONVIF Pull-Point Event-Loop mit Reconnect/Backoff."""
         backoff_seconds = 1
@@ -3037,24 +3057,19 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 await self._ptz_idle.wait()
 
                 if not self._event_pullpoint_path:
-                    ok = await self.async_onvif_create_pullpoint()
+                    ok = await self._async_event_request(self.async_onvif_create_pullpoint())
+                    if ok is None:
+                        continue  # für PTZ abgebrochen → nach PTZ neu versuchen
                     if not ok:
                         await asyncio.sleep(backoff_seconds)
                         backoff_seconds = min(backoff_seconds * 2, 30)
-                        continue
+                    # Vor dem ersten PullMessages erneut auf PTZ-Ruhe prüfen
+                    continue
 
-                pull = asyncio.ensure_future(self.async_onvif_pull_messages_once())
-                self._event_pull_task = pull
-                try:
-                    await asyncio.wait({pull})
-                finally:
-                    self._event_pull_task = None
-                    if not pull.done():  # Loop selbst wurde abgebrochen
-                        pull.cancel()
-                if pull.cancelled():
+                ok = await self._async_event_request(self.async_onvif_pull_messages_once())
+                if ok is None:
                     # Für PTZ abgebrochen — Subscription bleibt gültig
                     continue
-                ok = pull.result()
                 if ok:
                     backoff_seconds = 1
                     continue

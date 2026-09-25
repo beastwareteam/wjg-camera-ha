@@ -104,6 +104,12 @@ async def test_async_setup_entry_success(monkeypatch):
         entry, integration.PLATFORMS
     )
 
+    # Options-Listener ist registriert und lädt beim Aufruf den Entry neu
+    assert len(entry.update_listeners) == 1
+    hass.config_entries.async_reload = AsyncMock()
+    await entry.update_listeners[0](hass, entry)
+    hass.config_entries.async_reload.assert_awaited_once_with(entry.entry_id)
+
 
 @pytest.mark.asyncio
 async def test_async_setup_entry_raises_not_ready(monkeypatch):
