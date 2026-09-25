@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import logging
 import os
@@ -60,14 +61,16 @@ PTZ_SPEED = 0.4   # Geschwindigkeit 0.1–1.0
 # Achtung: v2.2.42–v2.2.52 schickten Velocity fest 1.0 → alle Stufen fühlten
 # sich gleich an; v2.2.53 (N Pulse) → mehrere Einzelklicks statt einem langen.
 #
-# Die Kamera fährt zusätzlich zur Haltedauer während der Netzwerk-Latenz
-# (Antwort auf ContinuousMove + Laufzeit des Stop) — dieser Sockel kommt bei
-# JEDEM Klick obendrauf. Deshalb (v2.2.55):
-# - Die Haltedauer zählt ab dem SENDEN des Moves (Antwortzeit wird abgezogen).
-# - Stufe 1 = 0 s → Stop sofort nach der Move-Antwort (kürzest möglicher Klick).
-# - Abstufung wächst progressiv, damit benachbarte Stufen spürbar verschieden sind.
-# Tuning nur über diese Tabelle (Index 0 = Stufe 1).
-PTZ_MOVE_DURATIONS_DEFAULT: tuple[float, ...] = (0.0, 0.1, 0.25, 0.45, 0.7, 1.0, 1.4, 2.0)
+# Live gemessen (25.09.2026, .49): Die Kamera beantwortet ContinuousMove erst
+# nach ~0,7–1,2 s und Stop nach weiteren ~1,3–1,7 s. v2.2.55 wartete vor dem
+# Stop auf die Move-Antwort → Stufe 1–4 waren identisch (Soll < Antwortzeit).
+# Deshalb (v2.2.56): Der Stop geht nach der Haltedauer ab SENDEN des Moves raus,
+# auch wenn die Move-Antwort noch aussteht (eigene Verbindung). Nach der
+# Move-Antwort folgt ein Sicherheits-Stop, falls die Kamera den Move erst nach
+# dem frühen Stop verarbeitet hat — Endlosfahrt ist damit ausgeschlossen.
+# Tuning nur über diese Tabelle (Index 0 = Stufe 1): Zeit vom Senden des Moves
+# bis zum Senden des Stops.
+PTZ_MOVE_DURATIONS_DEFAULT: tuple[float, ...] = (0.3, 0.45, 0.6, 0.8, 1.05, 1.35, 1.7, 2.1)
 PTZ_MOVE_DURATIONS: tuple[float, ...] = PTZ_MOVE_DURATIONS_DEFAULT
 
 
@@ -358,29 +361,63 @@ class XMSoapClient:
         duration = ptz_move_duration_for_speed(speed)
         loop = asyncio.get_running_loop()
 
+        async def _stop_with_retry() -> bool:
+            # Stop MUSS greifen, sonst fährt die Kamera weiter — 1× wiederholen.
+            return await self.ptz_stop(token=token) or await self.ptz_stop(token=token)
+
         t_start = loop.time()
-        if not await self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom, token=token):
-            return False  # z. B. falscher Token → Coordinator probiert nächsten
-        t_move_ack = loop.time()
-        # Die Kamera fährt bereits, während wir auf die Move-Antwort warten →
-        # diese Zeit von der Haltedauer abziehen.
-        remaining = duration - (t_move_ack - t_start)
-        if remaining > 0:
-            await asyncio.sleep(remaining)
-        t_stop_sent = loop.time()
-        # Stop MUSS greifen, sonst fährt die Kamera weiter — 1× wiederholen.
-        stopped = await self.ptz_stop(token=token) or await self.ptz_stop(token=token)
+        move_task = asyncio.ensure_future(
+            self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom, token=token)
+        )
+        try:
+            done, _ = await asyncio.wait({move_task}, timeout=duration)
+
+            early_stop = not done
+            if early_stop:
+                # Haltedauer abgelaufen, Move-Antwort steht noch aus → Stop jetzt
+                # (parallel), nicht erst nach der trägen Move-Antwort.
+                t_stop_sent = loop.time()
+                await self.ptz_stop(token=token)
+                moved = await move_task
+                t_move_ack = loop.time()
+                # Sicherheits-Stop IMMER nach der Move-Antwort — auch bei
+                # "fehlgeschlagenem" Move: _post() meldet HTTP-/Parse-Fehler als
+                # None, die Kamera kann den Move trotzdem angenommen haben und
+                # würde nach dem (zu frühen) ersten Stop sonst endlos fahren.
+                stopped = await _stop_with_retry()
+                if not moved:
+                    return False  # z. B. falscher Token → Coordinator probiert nächsten
+            else:
+                if not move_task.result():
+                    return False  # z. B. falscher Token → Coordinator probiert nächsten
+                t_move_ack = loop.time()
+                remaining = duration - (t_move_ack - t_start)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                t_stop_sent = loop.time()
+                stopped = await _stop_with_retry()
+        except asyncio.CancelledError:
+            # Abbruch (z. B. Entladen/Timeout) mitten im Klick: Move-Request
+            # verwerfen und trotzdem stoppen, sonst fährt die Kamera endlos.
+            move_task.cancel()
+            with contextlib.suppress(BaseException):
+                await move_task
+            with contextlib.suppress(Exception):
+                await asyncio.shield(_stop_with_retry())
+            raise
         t_stop_ack = loop.time()
+
         if not stopped:
             _LOGGER.warning(
                 "PTZ '%s': Stop fehlgeschlagen (Token=%s)", direction, token,
             )
         # Messwerte für das Tuning von PTZ_MOVE_DURATIONS
         _LOGGER.info(
-            "PTZ '%s' Stufe %d: Soll %.2fs | Move-Antwort %.2fs, Stop gesendet "
-            "nach %.2fs, Stop-Antwort nach %.2fs",
+            "PTZ '%s' Stufe %d: Soll %.2fs | Stop gesendet nach %.2fs%s, "
+            "Move-Antwort nach %.2fs, letzte Stop-Antwort nach %.2fs",
             direction, ptz_level_for_speed(speed), duration,
-            t_move_ack - t_start, t_stop_sent - t_start, t_stop_ack - t_start,
+            t_stop_sent - t_start, " (früh, vor Move-Antwort)" if early_stop else "",
+            t_move_ack - t_start, t_stop_ack - t_start,
         )
         # Bewegung lief → True, damit der Coordinator NICHT mit dem nächsten
         # Profile-Token erneut fährt (sonst Extra-Bewegung).
