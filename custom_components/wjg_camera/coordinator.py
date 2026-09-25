@@ -536,6 +536,14 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._ptz_quiet_until: float = 0.0
         # Anzahl gerade laufender PTZ-Bewegungen (überlappende Tastendrücke)
         self._ptz_quiet_depth: int = 0
+        # Gesetzt = kein PTZ aktiv. Der ONVIF-Event-Loop pausiert, solange PTZ
+        # läuft: Die XM-Kamera arbeitet SOAP-Anfragen seriell ab und hält jedes
+        # PullMessages ~1 s offen — PTZ-Befehle warteten dahinter (live
+        # gemessen 25.09.2026: Move-Antwort 0,2–1,2 s, Stop-Antwort ~1,3 s).
+        self._ptz_idle = asyncio.Event()
+        self._ptz_idle.set()
+        # Laufendes PullMessages (wird beim PTZ-Start abgebrochen)
+        self._event_pull_task: asyncio.Task | None = None
         self._ptz_presets: dict[str, str] = {}  # token -> name
         # Digital Zoom (Pillow-Crop für Snapshots, CSS-Sync über Lovelace-Karte)
         self._digital_zoom: float = 1.0
@@ -1864,6 +1872,12 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         """
         self._ptz_quiet_depth += 1
         self._ptz_quiet_until = math.inf
+        # ONVIF-Event-Abfrage anhalten und ein laufendes PullMessages abbrechen,
+        # damit Move/Stop nicht in der Warteschlange der Kamera warten.
+        self._ptz_idle.clear()
+        pull = self._event_pull_task
+        if pull is not None and not pull.done():
+            pull.cancel()
         try:
             yield
         finally:
@@ -1871,6 +1885,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             if self._ptz_quiet_depth <= 0:
                 self._ptz_quiet_depth = 0
                 self._ptz_quiet_until = time.time() + PTZ_MOTION_QUIET_SECS
+                self._ptz_idle.set()
 
     def _ptz_motion_suppressed(self) -> bool:
         """True, solange die Kamera sich durch PTZ selbst bewegt (bzw. kurz danach)."""
@@ -3018,6 +3033,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                     await asyncio.sleep(1)
                     continue
 
+                # Während PTZ keine Event-Abfrage (siehe _ptz_idle)
+                await self._ptz_idle.wait()
+
                 if not self._event_pullpoint_path:
                     ok = await self.async_onvif_create_pullpoint()
                     if not ok:
@@ -3025,7 +3043,18 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                         backoff_seconds = min(backoff_seconds * 2, 30)
                         continue
 
-                ok = await self.async_onvif_pull_messages_once()
+                pull = asyncio.ensure_future(self.async_onvif_pull_messages_once())
+                self._event_pull_task = pull
+                try:
+                    await asyncio.wait({pull})
+                finally:
+                    self._event_pull_task = None
+                    if not pull.done():  # Loop selbst wurde abgebrochen
+                        pull.cancel()
+                if pull.cancelled():
+                    # Für PTZ abgebrochen — Subscription bleibt gültig
+                    continue
+                ok = pull.result()
                 if ok:
                     backoff_seconds = 1
                     continue

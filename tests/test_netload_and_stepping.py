@@ -7,6 +7,7 @@ fährt bis Stop, live verifiziert): 1 Tap = 1 Move, Halt ∝ Speed (Stufe 1 → 
 0.2 s, Stufe 8 → lang 1.5 s).
 """
 import asyncio
+import contextlib
 import io
 import os
 import sys
@@ -911,3 +912,87 @@ def test_get_coordinator_without_fallback_ignores_foreign_entity(monkeypatch):
     get = integration._get_coordinator  # pylint: disable=protected-access
     assert get(hass, "camera.fremd") is coordinator  # alter Fallback bleibt für Zoom/Motion
     assert get(hass, "camera.fremd", allow_fallback=False) is None
+
+
+@pytest.mark.asyncio
+async def test_event_loop_pauses_and_cancels_pull_during_ptz():
+    """Die XM-Kamera arbeitet SOAP seriell ab: Während PTZ darf kein
+    PullMessages laufen. Ein laufendes wird abgebrochen, danach geht es mit
+    derselben Subscription weiter (kein Neuaufbau)."""
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    _set_private_attr(coordinator, "_session", object())
+    _set_private_attr(coordinator, "_event_pullpoint_path", "/onvif/Events_Sub_0")
+    pulls = {"started": 0, "cancelled": 0}
+
+    async def _hanging_pull():
+        pulls["started"] += 1
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            pulls["cancelled"] += 1
+            raise
+        return True
+
+    coordinator.async_onvif_pull_messages_once = _hanging_pull  # type: ignore[method-assign]
+    loop_task = asyncio.ensure_future(
+        _get_private_attr(coordinator, "_async_onvif_event_loop")()
+    )
+    try:
+        await asyncio.sleep(0.05)
+        assert pulls == {"started": 1, "cancelled": 0}
+
+        with coordinator._ptz_motion_quiet():  # pylint: disable=protected-access
+            await asyncio.sleep(0.05)
+            # laufendes PullMessages abgebrochen, kein neues während PTZ
+            assert pulls == {"started": 1, "cancelled": 1}
+
+        await asyncio.sleep(0.05)
+        assert pulls["started"] == 2  # nach PTZ weiter
+        assert _get_private_attr(coordinator, "_event_pullpoint_path") == "/onvif/Events_Sub_0"
+    finally:
+        loop_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await loop_task
+
+
+@pytest.mark.asyncio
+async def test_options_update_reloads_entry():
+    """Geänderte Optionen (z. B. Kanal 2 aus) wirken sofort per Reload."""
+    import custom_components.wjg_camera as integration  # pylint: disable=import-outside-toplevel
+
+    reloaded: list[str] = []
+
+    class _Entries:
+        async def async_reload(self, entry_id):
+            reloaded.append(entry_id)
+
+    hass = DummyHass()
+    hass.config_entries = _Entries()
+    entry = DummyEntry(dict(ONVIF_DATA))
+    entry.entry_id = "e1"
+    await integration._async_options_updated(hass, entry)  # pylint: disable=protected-access
+    assert reloaded == ["e1"]
+
+
+def test_translations_cover_all_option_fields():
+    """HA erwartet "options" auf oberster Ebene (lag früher in "config" →
+    Formular zeigte Rohnamen). Jedes Optionsfeld braucht eine Beschriftung."""
+    import json  # pylint: disable=import-outside-toplevel
+    import pathlib  # pylint: disable=import-outside-toplevel
+    import re  # pylint: disable=import-outside-toplevel
+
+    base = pathlib.Path(__file__).resolve().parent.parent / "custom_components" / "wjg_camera"
+    flow_src = (base / "config_flow.py").read_text(encoding="utf-8")
+    init_src = (base / "__init__.py").read_text(encoding="utf-8")
+    options_part = flow_src[flow_src.index("class WJGOptionsFlow"):]
+    const_names = set(re.findall(r"vol\.(?:Optional|Required)\(\s*(CONF_[A-Z_]+)", options_part))
+    keys = {
+        re.search(rf'^{name}: Final = "([^"]+)"', init_src, re.M).group(1)  # type: ignore[union-attr]
+        for name in const_names
+    }
+    assert keys, "keine Optionsfelder gefunden"
+    for name in ("strings.json", "translations/de.json", "translations/en.json"):
+        data = json.loads((base / name).read_text(encoding="utf-8"))
+        assert "options" in data and "options" not in data["config"], name
+        labels = data["options"]["step"]["init"]["data"]
+        assert keys <= set(labels), f"{name}: fehlend {sorted(keys - set(labels))}"

@@ -198,6 +198,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    # Geänderte Optionen sofort wirksam machen (vorher erst nach manuellem
+    # Neuladen — z. B. blieb Kanal 2 nach dem Abschalten weiter aktiv).
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
 
     # Statischen Pfad für Lovelace-Karte registrieren (einmalig)
     www_dir = pathlib.Path(__file__).parent / "www"
@@ -270,6 +273,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _INTEGRATION_VERSION, entry.data.get(CONF_HOST)
     )
     return True
+
+async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Optionen geändert → Integration neu laden, damit sie sofort gelten."""
+    await hass.config_entries.async_reload(entry.entry_id)
+
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Integration entladen."""

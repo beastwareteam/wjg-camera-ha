@@ -27,6 +27,12 @@ class DummyEntry:
         """DataUpdateCoordinator (HA ≥2025) registriert sich am Entry."""
         return None
 
+    def add_update_listener(self, listener):
+        """async_setup_entry registriert einen Options-Listener (Reload)."""
+        self.update_listeners = getattr(self, "update_listeners", [])
+        self.update_listeners.append(listener)
+        return lambda: None
+
 
 class DummySocketConnection:
     def __enter__(self):
