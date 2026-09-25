@@ -385,7 +385,7 @@ class XMSoapClient:
                 # _post() meldet auch HTTP-/Parse-Fehler als None — die Kamera
                 # kann den Move trotzdem angenommen haben → vorsorglich stoppen.
                 with contextlib.suppress(Exception):
-                    await self.ptz_stop(token=token)
+                    await _stop_with_retry()
                 return False  # z. B. falscher Token → Coordinator probiert nächsten
             remaining = duration - (t_move_ack - t_start)
             if remaining > 0:

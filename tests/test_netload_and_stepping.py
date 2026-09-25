@@ -501,6 +501,28 @@ async def test_xmsoap_ptz_click_failed_move_still_sends_stop(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_xmsoap_ptz_click_failed_move_stop_is_retried(monkeypatch):
+    """Vorsorglicher Stop nach Move-Fehler wird bei Fehlschlag 1× wiederholt."""
+    monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.01,) * 8)
+    client = XMSoapClient(host="192.168.1.61")
+    stops = {"n": 0}
+
+    async def _failing_move(**_kwargs):
+        return False
+
+    async def _failing_stop(token=None):
+        _ = token
+        stops["n"] += 1
+        return False
+
+    client.ptz_continuous_move = _failing_move  # type: ignore[method-assign]
+    client.ptz_stop = _failing_stop  # type: ignore[method-assign]
+
+    assert await client.ptz_command("left", speed=1 / 8) is False
+    assert stops["n"] == 2
+
+
+@pytest.mark.asyncio
 async def test_xmsoap_ptz_click_cancelled_still_stops(monkeypatch):
     """Wird der Klick abgebrochen, während die Move-Antwort aussteht, wird
     der Move verworfen und trotzdem ein Stop gesendet."""
@@ -819,3 +841,73 @@ def test_xmsoap_continuous_move_timeout_element():
     asyncio.run(client.ptz_continuous_move(pan=1.0, timeout=0.25))
     assert "Timeout" not in bodies[0]
     assert "<tptz:Timeout>PT0.25S</tptz:Timeout>" in bodies[1]
+
+
+class _TokenPtzTestSoap(_PtzTestSoap):
+    """Nur Token "002" funktioniert (wie bei Kameras mit anderem PTZ-Profil)."""
+
+    async def ptz_relative_move(self, **kwargs):
+        self.calls.append(("relative", kwargs))
+        return kwargs.get("token") == "002"
+
+
+@pytest.mark.asyncio
+async def test_ptz_test_tries_candidate_tokens_and_remembers(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    calls: list = []
+    monkeypatch.setattr(coordinator, "_soap", lambda: _TokenPtzTestSoap(calls))
+    _set_private_attr(coordinator, "_preferred_onvif_profile_token", "")
+
+    result = await coordinator.async_ptz_test("right", "relative", 0.05)
+
+    assert [c[1]["token"] for c in calls] == ["000", "001", "002"]
+    assert result["akzeptiert"] is True and result["token"] == "002"
+    assert _get_private_attr(coordinator, "_preferred_onvif_profile_token") == "002"
+
+
+@pytest.mark.asyncio
+async def test_ptz_test_cancelled_during_wait_still_stops(monkeypatch):
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    calls: list = []
+    monkeypatch.setattr(coordinator, "_soap", lambda: _PtzTestSoap(calls))
+
+    task = asyncio.ensure_future(coordinator.async_ptz_test("left", "timeout", 2.0))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert [c[0] for c in calls] == ["continuous", "stop"]
+
+
+def test_ptz_test_schema_limits_relative_value():
+    from custom_components.wjg_camera import (  # pylint: disable=import-outside-toplevel
+        _SVC_SCHEMA_PTZ_TEST,
+    )
+    import voluptuous as vol  # pylint: disable=import-outside-toplevel
+
+    base = {"entity_id": "camera.x", "direction": "left"}
+    assert _SVC_SCHEMA_PTZ_TEST({**base, "method": "relative", "value": 1.0})
+    assert _SVC_SCHEMA_PTZ_TEST({**base, "method": "timeout", "value": 3.0})
+    with pytest.raises(vol.Invalid):
+        _SVC_SCHEMA_PTZ_TEST({**base, "method": "relative", "value": 2.0})
+
+
+def test_get_coordinator_without_fallback_ignores_foreign_entity(monkeypatch):
+    """ptz_test nutzt allow_fallback=False: Eine Entity, die zu keinem
+    WJG-Config-Entry gehört, darf nicht auf eine beliebige WJG-Kamera fallen."""
+    import custom_components.wjg_camera as integration  # pylint: disable=import-outside-toplevel
+    from homeassistant.helpers import entity_registry as er  # pylint: disable=import-outside-toplevel
+
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+
+    class _Registry:
+        def async_get(self, _entity_id):
+            return None  # fremde Kamera: nicht in der WJG-Registry
+
+    hass = DummyHass()
+    hass.data = {integration.DOMAIN: {"entry1": coordinator}}
+    monkeypatch.setattr(er, "async_get", lambda _hass: _Registry())
+
+    get = integration._get_coordinator  # pylint: disable=protected-access
+    assert get(hass, "camera.fremd") is coordinator  # alter Fallback bleibt für Zoom/Motion
+    assert get(hass, "camera.fremd", allow_fallback=False) is None

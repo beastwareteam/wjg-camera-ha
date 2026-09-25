@@ -1715,12 +1715,7 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
                 # Profile-Token-Kandidaten: konfigurierter Token zuerst, dann 000/001/002.
                 # So funktionieren auch Kameras, die nicht "000" für PTZ nutzen (z. B. .49).
                 pref = (self._preferred_onvif_profile_token or "").strip()
-                candidate_tokens: list[str] = []
-                for t in (pref, "000", "001", "002"):
-                    if t and t not in candidate_tokens:
-                        candidate_tokens.append(t)
-                if not candidate_tokens:
-                    candidate_tokens = ["000"]
+                candidate_tokens = self._ptz_candidate_tokens()
                 try:
                     for tok in candidate_tokens:
                         async with self._soap() as soap:
@@ -2594,6 +2589,16 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         self._ptz_presets = presets
         return presets
 
+    def _ptz_candidate_tokens(self) -> list[str]:
+        """Profile-Token-Kandidaten für PTZ: gemerkter/konfigurierter zuerst,
+        dann 000/001/002 (manche Kameras nutzen nicht "000", z. B. .49)."""
+        pref = (self._preferred_onvif_profile_token or "").strip()
+        tokens: list[str] = []
+        for t in (pref, "000", "001", "002"):
+            if t and t not in tokens:
+                tokens.append(t)
+        return tokens or ["000"]
+
     async def async_ptz_test(self, direction: str, method: str, value: float) -> dict[str, Any]:
         """Diagnose (Aktion wjg_camera.ptz_test): prüft, ob die Kamera eine
         Bewegung SELBST begrenzen kann — Voraussetzung für kurze PTZ-Klicks,
@@ -2604,49 +2609,82 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
           timeout    → ContinuousMove mit <Timeout>`value` s, Sicherheits-Stop
                        erst PTZ_TEST_SAFETY_STOP_SECS danach
           continuous → heutiges Verfahren: ContinuousMove, `value` s, Stop
+
+        Profile-Token wie im normalen PTZ-Pfad (Kandidaten, Erfolg gemerkt).
+        Kontinuierliche Moves werden auch bei Fehler und Abbruch gestoppt.
         """
         pan_dir, tilt_dir = PTZ_TEST_DIRECTIONS[direction]
-        token = self._preferred_onvif_profile_token or None
+        pref = (self._preferred_onvif_profile_token or "").strip()
+        candidates = self._ptz_candidate_tokens()
+        continuous = method != "relative"
         loop = asyncio.get_running_loop()
         result: dict[str, Any] = {"methode": method, "richtung": direction, "wert": value}
         with self._ptz_motion_quiet():
             async with self._soap() as soap:
+
+                async def _stop_with_retry(tok: str) -> bool:
+                    return await soap.ptz_stop(token=tok) or await soap.ptz_stop(token=tok)
+
+                tok = candidates[0]
+                used_tok: str | None = None
                 t0 = loop.time()
+                try:
+                    for tok in candidates:
+                        t0 = loop.time()
+                        if continuous:
+                            ok = await soap.ptz_continuous_move(
+                                pan=pan_dir, tilt=tilt_dir, token=tok,
+                                timeout=value if method == "timeout" else None,
+                            )
+                        else:
+                            ok = await soap.ptz_relative_move(
+                                pan=pan_dir * value, tilt=tilt_dir * value, token=tok
+                            )
+                        if ok:
+                            used_tok = tok
+                            break
+                        if continuous:
+                            # Fehler heißt nicht sicher "nicht angenommen" → stoppen
+                            await _stop_with_retry(tok)
+                    result["antwort_s"] = round(loop.time() - t0, 2)
+
+                    if used_tok is not None and method == "timeout":
+                        # Ignoriert die Kamera das Timeout, fährt sie sichtbar
+                        # länger als `value` — dann erst der Sicherheits-Stop.
+                        await asyncio.sleep(
+                            max(0.0, value + PTZ_TEST_SAFETY_STOP_SECS - (loop.time() - t0))
+                        )
+                        result["sicherheits_stop_nach_s"] = round(loop.time() - t0, 2)
+                        await _stop_with_retry(used_tok)
+                    elif used_tok is not None and method == "continuous":
+                        await asyncio.sleep(max(0.0, value - (loop.time() - t0)))
+                        await _stop_with_retry(used_tok)
+                except asyncio.CancelledError:
+                    # Abbruch mitten im Test: laufende Bewegung trotzdem stoppen
+                    if continuous:
+                        with contextlib.suppress(Exception):
+                            await asyncio.shield(_stop_with_retry(used_tok or tok))
+                    raise
+
                 if method == "relative":
-                    ok = await soap.ptz_relative_move(
-                        pan=pan_dir * value, tilt=tilt_dir * value, token=token
-                    )
                     result["hinweis"] = (
                         "Kein Stop gesendet. Fährt die Kamera ein kurzes, zum Wert "
                         "passendes Stück und hält an, funktioniert RelativeMove."
                     )
                 elif method == "timeout":
-                    ok = await soap.ptz_continuous_move(
-                        pan=pan_dir, tilt=tilt_dir, token=token, timeout=value
-                    )
-                    result["antwort_s"] = round(loop.time() - t0, 2)
-                    # Sicherheits-Stop (auch wenn der Move als Fehler gemeldet
-                    # wurde): Ignoriert die Kamera das Timeout, fährt sie
-                    # sichtbar länger als `value`.
-                    await asyncio.sleep(
-                        max(0.0, value + PTZ_TEST_SAFETY_STOP_SECS - (loop.time() - t0))
-                    )
-                    result["sicherheits_stop_nach_s"] = round(loop.time() - t0, 2)
-                    await soap.ptz_stop(token=token)
                     result["hinweis"] = (
                         f"Hält die Kamera nach ca. {value:.1f}s von selbst an, wird "
                         f"das Timeout beachtet. Fährt sie ca. "
                         f"{value + PTZ_TEST_SAFETY_STOP_SECS:.1f}s oder länger, "
                         "wird es ignoriert."
                     )
-                else:  # continuous
-                    ok = await soap.ptz_continuous_move(pan=pan_dir, tilt=tilt_dir, token=token)
-                    result["antwort_s"] = round(loop.time() - t0, 2)
-                    await asyncio.sleep(max(0.0, value - (loop.time() - t0)))
-                    await soap.ptz_stop(token=token)
+                else:
                     result["hinweis"] = "Vergleich: heutiges Verfahren (Move → warten → Stop)."
-                result["akzeptiert"] = bool(ok)
+                result["akzeptiert"] = used_tok is not None
+                result["token"] = used_tok
                 result["dauer_gesamt_s"] = round(loop.time() - t0, 2)
+        if used_tok is not None and used_tok != pref:
+            self._preferred_onvif_profile_token = used_tok
         _LOGGER.info("PTZ-Test %s", result)
         return result
 

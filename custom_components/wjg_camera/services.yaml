@@ -105,8 +105,8 @@ ptz_test:
     value:
       name: Wert
       description: >
-        relative = Strecke (0.01 winzig … 1.0 groß), timeout/continuous =
-        Sekunden.
+        relative = Strecke (0.01 winzig … höchstens 1.0 groß),
+        timeout/continuous = Sekunden (bis 5.0).
       required: true
       default: 0.05
       selector:
