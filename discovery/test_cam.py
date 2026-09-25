@@ -1,6 +1,6 @@
-import asyncio, sys
+import asyncio, os, sys
 asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-sys.path.insert(0, r'custom_components\wjg_camera')
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'custom_components', 'wjg_camera'))
 from xm_soap import XMSoapClient, ENDPOINT_PTZ, PROFILE_TOKEN
 
 async def test():

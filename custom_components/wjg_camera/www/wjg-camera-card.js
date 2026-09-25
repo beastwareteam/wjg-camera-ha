@@ -39,7 +39,7 @@
  *  • Vollständige Speicherbereinigung in disconnectedCallback
  *
  * Konfigurationsbeispiel (YAML) — echte Entity-IDs WJG XM-3820:
- *   type: custom:wjg-camera-card2
+ *   type: custom:wjg-camera-card
  *   entity: camera.wjg_xm_3820
  *   title: Einfahrt
  *   show_zoom_bar: true

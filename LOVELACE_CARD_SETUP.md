@@ -75,7 +75,7 @@ resources:
 3. **Server-Logs überprüfen:**
    - Settings → System → Logs
    - Filtere nach "wjg_camera"
-   - Suche nach HTTP 404 Fehlern für `/wjg_camera/wjg-camera-card2.js`
+   - Suche nach HTTP 404 Fehlern für `/wjg_camera/wjg-camera-card.js`
 
 ### Problem: Karte lädt, zeigt aber nur "Fehler"
 
@@ -109,7 +109,7 @@ Falls die Card immer noch nicht funktioniert:
 
 1. **Prüfe:** Existiert die Datei wirklich?
    ```bash
-   ls -la custom_components/wjg_camera/www/wjg-camera-card2.js
+   ls -la custom_components/wjg_camera/www/wjg-camera-card.js
    ```
 
 2. **Prüfe:** Ist der static path registriert?

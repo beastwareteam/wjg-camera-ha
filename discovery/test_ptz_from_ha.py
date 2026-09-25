@@ -4,7 +4,7 @@ Ausfuehren via HA SSH-Terminal:
     python3 /config/custom_components/wjg_camera/test_ptz_from_ha.py
 
 Oder falls asyncio Policy fehlt (Linux):
-    python3 test_ptz_from_ha.py
+    python3 discovery/test_ptz_from_ha.py
 """
 import asyncio
 import aiohttp
