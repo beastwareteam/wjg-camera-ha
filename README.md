@@ -1,7 +1,7 @@
 # WJG XM-3820 Camera Bridge – Home Assistant Integration
 
 **Kamera:** WJG / Tenganda XM-3820 · **Chipset:** XM (Xiongmai) / GK-Serie  
-**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.63 · **HA:** ≥ 2024.1
+**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.64 · **HA:** ≥ 2024.1
 
 > Vollständige lokale Home-Assistant-Integration ohne Cloud-Abhängigkeit.  
 > RTSP-Livestream, ONVIF-Steuerung, PTZ mit 21 Buttons, Imaging-Einstellungen, Events und mehr.
@@ -240,7 +240,7 @@ Events werden über ONVIF Pull-Point in Echtzeit empfangen.
 |---|---|
 | **PTZ Stopp** | Laufende Bewegung sofort anhalten (`Stop`) |
 
-> **Keine Home-/Preset-Tasten mehr (seit 2.2.63):** Die XM-3820 fährt bei
+> **Keine Home-/Preset-Tasten mehr (seit 2.2.64):** Die XM-3820 fährt bei
 > `GotoPreset` und `GotoHomePosition` über ONVIF immer denselben festen Punkt
 > an, egal welches Preset gewählt ist. Presets in der Hersteller-App sind davon
 > nicht betroffen. Für wechselnde Blickwinkel gibt es die **Patrouille**.
@@ -257,6 +257,12 @@ sich keine Abweichungen:
    Aufnahme läuft, bleibt die Kamera stehen
 4. jede Runde beginnt wieder am Anschlag; außerhalb des Zeitfensters fährt die
    Kamera einmal zur Ruhe-Station
+
+Die Stationen werden in der angegebenen Reihenfolge angefahren, auch zurück nach
+links. Mit Rückweg z. B. `0, 4, 5, 6, 7, 8, 7, 6, 5, 4, 0`: Die abschließende 0
+ist der Start der nächsten Runde (kein doppeltes Verweilen). Jede Station mit 0
+Klicks fährt an den Anschlag und richtet die Kamera dabei neu aus; aus bekannter
+Position nur so lange wie nötig (ca. 1,8 s je Klick + 3 s Reserve).
 
 Ein manueller PTZ-Klick pausiert die Patrouille für 5 Minuten. Einstellungen
 unter **Konfigurieren**: Startzeit, Endzeit (gleich = immer), Verweildauer,
@@ -446,4 +452,4 @@ pytest tests/test_coordinator.py -v
 
 ---
 
-*Version 2.2.63 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*
+*Version 2.2.64 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*

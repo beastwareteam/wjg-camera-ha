@@ -33,6 +33,11 @@ PATROL_CLICK_GAP_SECS = 0.5        # Abstand zwischen zwei Klicks
 PATROL_TICK_SECS = 1.0             # Prüfintervall beim Warten
 PATROL_ERROR_RETRY_SECS = 30.0
 PATROL_MAX_CLICKS = 60
+# Fahrt zum Anschlag aus bekannter Position: je Klick Stufe 8 ~1,6 s Halten +
+# ~0,2 s Stop-Latenz bei gleicher Geschwindigkeit (Velocity 1.0), plus Reserve,
+# damit der Anschlag sicher erreicht wird, der Motor aber nicht lange rattert.
+PATROL_CLICK_TRAVEL_SECS = 1.8
+PATROL_STOP_MARGIN_SECS = 3.0
 
 
 def parse_patrol_time(value: Any) -> datetime.time:
@@ -92,7 +97,12 @@ class PatrolController:
         self.start = start
         self.end = end
         self.dwell_secs = float(dwell_secs)
-        self.stations = list(stations) or [0]
+        stations = list(stations) or [0]
+        # Hin- und Rückweg „0, 4, …, 4, 0“: die letzte Station ist die erste der
+        # nächsten Runde → nicht doppelt anfahren/verweilen.
+        if len(stations) > 1 and stations[0] == stations[-1]:
+            stations = stations[:-1]
+        self.stations = stations
         self.rest_station = max(1, min(len(self.stations), int(rest_station)))
         self.home_secs = float(home_secs)
         self._task: asyncio.Task[None] | None = None
@@ -205,17 +215,24 @@ class PatrolController:
                 return
 
     async def _goto_station(self, index: int, seq: int) -> bool:
-        """Station `index` (1-basiert) anfahren. Ohne bekannte Position erst
-        zum linken Anschlag, sonst nur die Differenz klicken."""
+        """Station `index` (1-basiert) anfahren. Rundenstart, Stationen mit 0
+        Klicks und unbekannte Position → erst zum linken Anschlag (neu
+        ausrichten), sonst nur die Differenz klicken (auch nach links)."""
         coord = self._coordinator
         target = self.stations[index - 1]
-        if self.station is None or index == 1:
-            _LOGGER.info("Patrouille (%s): fahre zum linken Anschlag", coord.host)
-            if not await coord.async_ptz_run("left", self.home_secs):
+        known = None if self.station is None else self.stations[self.station - 1]
+        if known is None or index == 1 or target == 0:
+            # Aus bekannter Position nur so lange fahren wie nötig (kein langes
+            # Rattern am Anschlag); unbekannt → volle Fahrzeit.
+            secs = self.home_secs if known is None else min(
+                self.home_secs, known * PATROL_CLICK_TRAVEL_SECS + PATROL_STOP_MARGIN_SECS
+            )
+            _LOGGER.info("Patrouille (%s): fahre zum linken Anschlag (%.0fs)", coord.host, secs)
+            if not await coord.async_ptz_run("left", secs):
                 return False
             current = 0
         else:
-            current = self.stations[self.station - 1]
+            current = known
         self.station = None
         delta = target - current
         direction = "right" if delta > 0 else "left"

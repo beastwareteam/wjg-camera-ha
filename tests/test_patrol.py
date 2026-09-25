@@ -44,12 +44,14 @@ class _FakeCoordinator:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
+        self.run_secs: list[float] = []
         self.motion_detected = False
         self.is_recording = False
         self.on_command = None
 
     async def async_ptz_run(self, direction: str, seconds: float) -> bool:
         self.calls.append(("run", direction))
+        self.run_secs.append(seconds)
         return True
 
     async def async_ptz_command(self, direction: str, speed: int) -> bool:
@@ -110,6 +112,32 @@ async def test_round_starts_at_end_stop_and_clicks_between_stations():
         ("right", 8),                    # → Station 3 (1 weiterer Klick)
     ]
     assert ctl.station == 3
+
+
+@pytest.mark.asyncio
+async def test_return_path_clicks_back_and_realigns_at_zero():
+    """„0, 2, 3, 2, 0“: Rückweg klickt nach links; die abschließende 0 ist der
+    Start der nächsten Runde (kein doppeltes Verweilen) und fährt nur so lange
+    zum Anschlag wie nötig."""
+    coord = _FakeCoordinator()
+    ctl = _patrol(coord, stations=(0, 2, 3, 2, 0))
+    assert ctl.stations == [0, 2, 3, 2]
+    await ctl._round()  # pylint: disable=protected-access
+    await ctl._round()  # pylint: disable=protected-access
+    assert coord.calls == [
+        ("run", "left"),                  # Runde 1, Position unbekannt
+        ("right", 8), ("right", 8),       # → 2
+        ("right", 8),                     # → 3
+        ("left", 8),                      # ← 2 (Rückweg)
+        ("run", "left"),                  # Runde 2 beginnt: ← 0 am Anschlag
+        ("right", 8), ("right", 8),
+        ("right", 8),
+        ("left", 8),
+    ]
+    assert coord.run_secs[0] == 20        # unbekannt → volle Fahrzeit
+    assert coord.run_secs[1] == pytest.approx(  # aus 2 Klicks → kurz
+        2 * patrol_module.PATROL_CLICK_TRAVEL_SECS + patrol_module.PATROL_STOP_MARGIN_SECS
+    )
 
 
 @pytest.mark.asyncio
