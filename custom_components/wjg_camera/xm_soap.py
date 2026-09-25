@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import hashlib
 import logging
 import os
@@ -368,30 +369,42 @@ class XMSoapClient:
         move_task = asyncio.ensure_future(
             self.ptz_continuous_move(pan=pan, tilt=tilt, zoom=zoom, token=token)
         )
-        done, _ = await asyncio.wait({move_task}, timeout=duration)
+        try:
+            done, _ = await asyncio.wait({move_task}, timeout=duration)
 
-        early_stop = not done
-        if early_stop:
-            # Haltedauer abgelaufen, Move-Antwort steht noch aus → Stop jetzt
-            # (parallel), nicht erst nach der trägen Move-Antwort.
-            t_stop_sent = loop.time()
-            await self.ptz_stop(token=token)
-            moved = await move_task
-            t_move_ack = loop.time()
-            if not moved:
-                return False  # z. B. falscher Token → Coordinator probiert nächsten
-            # Sicherheits-Stop: Hat die Kamera den Move erst NACH dem frühen
-            # Stop verarbeitet, würde sie sonst endlos weiterfahren.
-            stopped = await _stop_with_retry()
-        else:
-            if not move_task.result():
-                return False  # z. B. falscher Token → Coordinator probiert nächsten
-            t_move_ack = loop.time()
-            remaining = duration - (t_move_ack - t_start)
-            if remaining > 0:
-                await asyncio.sleep(remaining)
-            t_stop_sent = loop.time()
-            stopped = await _stop_with_retry()
+            early_stop = not done
+            if early_stop:
+                # Haltedauer abgelaufen, Move-Antwort steht noch aus → Stop jetzt
+                # (parallel), nicht erst nach der trägen Move-Antwort.
+                t_stop_sent = loop.time()
+                await self.ptz_stop(token=token)
+                moved = await move_task
+                t_move_ack = loop.time()
+                # Sicherheits-Stop IMMER nach der Move-Antwort — auch bei
+                # "fehlgeschlagenem" Move: _post() meldet HTTP-/Parse-Fehler als
+                # None, die Kamera kann den Move trotzdem angenommen haben und
+                # würde nach dem (zu frühen) ersten Stop sonst endlos fahren.
+                stopped = await _stop_with_retry()
+                if not moved:
+                    return False  # z. B. falscher Token → Coordinator probiert nächsten
+            else:
+                if not move_task.result():
+                    return False  # z. B. falscher Token → Coordinator probiert nächsten
+                t_move_ack = loop.time()
+                remaining = duration - (t_move_ack - t_start)
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                t_stop_sent = loop.time()
+                stopped = await _stop_with_retry()
+        except asyncio.CancelledError:
+            # Abbruch (z. B. Entladen/Timeout) mitten im Klick: Move-Request
+            # verwerfen und trotzdem stoppen, sonst fährt die Kamera endlos.
+            move_task.cancel()
+            with contextlib.suppress(BaseException):
+                await move_task
+            with contextlib.suppress(Exception):
+                await asyncio.shield(_stop_with_retry())
+            raise
         t_stop_ack = loop.time()
 
         if not stopped:

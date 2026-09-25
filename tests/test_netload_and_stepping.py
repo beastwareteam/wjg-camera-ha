@@ -477,6 +477,64 @@ async def test_xmsoap_ptz_click_early_stop_wrong_token_returns_false(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_xmsoap_ptz_click_failed_move_still_sends_safety_stop(monkeypatch):
+    """Früh-Stop-Pfad: Auch wenn die Move-Antwort als Fehler zurückkommt
+    (HTTP-/Parse-Fehler → None), folgt ein Sicherheits-Stop — die Kamera
+    kann den Move trotzdem angenommen haben."""
+    monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (0.01,) * 8)
+    client = XMSoapClient(host="192.168.1.61")
+    events: list[str] = []
+
+    async def _slow_failing_move(**_kwargs):
+        await asyncio.sleep(0.1)
+        events.append("move_fail")
+        return False
+
+    async def _fake_stop(token=None):
+        _ = token
+        events.append("stop")
+        return True
+
+    client.ptz_continuous_move = _slow_failing_move  # type: ignore[method-assign]
+    client.ptz_stop = _fake_stop  # type: ignore[method-assign]
+
+    assert await client.ptz_command("left", speed=1 / 8) is False
+    assert events == ["stop", "move_fail", "stop"]
+
+
+@pytest.mark.asyncio
+async def test_xmsoap_ptz_click_cancelled_still_stops(monkeypatch):
+    """Wird der Klick abgebrochen, während die Move-Antwort aussteht, wird
+    der Move verworfen und trotzdem ein Stop gesendet."""
+    monkeypatch.setattr(xm_soap_module, "PTZ_MOVE_DURATIONS", (5.0,) * 8)
+    client = XMSoapClient(host="192.168.1.61")
+    events: list[str] = []
+
+    async def _hanging_move(**_kwargs):
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            events.append("move_cancelled")
+            raise
+        return True
+
+    async def _fake_stop(token=None):
+        _ = token
+        events.append("stop")
+        return True
+
+    client.ptz_continuous_move = _hanging_move  # type: ignore[method-assign]
+    client.ptz_stop = _fake_stop  # type: ignore[method-assign]
+
+    task = asyncio.ensure_future(client.ptz_command("left", speed=1 / 8))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert events == ["move_cancelled", "stop"]
+
+
+@pytest.mark.asyncio
 async def test_ptz_command_suppresses_motion_triggers():
     """Während und kurz nach einem PTZ-Befehl lösen Bewegungs-Kanäle keine
     Aufnahme aus (die Kamera bewegt sich selbst)."""
@@ -506,6 +564,49 @@ async def test_ptz_command_suppresses_motion_triggers():
     # Nachlauf abgelaufen → Bewegung zählt wieder
     _set_private_attr(coordinator, "_ptz_quiet_until", time.time() - 1)
     assert coordinator._ptz_motion_suppressed() is False  # pylint: disable=protected-access
+
+
+def test_ptz_motion_quiet_is_nesting_safe():
+    """Überlappende PTZ-Befehle: Das Nachlauf-Fenster beginnt erst, wenn der
+    LETZTE Befehl endet — vorher bleibt die Unterdrückung unbegrenzt aktiv."""
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    quiet = coordinator._ptz_motion_quiet  # pylint: disable=protected-access
+    with quiet():
+        with quiet():
+            pass
+        # innerer Befehl fertig, äußerer läuft noch → weiterhin unbegrenzt
+        assert _get_private_attr(coordinator, "_ptz_quiet_until") == float("inf")
+    assert _get_private_attr(coordinator, "_ptz_quiet_until") < float("inf")
+    assert coordinator._ptz_motion_suppressed() is True  # pylint: disable=protected-access
+
+
+@pytest.mark.asyncio
+async def test_ptz_home_and_preset_suppress_motion(monkeypatch):
+    """Home- und Preset-Fahrten bewegen die Kamera ebenfalls → gleiche
+    Bewegungs-Unterdrückung wie beim Richtungs-Klick."""
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
+    seen: list[bool] = []
+
+    class _Soap:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def ptz_goto_home(self, **_kwargs):
+            seen.append(coordinator._ptz_motion_suppressed())  # pylint: disable=protected-access
+            return True
+
+        async def ptz_goto_preset(self, **_kwargs):
+            seen.append(coordinator._ptz_motion_suppressed())  # pylint: disable=protected-access
+            return True
+
+    monkeypatch.setattr(coordinator, "_soap", _Soap)
+    assert await coordinator.async_ptz_home() is True
+    assert await coordinator.async_ptz_goto_preset("1") is True
+    assert seen == [True, True]
+    assert coordinator._ptz_motion_suppressed() is True  # pylint: disable=protected-access
 
 
 # ── PTZ: Coordinator-Fallback (Direct-SOAP) ──────────────────────────────────

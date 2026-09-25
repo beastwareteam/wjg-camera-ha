@@ -528,6 +528,8 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
         # Bis zu diesem Zeitpunkt (time.time()) werden Bewegungs-Trigger der
         # Kanäle ignoriert — die Kamera bewegt sich gerade selbst (PTZ).
         self._ptz_quiet_until: float = 0.0
+        # Anzahl gerade laufender PTZ-Bewegungen (überlappende Tastendrücke)
+        self._ptz_quiet_depth: int = 0
         self._ptz_presets: dict[str, str] = {}  # token -> name
         # Digital Zoom (Pillow-Crop für Snapshots, CSS-Sync über Lovelace-Karte)
         self._digital_zoom: float = 1.0
@@ -1854,12 +1856,20 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     @contextlib.contextmanager
     def _ptz_motion_quiet(self) -> Iterator[None]:
         """Unterdrückt Bewegungs-Trigger während eines PTZ-Befehls und
-        PTZ_MOTION_QUIET_SECS danach (RTSP-/Event-Latenz der Kamera)."""
+        PTZ_MOTION_QUIET_SECS danach (RTSP-/Event-Latenz der Kamera).
+
+        Verschachtelungssicher: Überlappen sich Befehle, beginnt das
+        Nachlauf-Fenster erst, wenn der LETZTE endet.
+        """
+        self._ptz_quiet_depth += 1
         self._ptz_quiet_until = math.inf
         try:
             yield
         finally:
-            self._ptz_quiet_until = time.time() + PTZ_MOTION_QUIET_SECS
+            self._ptz_quiet_depth -= 1
+            if self._ptz_quiet_depth <= 0:
+                self._ptz_quiet_depth = 0
+                self._ptz_quiet_until = time.time() + PTZ_MOTION_QUIET_SECS
 
     def _ptz_motion_suppressed(self) -> bool:
         """True, solange die Kamera sich durch PTZ selbst bewegt (bzw. kurz danach)."""
@@ -2545,8 +2555,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_ptz_home(self) -> bool:
         spd = self._ptz_speed / 8
         try:
-            async with self._soap() as soap:
-                return await soap.ptz_goto_home(speed=spd)
+            with self._ptz_motion_quiet():
+                async with self._soap() as soap:
+                    return await soap.ptz_goto_home(speed=spd)
         except Exception as exc:
             _LOGGER.warning("ptz_home Fehler: %s", exc)
             return False
@@ -2580,8 +2591,9 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
     async def async_ptz_goto_preset(self, token: str) -> bool:
         spd = self._ptz_speed / 8
         try:
-            async with self._soap() as soap:
-                return await soap.ptz_goto_preset(preset_token=token, speed=spd)
+            with self._ptz_motion_quiet():
+                async with self._soap() as soap:
+                    return await soap.ptz_goto_preset(preset_token=token, speed=spd)
         except Exception as exc:
             _LOGGER.warning("ptz_goto_preset Fehler: %s", exc)
             return False
