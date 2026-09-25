@@ -1,6 +1,6 @@
 # WJG XM-3820 Camera Bridge — Kritisches Wissen für Claude
 
-## PTZ-Geschwindigkeit: Event-Abfrage war die Ursache (v2.2.59 — September 2026) ⭐ AKTUELL
+## PTZ-Geschwindigkeit: Event-Abfrage war die Ursache (v2.2.60 — September 2026) ⭐ AKTUELL
 
 ### Gewünschtes Verhalten (Nutzer-Vorgabe)
 **1 Tastendruck = 1 Klick.** Stufe 1 = sehr kurzer Klick, Stufe 8 = langer Klick,
@@ -20,6 +20,13 @@ benachbarte Stufen spürbar verschieden. KEINE Serie von Einzelklicks.
 - **v2.2.59:** `EVENT_PULL_PAUSE_SECS = 2.0` Pause zwischen zwei PullMessages →
   Kamera meist frei, PTZ-Start wartet seltener. Bewegung erkennt bei der
   XM-3820 ohnehin Kanal 2 (ONVIF liefert dauerhaft ismotion=false).
+- Live v2.2.59: Stop-Antwort stabil ~0,15–0,35 s; Move-Antwort meist
+  0,06–0,18 s, aber in ~30 % der Klicks 0,4–0,95 s (Klick trifft ein laufendes
+  PullMessages: 1 s Abfrage je 3 s Zyklus) → Stufen noch uneinheitlich.
+- **v2.2.60:** Option `motion_onvif_events` („Kamera-Ereignisse abfragen“,
+  Kanal 1, Default AN für andere Kameras). Bei der XM-3820 AUS schalten: kein
+  PullMessages mehr → Kamera bearbeitet nur PTZ. Folge: Sabotage-/Signalverlust-
+  Sensoren (kommen aus ONVIF-Events) bleiben aus; Bewegung weiter über Kanal 2.
 
 ### Live gemessen (25.09.2026, .49)
 v2.2.55 (Stop nach Move-Antwort):

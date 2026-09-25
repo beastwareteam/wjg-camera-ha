@@ -140,6 +140,24 @@ async def test_async_setup_does_not_start_rtsp_motion_loop_when_option_disabled(
 
 
 @pytest.mark.asyncio
+async def test_async_setup_does_not_start_onvif_event_loop_when_option_disabled(monkeypatch):
+    """Kanal 1 abschaltbar: Die XM-3820 liefert dort nur ismotion=false, jedes
+    PullMessages belegt aber ~1 s ihren seriellen SOAP-Server (PTZ-Latenz).
+    Kanal 2 und UDP laufen unabhängig davon weiter."""
+    coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA), options={
+        "motion_onvif_events": False,
+    }))
+    try:
+        await _setup_with_mocks(coordinator, monkeypatch)
+
+        assert _get_private_attr(coordinator, "_event_task") is None
+        assert _get_private_attr(coordinator, "_rtsp_motion_task") is not None
+        assert _get_private_attr(coordinator, "_udp_monitor_task") is not None
+    finally:
+        await coordinator.async_shutdown()
+
+
+@pytest.mark.asyncio
 async def test_async_setup_warns_but_does_not_fail_when_ffmpeg_missing(monkeypatch, caplog):
     coordinator = _make_coordinator(DummyHass(), DummyEntry(dict(ONVIF_DATA)))
     monkeypatch.setattr("shutil.which", lambda _name: None)
