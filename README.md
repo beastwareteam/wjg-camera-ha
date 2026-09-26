@@ -1,7 +1,7 @@
 # WJG XM-3820 Camera Bridge – Home Assistant Integration
 
 **Kamera:** WJG / Tenganda XM-3820 · **Chipset:** XM (Xiongmai) / GK-Serie  
-**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.64 · **HA:** ≥ 2024.1
+**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.65 · **HA:** ≥ 2024.1
 
 > Vollständige lokale Home-Assistant-Integration ohne Cloud-Abhängigkeit.  
 > RTSP-Livestream, ONVIF-Steuerung, PTZ mit 21 Buttons, Imaging-Einstellungen, Events und mehr.
@@ -205,7 +205,7 @@ rtsp://KAMERA-IP:554/stream0
 | **WDR** | `_wdr` | Wide Dynamic Range ein-/ausschalten (ONVIF Imaging) |
 | **IR-Cut** | `_ir_cut` | Infrarot-Sperrfilter manuell schalten (ONVIF Imaging) |
 | **Mikrofon** | `_microphone` | Kamera-Mikrofon aktivieren / deaktivieren (ONVIF Audio) |
-| **Patrouille** | `_patrol` | Stationen über den linken Anschlag abfahren (siehe unten) |
+| **Patrouille** | `_patrol` | Stationen über die Anschläge abfahren (siehe unten) |
 
 ---
 
@@ -240,35 +240,41 @@ Events werden über ONVIF Pull-Point in Echtzeit empfangen.
 |---|---|
 | **PTZ Stopp** | Laufende Bewegung sofort anhalten (`Stop`) |
 
-> **Keine Home-/Preset-Tasten mehr (seit 2.2.64):** Die XM-3820 fährt bei
+> **Keine Home-/Preset-Tasten mehr (seit 2.2.65):** Die XM-3820 fährt bei
 > `GotoPreset` und `GotoHomePosition` über ONVIF immer denselben festen Punkt
 > an, egal welches Preset gewählt ist. Presets in der Hersteller-App sind davon
 > nicht betroffen. Für wechselnde Blickwinkel gibt es die **Patrouille**.
 
 #### Patrouille (Schalter „Patrouille“)
 
-Die Kamera fährt im eingestellten Zeitfenster mehrere Stationen ab. Bezugspunkt
-ist der **linke Anschlag** (wie bei einer Kalibrierungsfahrt), deshalb summieren
-sich keine Abweichungen:
+Die Kamera fährt im eingestellten Zeitfenster mehrere Stationen ab. Bezugspunkte
+sind der **linke** und der **obere Anschlag** (wie bei einer Kalibrierungsfahrt),
+deshalb summieren sich keine Abweichungen.
 
-1. mit voller Geschwindigkeit nach links bis zum Anschlag = Station mit 0 Klicks
-2. weitere Stationen = Anzahl Klicks (Stufe 8) nach rechts ab dem Anschlag
+**Stationen** (Klicks auf Stufe 8, kommagetrennt):
+- `rechts` – z. B. `0, 4, 8`: nur schwenken, die Neigung bleibt, wie sie ist
+- `rechts/runter` – z. B. `0/3, 4/3, 8/2`: Klicks nach rechts ab dem linken
+  Anschlag und nach unten ab dem oberen Anschlag
+
+**Ablauf einer Runde:**
+1. neu ausrichten: nach links (und bei Stationen mit Neigung nach oben) bis zum
+   Anschlag – aus bekannter Position nur so lange wie nötig (ca. 1,8 s je Klick
+   + 3 s Reserve), sonst mit der eingestellten Fahrzeit
+2. Stationen anfahren, in der eingetragenen Reihenfolge (auch zurück, z. B.
+   `0, 4, 8, 4, 0`) oder mit **„zufällige Reihenfolge“** jede Runde neu gemischt
+   mit zufälliger Verweildauer (50–150 %) – nicht vorhersehbar
 3. an jeder Station verweilen; solange Bewegung erkannt wird oder eine
    Aufnahme läuft, bleibt die Kamera stehen
-4. jede Runde beginnt wieder am Anschlag; außerhalb des Zeitfensters fährt die
-   Kamera einmal zur Ruhe-Station
+4. außerhalb des Zeitfensters fährt die Kamera einmal zur Ruhe-Station
 
-Die Stationen werden in der angegebenen Reihenfolge angefahren, auch zurück nach
-links. Mit Rückweg z. B. `0, 4, 5, 6, 7, 8, 7, 6, 5, 4, 0`: Die abschließende 0
-ist der Start der nächsten Runde (kein doppeltes Verweilen). Jede Station mit 0
-Klicks fährt an den Anschlag und richtet die Kamera dabei neu aus; aus bekannter
-Position nur so lange wie nötig (ca. 1,8 s je Klick + 3 s Reserve).
+Ist die letzte Station gleich der ersten, beginnt dort die nächste Runde (kein
+doppeltes Verweilen). Ein Ziel mit 0 Klicks fährt ebenfalls an den Anschlag.
 
-Ein manueller PTZ-Klick pausiert die Patrouille für 5 Minuten. Einstellungen
-unter **Konfigurieren**: Startzeit, Endzeit (gleich = immer), Verweildauer,
-Stationen (z. B. `0, 4, 8`), Ruhe-Station, Fahrzeit bis zum Anschlag. Die
-Neigung (hoch/runter) bleibt, wie sie vorher eingestellt war. Status und
-aktuelle Station stehen als Attribute am Schalter.
+Ein manueller PTZ-Klick pausiert die Patrouille für 5 Minuten; danach wird mit
+voller Fahrzeit neu ausgerichtet. Einstellungen unter **Konfigurieren**:
+Startzeit, Endzeit (gleich = immer), Verweildauer, Stationen, zufällige
+Reihenfolge, Ruhe-Station, Fahrzeit bis zum linken und bis zum oberen Anschlag.
+Status und aktuelle Station stehen als Attribute am Schalter.
 
 #### System (3)
 
@@ -452,4 +458,4 @@ pytest tests/test_coordinator.py -v
 
 ---
 
-*Version 2.2.64 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*
+*Version 2.2.65 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*

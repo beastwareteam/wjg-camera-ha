@@ -40,9 +40,11 @@
           "patrol_start": "Patrouille: Startzeit (HH:MM, z. B. 22:00)",
           "patrol_end": "Patrouille: Endzeit (HH:MM, z. B. 06:00; gleich wie Start = immer)",
           "patrol_dwell": "Patrouille: Verweildauer je Station (Sekunden, 20-1800)",
-          "patrol_stations": "Patrouille: Stationen als Klicks (Stufe 8) ab linkem Anschlag, kommagetrennt, in Fahrreihenfolge — mit Rückweg z. B. 0, 4, 8, 4, 0",
+          "patrol_stations": "Patrouille: Stationen als Klicks (Stufe 8) „rechts/runter“ ab linkem/oberem Anschlag, kommagetrennt, z. B. 0/3, 4/3, 8/2 — ohne „/runter“ bleibt die Neigung",
+          "patrol_shuffle": "Patrouille: zufällige Reihenfolge und Verweildauer (nicht vorhersehbar)",
           "patrol_rest_station": "Patrouille: Ruhe-Station außerhalb der Zeit (Nummer, 1 = erste)",
           "patrol_home_secs": "Patrouille: Fahrzeit bis zum linken Anschlag (Sekunden, 5-90)",
+          "patrol_tilt_home_secs": "Patrouille: Fahrzeit bis zum oberen Anschlag (Sekunden, 3-60)",
           "rtsp_path": "RTSP-Pfad",
           "snapshot_path": "Snapshot-Pfad",
           "protocol": "Protokoll",
@@ -66,7 +68,7 @@
     },
     "error": {
       "invalid_time": "Uhrzeit bitte als HH:MM angeben (z. B. 22:00).",
-      "invalid_stations": "Stationen bitte als Zahlen 0-60, kommagetrennt (z. B. 0, 4, 8)."
+      "invalid_stations": "Stationen bitte als rechts oder rechts/runter mit Zahlen 0-60, kommagetrennt (z. B. 0/3, 4/3, 8)."
     }
   }
 }
