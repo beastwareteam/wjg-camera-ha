@@ -79,6 +79,8 @@ CONF_PATROL_DWELL = "patrol_dwell"
 CONF_PATROL_STATIONS = "patrol_stations"
 CONF_PATROL_REST_STATION = "patrol_rest_station"
 CONF_PATROL_HOME_SECS = "patrol_home_secs"
+CONF_PATROL_TILT_HOME_SECS = "patrol_tilt_home_secs"
+CONF_PATROL_SHUFFLE = "patrol_shuffle"
 DEFAULT_HTTP_PORT = 80
 DEFAULT_HTTP_RETRIES = 1
 DEFAULT_MOTION_RTSP_DIFF = True
@@ -96,6 +98,8 @@ DEFAULT_PATROL_DWELL = 90
 DEFAULT_PATROL_STATIONS = "0, 4, 8"
 DEFAULT_PATROL_REST_STATION = 1
 DEFAULT_PATROL_HOME_SECS = 20
+DEFAULT_PATROL_TILT_HOME_SECS = 10
+DEFAULT_PATROL_SHUFFLE = False
 DEFAULT_RTSP_PATH = "/user=admin&password=&channel=1&stream=1.sdp?real_stream"
 DEFAULT_SNAPSHOT_PATH = "/webcapture.jpg?command=snap&channel=1"
 DEFAULT_XM_PORT = 34567
@@ -980,6 +984,10 @@ class WJGCameraCoordinator(DataUpdateCoordinator):
             stations=_parsed(parse_patrol_stations, CONF_PATROL_STATIONS, DEFAULT_PATROL_STATIONS),
             rest_station=_parsed(int, CONF_PATROL_REST_STATION, DEFAULT_PATROL_REST_STATION),
             home_secs=_parsed(float, CONF_PATROL_HOME_SECS, DEFAULT_PATROL_HOME_SECS),
+            tilt_home_secs=_parsed(
+                float, CONF_PATROL_TILT_HOME_SECS, DEFAULT_PATROL_TILT_HOME_SECS
+            ),
+            shuffle=bool(_opt(CONF_PATROL_SHUFFLE, DEFAULT_PATROL_SHUFFLE)),
         )
 
     @property

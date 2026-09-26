@@ -63,6 +63,13 @@ Live-Befund 25.09.2026 (.49), v2.2.62 mit Preset-Logs:
   0-Station fährt an den Anschlag; aus bekannter Position nur
   `Klicks × PATROL_CLICK_TRAVEL_SECS (1,8) + PATROL_STOP_MARGIN_SECS (3)`,
   höchstens `patrol_home_secs` (kein langes Rattern).
+- v2.2.65: Neigung + Zufall. Stationen „rechts/runter“ (Tupel pan, tilt|None);
+  Bezug für die Neigung = oberer Anschlag (`async_ptz_run("up",
+  patrol_tilt_home_secs)`), nur wenn eine Station eine Neigung hat. Jede Runde
+  beginnt mit `_align()` (links + ggf. oben), unabhängig von der Reihenfolge
+  (Nutzerwunsch: regelmäßig an den Anschlägen ausrichten, egal welche
+  Reihenfolge). `patrol_shuffle`: Reihenfolge je Runde gemischt (nicht mit der
+  zuletzt besuchten Station beginnen), Verweildauer 50–150 %.
 - NICHT wieder Presets/Home für die XM-3820 einbauen, ohne GotoPreset live
   neu geprüft zu haben.
 

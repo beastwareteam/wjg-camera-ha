@@ -64,15 +64,17 @@ class _FakeCoordinator:
         return None
 
 
-def _patrol(coord, stations=(0, 2, 3), dwell=0.0, rest=1, now=datetime.time(23, 0)):
+def _patrol(coord, stations="0, 2, 3", dwell=0.0, rest=1, now=datetime.time(23, 0), shuffle=False):
     ctl = PatrolController(
         coord,
         start=datetime.time(22, 0),
         end=datetime.time(6, 0),
         dwell_secs=dwell,
-        stations=list(stations),
+        stations=parse_patrol_stations(stations),
         rest_station=rest,
         home_secs=20,
+        tilt_home_secs=10,
+        shuffle=shuffle,
     )
     ctl.now = lambda: now
     return ctl
@@ -87,8 +89,9 @@ def _fast(monkeypatch):
 def test_parse_and_window():
     assert parse_patrol_time("22:00") == datetime.time(22, 0)
     assert parse_patrol_time("06:30:00") == datetime.time(6, 30)
-    assert parse_patrol_stations("0, 4;8") == [0, 4, 8]
-    for bad in ("", "a,b", "-1", "99"):
+    assert parse_patrol_stations("0, 4;8") == [(0, None), (4, None), (8, None)]
+    assert parse_patrol_stations("0/3, 4 / 2") == [(0, 3), (4, 2)]
+    for bad in ("", "a,b", "-1", "99", "1/2/3", "1/99", "1/x"):
         with pytest.raises(ValueError):
             parse_patrol_stations(bad)
     for bad in ("22", "25:00", "abc"):
@@ -120,8 +123,8 @@ async def test_return_path_clicks_back_and_realigns_at_zero():
     Start der nächsten Runde (kein doppeltes Verweilen) und fährt nur so lange
     zum Anschlag wie nötig."""
     coord = _FakeCoordinator()
-    ctl = _patrol(coord, stations=(0, 2, 3, 2, 0))
-    assert ctl.stations == [0, 2, 3, 2]
+    ctl = _patrol(coord, stations="0, 2, 3, 2, 0")
+    assert ctl.stations == [(0, None), (2, None), (3, None), (2, None)]
     await ctl._round()  # pylint: disable=protected-access
     await ctl._round()  # pylint: disable=protected-access
     assert coord.calls == [
@@ -138,6 +141,65 @@ async def test_return_path_clicks_back_and_realigns_at_zero():
     assert coord.run_secs[1] == pytest.approx(  # aus 2 Klicks → kurz
         2 * patrol_module.PATROL_CLICK_TRAVEL_SECS + patrol_module.PATROL_STOP_MARGIN_SECS
     )
+
+
+@pytest.mark.asyncio
+async def test_tilt_aligns_at_top_and_clicks_down():
+    """„rechts/runter“: Rundenstart richtet links UND oben aus, dann Klicks
+    nach rechts und nach unten; Neigungswechsel klickt hoch/runter."""
+    coord = _FakeCoordinator()
+    ctl = _patrol(coord, stations="0/2, 3/1")
+    await ctl._round()  # pylint: disable=protected-access
+    assert coord.calls == [
+        ("run", "left"), ("run", "up"),          # ausrichten (unbekannt → voll)
+        ("down", 8), ("down", 8),                # Station 1: 0/2
+        ("right", 8), ("right", 8), ("right", 8),
+        ("up", 8),                               # Station 2: 3/1
+    ]
+    assert coord.run_secs == [20, 10]
+    await ctl._round()  # pylint: disable=protected-access
+    # Runde 2: aus bekannter Position nur kurz zu den Anschlägen
+    assert coord.run_secs[2:] == [
+        pytest.approx(3 * patrol_module.PATROL_CLICK_TRAVEL_SECS + patrol_module.PATROL_STOP_MARGIN_SECS),
+        pytest.approx(1 * patrol_module.PATROL_CLICK_TRAVEL_SECS + patrol_module.PATROL_STOP_MARGIN_SECS),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_without_tilt_the_tilt_is_never_touched():
+    coord = _FakeCoordinator()
+    ctl = _patrol(coord, stations="0, 2")
+    await ctl._round()  # pylint: disable=protected-access
+    assert all(call[0] not in ("up", "down") and call[1] != "up" for call in coord.calls)
+
+
+@pytest.mark.asyncio
+async def test_shuffle_changes_order_but_always_realigns_first():
+    """Zufall: jede Runde andere Reihenfolge, aber immer zuerst an den
+    Anschlägen ausrichten; alle Stationen werden besucht."""
+    coord = _FakeCoordinator()
+    ctl = _patrol(coord, stations="0, 2, 4, 6, 8", shuffle=True)
+    ctl._rng.seed(1)  # pylint: disable=protected-access
+    orders = []
+    for _ in range(4):
+        visited = []
+        coord.calls.clear()
+        original = ctl._goto_station  # pylint: disable=protected-access
+
+        async def _spy(index, seq, _orig=original, _visited=visited):
+            _visited.append(index)
+            return await _orig(index, seq)
+
+        ctl._goto_station = _spy  # type: ignore[method-assign]
+        at_stop = ctl._pan == 0  # pylint: disable=protected-access
+        await ctl._round()  # pylint: disable=protected-access
+        ctl._goto_station = original  # type: ignore[method-assign]
+        # Ausrichten vor jeder Runde (entfällt nur, wenn die Kamera nach der
+        # letzten Station ohnehin am Anschlag steht)
+        assert at_stop or coord.calls[0] == ("run", "left")
+        assert sorted(visited) == [1, 2, 3, 4, 5]
+        orders.append(tuple(visited))
+    assert len(set(orders)) > 1                   # nicht jedes Mal gleich
 
 
 @pytest.mark.asyncio
@@ -165,7 +227,7 @@ async def test_manual_ptz_aborts_round_and_forgets_position():
 @pytest.mark.asyncio
 async def test_outside_window_goes_to_rest_station_once():
     coord = _FakeCoordinator()
-    ctl = _patrol(coord, rest=2, now=datetime.time(12, 0))
+    ctl = _patrol(coord, rest=2, now=datetime.time(12, 0))  # Station 2 = 2 Klicks
     ctl.set_enabled(True)
     await asyncio.sleep(0.05)
     await ctl.async_stop()
@@ -214,5 +276,5 @@ def test_invalid_patrol_options_fall_back_to_defaults():
     )
     coordinator = _make_coordinator(DummyHass(), entry)
     assert coordinator.patrol.start == datetime.time(22, 0)
-    assert coordinator.patrol.stations == [0, 4, 8]
+    assert coordinator.patrol.stations == [(0, None), (4, None), (8, None)]
     assert coordinator.patrol.dwell_secs == 45

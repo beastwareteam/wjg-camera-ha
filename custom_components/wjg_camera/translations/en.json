@@ -40,9 +40,11 @@
           "patrol_start": "Patrol: start time (HH:MM, e.g. 22:00)",
           "patrol_end": "Patrol: end time (HH:MM, e.g. 06:00; same as start = always)",
           "patrol_dwell": "Patrol: dwell time per station (seconds, 20-1800)",
-          "patrol_stations": "Patrol: stations as clicks (level 8) from the left end stop, comma separated, in travel order — with return path e.g. 0, 4, 8, 4, 0",
+          "patrol_stations": "Patrol: stations as clicks (level 8) \"right/down\" from the left/top end stop, comma separated, e.g. 0/3, 4/3, 8/2 — without \"/down\" the tilt is kept",
+          "patrol_shuffle": "Patrol: random order and dwell time (unpredictable)",
           "patrol_rest_station": "Patrol: rest station outside the time window (number, 1 = first)",
           "patrol_home_secs": "Patrol: travel time to the left end stop (seconds, 5-90)",
+          "patrol_tilt_home_secs": "Patrol: travel time to the top end stop (seconds, 3-60)",
           "rtsp_path": "RTSP path",
           "snapshot_path": "Snapshot path",
           "protocol": "Protocol",
@@ -66,7 +68,7 @@
     },
     "error": {
       "invalid_time": "Please enter the time as HH:MM (e.g. 22:00).",
-      "invalid_stations": "Please enter stations as numbers 0-60, comma separated (e.g. 0, 4, 8)."
+      "invalid_stations": "Please enter stations as right or right/down with numbers 0-60, comma separated (e.g. 0/3, 4/3, 8)."
     }
   }
 }

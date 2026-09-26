@@ -84,6 +84,8 @@ CONF_PATROL_DWELL: Final = "patrol_dwell"
 CONF_PATROL_STATIONS: Final = "patrol_stations"
 CONF_PATROL_REST_STATION: Final = "patrol_rest_station"
 CONF_PATROL_HOME_SECS: Final = "patrol_home_secs"
+CONF_PATROL_TILT_HOME_SECS: Final = "patrol_tilt_home_secs"
+CONF_PATROL_SHUFFLE: Final = "patrol_shuffle"
 
 PROTOCOL_RTSP: Final = "rtsp"
 PROTOCOL_HTTP: Final = "http_only"
@@ -110,6 +112,8 @@ DEFAULT_PATROL_DWELL: Final = 90
 DEFAULT_PATROL_STATIONS: Final = "0, 4, 8"
 DEFAULT_PATROL_REST_STATION: Final = 1
 DEFAULT_PATROL_HOME_SECS: Final = 20
+DEFAULT_PATROL_TILT_HOME_SECS: Final = 10
+DEFAULT_PATROL_SHUFFLE: Final = False
 
 # Standard RTSP-Pfad für XM-basierte Kameras
 DEFAULT_RTSP_PATH: Final = (
