@@ -97,8 +97,11 @@ DEFAULT_PATROL_END = "06:00"
 DEFAULT_PATROL_DWELL = 90
 DEFAULT_PATROL_STATIONS = "0, 4, 8"
 DEFAULT_PATROL_REST_STATION = 1
-DEFAULT_PATROL_HOME_SECS = 20
-DEFAULT_PATROL_TILT_HOME_SECS = 10
+# Gemessen an der XM-3820 (26.09.2026): voller Schwenkweg ≈ 7,5 Klicks Stufe 8,
+# voller Neigungsweg ≈ 2,5 Klicks (je ~1,8 s) → volle Fahrt ≈ 13,5 s bzw. 4,5 s
+# plus Reserve. Gilt nur bei unbekannter Position (Start, nach manuellem Klick).
+DEFAULT_PATROL_HOME_SECS = 15
+DEFAULT_PATROL_TILT_HOME_SECS = 6
 DEFAULT_PATROL_SHUFFLE = False
 DEFAULT_RTSP_PATH = "/user=admin&password=&channel=1&stream=1.sdp?real_stream"
 DEFAULT_SNAPSHOT_PATH = "/webcapture.jpg?command=snap&channel=1"

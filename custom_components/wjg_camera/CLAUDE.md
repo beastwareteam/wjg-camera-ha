@@ -70,6 +70,10 @@ Live-Befund 25.09.2026 (.49), v2.2.62 mit Preset-Logs:
   (Nutzerwunsch: regelmäßig an den Anschlägen ausrichten, egal welche
   Reihenfolge). `patrol_shuffle`: Reihenfolge je Runde gemischt (nicht mit der
   zuletzt besuchten Station beginnen), Verweildauer 50–150 %.
+- Live gemessen (.49, 26.09.2026) mit Klicks Stufe 8: Schwenken links→rechts
+  ≈ 7,x Klicks (der 8. schlägt an), Neigen ≈ 2,x Klicks (der 3. schlägt an).
+  → sinnvolle Stationen: rechts 0–7, runter 0–2. Standard-Fahrzeiten daher
+  15 s (links) und 6 s (oben).
 - NICHT wieder Presets/Home für die XM-3820 einbauen, ohne GotoPreset live
   neu geprüft zu haben.
 
