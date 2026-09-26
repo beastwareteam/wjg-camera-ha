@@ -177,6 +177,14 @@ _SVC_SCHEMA_PTZ_TEST = vol.All(
 )
 
 
+# Patrouille: eine Position „rechts/runter“ anfahren, um Stationswerte zu finden.
+_SERVICE_PATROL_TEST_STATION = "patrol_test_station"
+_SVC_SCHEMA_PATROL_TEST_STATION = vol.Schema({
+    vol.Required("entity_id"): cv.entity_id,
+    vol.Required("station"): cv.string,
+})
+
+
 def _get_coordinator(
     hass: HomeAssistant, entity_id: str, allow_fallback: bool = True
 ) -> WJGCameraCoordinator | None:
@@ -273,6 +281,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         hass.services.async_register(DOMAIN, _SERVICE_PTZ_TEST, _handle_ptz_test,
                                      schema=_SVC_SCHEMA_PTZ_TEST,
+                                     supports_response=SupportsResponse.ONLY)
+
+    # HA-Service registrieren: wjg_camera.patrol_test_station (liefert Antwort)
+    if not hass.services.has_service(DOMAIN, _SERVICE_PATROL_TEST_STATION):
+        async def _handle_patrol_test_station(call: ServiceCall) -> ServiceResponse:
+            coord = _get_coordinator(hass, call.data["entity_id"], allow_fallback=False)
+            if coord is None:
+                return {"fehler": "Keine WJG-Kamera zu dieser Entity gefunden"}
+            try:
+                return await coord.patrol.async_test_station(call.data["station"])
+            except ValueError as exc:
+                return {"fehler": str(exc)}
+        hass.services.async_register(DOMAIN, _SERVICE_PATROL_TEST_STATION,
+                                     _handle_patrol_test_station,
+                                     schema=_SVC_SCHEMA_PATROL_TEST_STATION,
                                      supports_response=SupportsResponse.ONLY)
 
     # Einmalige Hinweis-Benachrichtigung für Lovelace-Ressource

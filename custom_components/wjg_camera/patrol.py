@@ -5,8 +5,10 @@ festen Punkt an (live bestätigt 25.09.2026), Presets sind über Home Assistant
 also unbrauchbar. Einzige verlässliche Bezugspunkte: die Anschläge.
 
 Stationen: "rechts" oder "rechts/runter" in Klicks (Stufe 8) ab dem linken
-bzw. oberen Anschlag, z. B. "0/3, 4/3, 8/2". Ohne "/runter" bleibt die
-Neigung unverändert.
+bzw. oberen Anschlag, auch mit Komma, z. B. "0/0.8, 3.5/1.2". Ohne "/runter"
+(bei allen Stationen) bleibt die Neigung unverändert. Ein Klick entspricht ~1,8 s Fahrt mit voller
+Geschwindigkeit; gefahren wird als EINE zeitgesteuerte Fahrt je Achse
+(Move → warten → Stop), dadurch sind Bruchteile möglich (seit v2.2.66).
 
 Ablauf einer Runde:
   1. neu ausrichten: nach links (und, falls Stationen eine Neigung haben,
@@ -34,7 +36,6 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 PATROL_MANUAL_PAUSE_SECS = 300.0   # Pause nach manuellem PTZ-Klick
-PATROL_CLICK_LEVEL = 8             # Stufe der Klicks zwischen den Stationen
 PATROL_CLICK_GAP_SECS = 0.5        # Abstand zwischen zwei Klicks
 PATROL_TICK_SECS = 1.0             # Prüfintervall beim Warten
 PATROL_ERROR_RETRY_SECS = 30.0
@@ -44,6 +45,10 @@ PATROL_MAX_CLICKS = 60
 # damit der Anschlag sicher erreicht wird, der Motor aber nicht lange rattert.
 PATROL_CLICK_TRAVEL_SECS = 1.8
 PATROL_STOP_MARGIN_SECS = 3.0
+# Die Kamera fährt nach dem Stop-Befehl noch ~0,2 s weiter (Stop-Antwort live
+# 0,15–0,35 s) → von der Wartezeit abziehen, damit 1 Klick ≈ 1,8 s Fahrt bleibt.
+PATROL_STOP_LAG_SECS = 0.2
+PATROL_MIN_MOVE_SECS = 0.05
 
 
 def parse_patrol_time(value: Any) -> datetime.time:
@@ -56,14 +61,21 @@ def parse_patrol_time(value: Any) -> datetime.time:
     return datetime.time(hour, minute, second)
 
 
-Station = tuple[int, "int | None"]   # (Klicks rechts, Klicks runter | None)
+Station = tuple[float, "float | None"]   # (Klicks rechts, Klicks runter | None)
 
 
 def parse_patrol_stations(value: Any) -> list[Station]:
-    """"0/3, 4, 8/2" → [(0, 3), (4, None), (8, 2)]: Klicks ab linkem bzw.
-    oberem Anschlag; ohne "/runter" wird die Neigung nicht verändert.
+    """"0/3, 4, 8/2.5" → [(0, 3), (4, None), (8, 2.5)]: Klicks ab linkem bzw.
+    oberem Anschlag; ohne "/runter" wird die Neigung nicht verändert
+    (dann bei allen Stationen, nicht gemischt). Kommazahlen: mit Punkt ("3.5") – oder die Stationen mit ";" trennen, dann
+    darf das deutsche Komma stehen ("3,5/1,2; 0/1").
     Wirft ValueError bei ungültigem Wert."""
-    items = [p.strip() for p in str(value).replace(";", ",").split(",") if p.strip()]
+    text = str(value)
+    if ";" in text:
+        items = [p.strip().replace(",", ".") for p in text.split(";")]
+    else:
+        items = [p.strip() for p in text.split(",")]
+    items = [p for p in items if p]
     if not items:
         raise ValueError("mindestens eine Station angeben")
     stations: list[Station] = []
@@ -71,20 +83,32 @@ def parse_patrol_stations(value: Any) -> list[Station]:
         parts = [p.strip() for p in item.split("/")]
         if len(parts) > 2:
             raise ValueError(f"Station '{item}' nicht im Format rechts/runter")
-        pan = int(parts[0])
-        tilt = int(parts[1]) if len(parts) == 2 else None
+        pan = float(parts[0])
+        tilt = float(parts[1]) if len(parts) == 2 else None
         for clicks in (pan, tilt):
             if clicks is not None and not 0 <= clicks <= PATROL_MAX_CLICKS:
                 raise ValueError(
                     f"Klicks je Station müssen zwischen 0 und {PATROL_MAX_CLICKS} liegen"
                 )
         stations.append((pan, tilt))
+    # Gemischt mit/ohne "/runter" ist fast immer ein deutsches Komma in einer
+    # mit "," getrennten Liste ("0/0,8, 3,5/1,2" → 0/0, 8, 3, 5/1, 2).
+    with_tilt = sum(1 for _, tilt in stations if tilt is not None)
+    if 0 < with_tilt < len(stations):
+        raise ValueError(
+            "entweder alle Stationen mit „/runter“ oder keine – Kommazahlen mit "
+            "Punkt schreiben (3.5) oder die Stationen mit ; trennen"
+        )
     return stations
+
+
+def _fmt_clicks(value: float) -> str:
+    return f"{value:g}"
 
 
 def format_patrol_station(station: Station) -> str:
     pan, tilt = station
-    return str(pan) if tilt is None else f"{pan}/{tilt}"
+    return _fmt_clicks(pan) if tilt is None else f"{_fmt_clicks(pan)}/{_fmt_clicks(tilt)}"
 
 
 def in_patrol_window(now: datetime.time, start: datetime.time, end: datetime.time) -> bool:
@@ -138,8 +162,8 @@ class PatrolController:
         self._task: asyncio.Task[None] | None = None
         self._manual_until = 0.0
         self._manual_seq = 0
-        self._pan: int | None = None      # Klicks ab linkem Anschlag; None = unbekannt
-        self._tilt: int | None = None     # Klicks ab oberem Anschlag; None = unbekannt
+        self._pan: float | None = None    # Klicks ab linkem Anschlag; None = unbekannt
+        self._tilt: float | None = None   # Klicks ab oberem Anschlag; None = unbekannt
         self._rng = random.Random()
         self.status = "aus"
         self.station: int | None = None   # 1-basiert; None = unbekannt
@@ -271,7 +295,7 @@ class PatrolController:
                 return
 
     @staticmethod
-    def _run_secs(known: int | None, full: float) -> float:
+    def _run_secs(known: float | None, full: float) -> float:
         """Fahrzeit zum Anschlag: unbekannt → volle Fahrzeit, sonst nur so lange
         wie nötig (kein langes Rattern am Anschlag)."""
         if known is None:
@@ -306,14 +330,17 @@ class PatrolController:
             return False
         return seq == self._manual_seq
 
-    async def _click(self, positive: str, negative: str, delta: int, seq: int) -> bool:
+    async def _move(self, positive: str, negative: str, delta: float, seq: int) -> bool:
+        """`delta` Klicks als EINE zeitgesteuerte Fahrt (Bruchteile möglich)."""
+        if seq != self._manual_seq:
+            return False
+        if abs(delta) < 0.01:
+            return True
         direction = positive if delta > 0 else negative
-        for _ in range(abs(delta)):
-            if seq != self._manual_seq:
-                return False
-            if not await self._coordinator.async_ptz_command(direction, PATROL_CLICK_LEVEL):
-                return False
-            await asyncio.sleep(PATROL_CLICK_GAP_SECS)
+        secs = max(PATROL_MIN_MOVE_SECS, abs(delta) * PATROL_CLICK_TRAVEL_SECS - PATROL_STOP_LAG_SECS)
+        if not await self._coordinator.async_ptz_run(direction, secs):
+            return False
+        await asyncio.sleep(PATROL_CLICK_GAP_SECS)
         return seq == self._manual_seq
 
     async def _goto_station(self, index: int, seq: int) -> bool:
@@ -327,7 +354,7 @@ class PatrolController:
             if not await self._align_pan():
                 return False
         current, self._pan = self._pan, None
-        if not await self._click("right", "left", pan - current, seq):
+        if not await self._move("right", "left", pan - current, seq):
             return False
         self._pan = pan
         # Neigen (nur wenn die Station eine Neigung vorgibt)
@@ -336,7 +363,7 @@ class PatrolController:
                 if not await self._align_tilt():
                     return False
             current, self._tilt = self._tilt, None
-            if not await self._click("down", "up", tilt - current, seq):
+            if not await self._move("down", "up", tilt - current, seq):
                 return False
             self._tilt = tilt
         self.station = index
@@ -346,6 +373,38 @@ class PatrolController:
         )
         coord.async_update_listeners()
         return True
+
+    async def async_test_station(self, text: str) -> dict[str, Any]:
+        """Aktion „Patrouille: Station testen“: eine Position „rechts/runter“
+        anfahren, um die Werte für die Stationsliste zu finden. Pausiert eine
+        laufende Patrouille wie ein manueller Klick (5 min)."""
+        stations = parse_patrol_stations(text)
+        if len(stations) != 1:
+            raise ValueError("genau eine Station angeben, z. B. 3.5/1.2")
+        pan, tilt = stations[0]
+        known_pan, known_tilt = self._pan, self._tilt
+        self.note_manual_ptz()
+        self._pan, self._tilt = known_pan, known_tilt   # Position bleibt bekannt
+        seq = self._manual_seq
+        ok = await self._align_pan() and await self._move("right", "left", pan, seq)
+        if ok:
+            self._pan = pan
+        if ok and tilt is not None:
+            ok = await self._align_tilt() and await self._move("down", "up", tilt, seq)
+            if ok:
+                self._tilt = tilt
+        if not ok:
+            self._forget_position()
+        _LOGGER.info(
+            "Patrouille (%s): Station %s getestet (%s)",
+            self._coordinator.host, format_patrol_station(stations[0]), "ok" if ok else "abgebrochen",
+        )
+        return {
+            "station": format_patrol_station(stations[0]),
+            "angefahren": ok,
+            "hinweis": "Patrouille pausiert 5 Minuten. Passt der Blick, den Wert in "
+                       "die Stationsliste unter „Konfigurieren“ übernehmen.",
+        }
 
     async def _dwell(self, seq: int) -> bool:
         """Verweilen (bei Zufall 50–150 % der Verweildauer); danach warten,
