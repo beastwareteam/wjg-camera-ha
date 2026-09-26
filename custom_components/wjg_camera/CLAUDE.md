@@ -74,6 +74,12 @@ Live-Befund 25.09.2026 (.49), v2.2.62 mit Preset-Logs:
   ≈ 7,x Klicks (der 8. schlägt an), Neigen ≈ 2,x Klicks (der 3. schlägt an).
   → sinnvolle Stationen: rechts 0–7, runter 0–2. Standard-Fahrzeiten daher
   15 s (links) und 6 s (oben).
+- v2.2.66: Nutzer: Neigung mit ganzen Klicks zu grob (nur 0/1/2, zeigt
+  Unwichtiges). Stationen jetzt mit Bruchteilen; jede Achse fährt EINE
+  zeitgesteuerte Fahrt (`async_ptz_run`, Klicks × 1,8 s − 0,2 s Stop-Nachlauf)
+  statt einzelner Klicks. „,“-Liste + deutsches Komma ist mehrdeutig → gemischt
+  mit/ohne „/runter“ wird abgelehnt; mit „;“ als Trenner ist „3,5“ erlaubt.
+  Aktion `wjg_camera.patrol_test_station` zum Finden der Werte.
 - NICHT wieder Presets/Home für die XM-3820 einbauen, ohne GotoPreset live
   neu geprüft zu haben.
 

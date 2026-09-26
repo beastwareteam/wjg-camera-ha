@@ -43,25 +43,36 @@ class _FakeCoordinator:
     host = "192.168.178.49"
 
     def __init__(self) -> None:
-        self.calls: list[tuple[str, object]] = []
-        self.run_secs: list[float] = []
+        self.calls: list[tuple[str, float]] = []   # (Richtung, Sekunden)
         self.motion_detected = False
         self.is_recording = False
-        self.on_command = None
+        self.on_run = None
 
     async def async_ptz_run(self, direction: str, seconds: float) -> bool:
-        self.calls.append(("run", direction))
-        self.run_secs.append(seconds)
-        return True
-
-    async def async_ptz_command(self, direction: str, speed: int) -> bool:
-        self.calls.append((direction, speed))
-        if self.on_command:
-            self.on_command()
+        self.calls.append((direction, round(seconds, 3)))
+        if self.on_run:
+            self.on_run()
         return True
 
     def async_update_listeners(self) -> None:
         return None
+
+    def dirs(self) -> list[str]:
+        return [d for d, _ in self.calls]
+
+
+T = patrol_module.PATROL_CLICK_TRAVEL_SECS
+M = patrol_module.PATROL_STOP_MARGIN_SECS
+LAG = patrol_module.PATROL_STOP_LAG_SECS
+
+
+def _move(clicks: float) -> float:
+    """Wartezeit einer Fahrt über `clicks` Klicks (siehe PatrolController._move)."""
+    return round(clicks * T - LAG, 3)
+
+
+def _home(clicks: float) -> float:
+    return round(clicks * T + M, 3)
 
 
 def _patrol(coord, stations="0, 2, 3", dwell=0.0, rest=1, now=datetime.time(23, 0), shuffle=False):
@@ -89,9 +100,13 @@ def _fast(monkeypatch):
 def test_parse_and_window():
     assert parse_patrol_time("22:00") == datetime.time(22, 0)
     assert parse_patrol_time("06:30:00") == datetime.time(6, 30)
-    assert parse_patrol_stations("0, 4;8") == [(0, None), (4, None), (8, None)]
+    assert parse_patrol_stations("0, 4, 8") == [(0, None), (4, None), (8, None)]
     assert parse_patrol_stations("0/3, 4 / 2") == [(0, 3), (4, 2)]
-    for bad in ("", "a,b", "-1", "99", "1/2/3", "1/99", "1/x"):
+    # gemischt = fast immer ein deutsches Komma in einer ","-Liste → Fehler
+    assert parse_patrol_stations("0/0.8, 3.5/1.2") == [(0, 0.8), (3.5, 1.2)]
+    # Mit ";" als Trenner darf das deutsche Komma stehen
+    assert parse_patrol_stations("0/0,8; 3,5/1,2") == [(0, 0.8), (3.5, 1.2)]
+    for bad in ("", "a,b", "-1", "99", "1/2/3", "1/99", "1/x", "nan", "0/0,8, 3,5/1,2", "0/3, 4"):
         with pytest.raises(ValueError):
             parse_patrol_stations(bad)
     for bad in ("22", "25:00", "abc"):
@@ -105,64 +120,61 @@ def test_parse_and_window():
 
 
 @pytest.mark.asyncio
-async def test_round_starts_at_end_stop_and_clicks_between_stations():
+async def test_round_aligns_then_one_timed_move_per_station():
     coord = _FakeCoordinator()
     ctl = _patrol(coord)
     await ctl._round()  # pylint: disable=protected-access
     assert coord.calls == [
-        ("run", "left"),                 # Station 1 = Anschlag
-        ("right", 8), ("right", 8),      # → Station 2 (2 Klicks)
-        ("right", 8),                    # → Station 3 (1 weiterer Klick)
+        ("left", 20),              # ausrichten (unbekannt → volle Fahrzeit)
+        ("right", _move(2)),       # → Station 2
+        ("right", _move(1)),       # → Station 3
     ]
     assert ctl.station == 3
 
 
 @pytest.mark.asyncio
-async def test_return_path_clicks_back_and_realigns_at_zero():
-    """„0, 2, 3, 2, 0“: Rückweg klickt nach links; die abschließende 0 ist der
-    Start der nächsten Runde (kein doppeltes Verweilen) und fährt nur so lange
-    zum Anschlag wie nötig."""
+async def test_fractional_clicks():
+    """Bruchteile: 0.5 Klick = eine kurze Fahrt statt eines ganzen Klicks."""
+    coord = _FakeCoordinator()
+    ctl = _patrol(coord, stations="0/0.5, 1.5/1.25")
+    await ctl._round()  # pylint: disable=protected-access
+    assert coord.calls == [
+        ("left", 20), ("up", 10),
+        ("down", _move(0.5)),
+        ("right", _move(1.5)), ("down", _move(0.75)),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_return_path_moves_back_and_realigns_at_zero():
+    """„0, 2, 3, 2, 0“: Rückweg fährt nach links; die abschließende 0 ist der
+    Start der nächsten Runde und fährt nur so lange zum Anschlag wie nötig."""
     coord = _FakeCoordinator()
     ctl = _patrol(coord, stations="0, 2, 3, 2, 0")
     assert ctl.stations == [(0, None), (2, None), (3, None), (2, None)]
     await ctl._round()  # pylint: disable=protected-access
     await ctl._round()  # pylint: disable=protected-access
     assert coord.calls == [
-        ("run", "left"),                  # Runde 1, Position unbekannt
-        ("right", 8), ("right", 8),       # → 2
-        ("right", 8),                     # → 3
-        ("left", 8),                      # ← 2 (Rückweg)
-        ("run", "left"),                  # Runde 2 beginnt: ← 0 am Anschlag
-        ("right", 8), ("right", 8),
-        ("right", 8),
-        ("left", 8),
+        ("left", 20),
+        ("right", _move(2)), ("right", _move(1)), ("left", _move(1)),
+        ("left", _home(2)),                  # Runde 2: aus 2 Klicks → kurz
+        ("right", _move(2)), ("right", _move(1)), ("left", _move(1)),
     ]
-    assert coord.run_secs[0] == 20        # unbekannt → volle Fahrzeit
-    assert coord.run_secs[1] == pytest.approx(  # aus 2 Klicks → kurz
-        2 * patrol_module.PATROL_CLICK_TRAVEL_SECS + patrol_module.PATROL_STOP_MARGIN_SECS
-    )
 
 
 @pytest.mark.asyncio
-async def test_tilt_aligns_at_top_and_clicks_down():
-    """„rechts/runter“: Rundenstart richtet links UND oben aus, dann Klicks
-    nach rechts und nach unten; Neigungswechsel klickt hoch/runter."""
+async def test_tilt_aligns_at_top_and_moves_down():
     coord = _FakeCoordinator()
     ctl = _patrol(coord, stations="0/2, 3/1")
     await ctl._round()  # pylint: disable=protected-access
     assert coord.calls == [
-        ("run", "left"), ("run", "up"),          # ausrichten (unbekannt → voll)
-        ("down", 8), ("down", 8),                # Station 1: 0/2
-        ("right", 8), ("right", 8), ("right", 8),
-        ("up", 8),                               # Station 2: 3/1
+        ("left", 20), ("up", 10),
+        ("down", _move(2)),
+        ("right", _move(3)), ("up", _move(1)),
     ]
-    assert coord.run_secs == [20, 10]
+    coord.calls.clear()
     await ctl._round()  # pylint: disable=protected-access
-    # Runde 2: aus bekannter Position nur kurz zu den Anschlägen
-    assert coord.run_secs[2:] == [
-        pytest.approx(3 * patrol_module.PATROL_CLICK_TRAVEL_SECS + patrol_module.PATROL_STOP_MARGIN_SECS),
-        pytest.approx(1 * patrol_module.PATROL_CLICK_TRAVEL_SECS + patrol_module.PATROL_STOP_MARGIN_SECS),
-    ]
+    assert coord.calls[:2] == [("left", _home(3)), ("up", _home(1))]
 
 
 @pytest.mark.asyncio
@@ -170,20 +182,19 @@ async def test_without_tilt_the_tilt_is_never_touched():
     coord = _FakeCoordinator()
     ctl = _patrol(coord, stations="0, 2")
     await ctl._round()  # pylint: disable=protected-access
-    assert all(call[0] not in ("up", "down") and call[1] != "up" for call in coord.calls)
+    assert not {"up", "down"} & set(coord.dirs())
 
 
 @pytest.mark.asyncio
 async def test_shuffle_changes_order_but_always_realigns_first():
-    """Zufall: jede Runde andere Reihenfolge, aber immer zuerst an den
-    Anschlägen ausrichten; alle Stationen werden besucht."""
     coord = _FakeCoordinator()
     ctl = _patrol(coord, stations="0, 2, 4, 6, 8", shuffle=True)
     ctl._rng.seed(1)  # pylint: disable=protected-access
     orders = []
     for _ in range(4):
-        visited = []
         coord.calls.clear()
+        at_stop = ctl._pan == 0  # pylint: disable=protected-access
+        visited = []
         original = ctl._goto_station  # pylint: disable=protected-access
 
         async def _spy(index, seq, _orig=original, _visited=visited):
@@ -191,15 +202,14 @@ async def test_shuffle_changes_order_but_always_realigns_first():
             return await _orig(index, seq)
 
         ctl._goto_station = _spy  # type: ignore[method-assign]
-        at_stop = ctl._pan == 0  # pylint: disable=protected-access
         await ctl._round()  # pylint: disable=protected-access
         ctl._goto_station = original  # type: ignore[method-assign]
         # Ausrichten vor jeder Runde (entfällt nur, wenn die Kamera nach der
         # letzten Station ohnehin am Anschlag steht)
-        assert at_stop or coord.calls[0] == ("run", "left")
+        assert at_stop or coord.calls[0][0] == "left"
         assert sorted(visited) == [1, 2, 3, 4, 5]
         orders.append(tuple(visited))
-    assert len(set(orders)) > 1                   # nicht jedes Mal gleich
+    assert len(set(orders)) > 1
 
 
 @pytest.mark.asyncio
@@ -218,9 +228,16 @@ async def test_dwell_waits_while_motion():
 async def test_manual_ptz_aborts_round_and_forgets_position():
     coord = _FakeCoordinator()
     ctl = _patrol(coord)
-    coord.on_command = ctl.note_manual_ptz   # erster Klick = „manueller“ Eingriff
+    runs = {"n": 0}
+
+    def _on_run():
+        runs["n"] += 1
+        if runs["n"] == 2:               # während der ersten Stationsfahrt
+            ctl.note_manual_ptz()
+
+    coord.on_run = _on_run
     await ctl._round()  # pylint: disable=protected-access
-    assert coord.calls == [("run", "left"), ("right", 8)]
+    assert coord.dirs() == ["left", "right"]
     assert ctl.station is None
 
 
@@ -231,8 +248,20 @@ async def test_outside_window_goes_to_rest_station_once():
     ctl.set_enabled(True)
     await asyncio.sleep(0.05)
     await ctl.async_stop()
-    assert coord.calls == [("run", "left"), ("right", 8), ("right", 8)]
+    assert coord.calls == [("left", 20), ("right", _move(2))]
     assert ctl.status == "aus"
+
+
+@pytest.mark.asyncio
+async def test_test_station_moves_there_and_pauses_patrol():
+    coord = _FakeCoordinator()
+    ctl = _patrol(coord)
+    result = await ctl.async_test_station("3.5/1.2")
+    assert result["angefahren"] is True and result["station"] == "3.5/1.2"
+    assert coord.calls == [("left", 20), ("right", _move(3.5)), ("up", 10), ("down", _move(1.2))]
+    assert ctl._manual_until > 0  # pylint: disable=protected-access
+    with pytest.raises(ValueError):
+        await ctl.async_test_station("1, 2")
 
 
 @pytest.mark.asyncio

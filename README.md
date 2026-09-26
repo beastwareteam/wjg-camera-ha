@@ -1,7 +1,7 @@
 # WJG XM-3820 Camera Bridge – Home Assistant Integration
 
 **Kamera:** WJG / Tenganda XM-3820 · **Chipset:** XM (Xiongmai) / GK-Serie  
-**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.65 · **HA:** ≥ 2024.1
+**App:** iCam365 (Shenzhen Tange) · **Version:** 2.2.66 · **HA:** ≥ 2024.1
 
 > Vollständige lokale Home-Assistant-Integration ohne Cloud-Abhängigkeit.  
 > RTSP-Livestream, ONVIF-Steuerung, PTZ mit 21 Buttons, Imaging-Einstellungen, Events und mehr.
@@ -240,7 +240,7 @@ Events werden über ONVIF Pull-Point in Echtzeit empfangen.
 |---|---|
 | **PTZ Stopp** | Laufende Bewegung sofort anhalten (`Stop`) |
 
-> **Keine Home-/Preset-Tasten mehr (seit 2.2.65):** Die XM-3820 fährt bei
+> **Keine Home-/Preset-Tasten mehr (seit 2.2.66):** Die XM-3820 fährt bei
 > `GotoPreset` und `GotoHomePosition` über ONVIF immer denselben festen Punkt
 > an, egal welches Preset gewählt ist. Presets in der Hersteller-App sind davon
 > nicht betroffen. Für wechselnde Blickwinkel gibt es die **Patrouille**.
@@ -251,10 +251,19 @@ Die Kamera fährt im eingestellten Zeitfenster mehrere Stationen ab. Bezugspunkt
 sind der **linke** und der **obere Anschlag** (wie bei einer Kalibrierungsfahrt),
 deshalb summieren sich keine Abweichungen.
 
-**Stationen** (Klicks auf Stufe 8, kommagetrennt):
-- `rechts` – z. B. `0, 4, 8`: nur schwenken, die Neigung bleibt, wie sie ist
-- `rechts/runter` – z. B. `0/3, 4/3, 8/2`: Klicks nach rechts ab dem linken
-  Anschlag und nach unten ab dem oberen Anschlag
+**Stationen** (Klicks auf Stufe 8, kommagetrennt, Bruchteile erlaubt):
+- `rechts` – z. B. `0, 4, 7`: nur schwenken, die Neigung bleibt, wie sie ist
+- `rechts/runter` – z. B. `0/0.8, 3.5/1.2, 7/1.5`: Klicks nach rechts ab dem
+  linken Anschlag und nach unten ab dem oberen Anschlag
+- Kommazahlen mit Punkt (`3.5`) – oder die Stationen mit `;` trennen, dann geht
+  auch `3,5/1,2; 0/0,8`. Alle Stationen entweder mit oder ohne `/runter`.
+- XM-3820 (gemessen): Schwenkweg ≈ 7,5 Klicks, Neigungsweg ≈ 2,5 Klicks.
+- Werte ausprobieren: Aktion **„Patrouille: Station testen“**
+  (`wjg_camera.patrol_test_station`, z. B. `station: 3.5/1.2`) fährt genau diese
+  Position an (pausiert eine laufende Patrouille 5 Minuten).
+
+Gefahren wird je Achse als eine zeitgesteuerte Fahrt mit voller
+Geschwindigkeit (1 Klick ≈ 1,8 s), dadurch sind Zwischenpositionen möglich.
 
 **Ablauf einer Runde:**
 1. neu ausrichten: nach links (und bei Stationen mit Neigung nach oben) bis zum
@@ -458,4 +467,4 @@ pytest tests/test_coordinator.py -v
 
 ---
 
-*Version 2.2.65 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*
+*Version 2.2.66 · Hersteller: WJG / Tenganda · Modell: XM-3820 · IoT-Klasse: local_polling*

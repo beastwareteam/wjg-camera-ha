@@ -40,7 +40,7 @@
           "patrol_start": "Patrol: start time (HH:MM, e.g. 22:00)",
           "patrol_end": "Patrol: end time (HH:MM, e.g. 06:00; same as start = always)",
           "patrol_dwell": "Patrol: dwell time per station (seconds, 20-1800)",
-          "patrol_stations": "Patrol: stations as clicks (level 8) \"right/down\" from the left/top end stop, comma separated, e.g. 0/3, 4/3, 8/2 — without \"/down\" the tilt is kept",
+          "patrol_stations": "Patrol: stations \"right/down\" in clicks (level 8) from the left/top end stop, e.g. 0/0.8, 3.5/1.2 — decimals with a dot or separate stations with ; — without \"/down\" the tilt is kept. Try values with the action \"Patrol: test station\"",
           "patrol_shuffle": "Patrol: random order and dwell time (unpredictable)",
           "patrol_rest_station": "Patrol: rest station outside the time window (number, 1 = first)",
           "patrol_home_secs": "Patrol: travel time to the left end stop (seconds, 5-90)",
@@ -68,7 +68,7 @@
     },
     "error": {
       "invalid_time": "Please enter the time as HH:MM (e.g. 22:00).",
-      "invalid_stations": "Please enter stations as right or right/down with numbers 0-60, comma separated (e.g. 0/3, 4/3, 8)."
+      "invalid_stations": "Please enter stations as right or right/down with numbers 0-60 (e.g. 0/0.8, 3.5/1.2)."
     }
   }
 }
